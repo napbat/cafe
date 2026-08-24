@@ -1,0 +1,19 @@
+[package]
+name = "disassembler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Shared Java bytecode disassembly IR and control-flow graph boundary"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["disassembler", "bytecode", "cfg", "java", "dex"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+cfglib.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,41 @@
+[workspace]
+members = ["crates/cafe", "crates/disassembler", "crates/java"]
+default-members = ["crates/cafe", "crates/disassembler", "crates/java"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["coconutbird"]
+license = "MIT"
+repository = "https://github.com/napbat/cafe"
+homepage = "https://github.com/napbat/cafe"
+
+[workspace.dependencies]
+cafe = { version = "0.1.0", path = "crates/cafe" }
+disassembler = { version = "0.1.0", path = "crates/disassembler" }
+cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib", rev = "5331ad5684d14568ef94a2e8714026dec5712117" }
+thiserror = "2.0.20"
+zip = { version = "8.6.0", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+warnings = { level = "deny", priority = -2 }
+unused = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[workspace.lints.rustdoc]
+all = { level = "deny", priority = -1 }

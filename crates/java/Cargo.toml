@@ -1,0 +1,21 @@
+[package]
+name = "java"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "JVM class-file assembly, shared disassembly adapter, and JAR inventory tools"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["java", "jvm", "bytecode", "classfile", "jar"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+cafe.workspace = true
+disassembler.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

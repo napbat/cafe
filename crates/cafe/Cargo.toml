@@ -1,0 +1,19 @@
+[package]
+name = "cafe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Java bytecode object model and definition resolver"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["bytecode", "model", "java", "dex", "analysis"]
+categories = ["development-tools", "data-structures"]
+
+[dependencies]
+disassembler.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

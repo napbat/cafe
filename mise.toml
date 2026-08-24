@@ -1,0 +1,32 @@
+[tools]
+rust = "latest"
+prek = "latest"
+
+[tasks.format]
+description = "Format the complete workspace"
+run = "cargo fmt --all"
+
+[tasks.fmt]
+description = "Verify the complete workspace is rustfmt-clean"
+run = "cargo fmt --all -- --check"
+
+[tasks.check]
+description = "Compile every workspace target"
+run = "cargo check --workspace --all-targets --locked"
+
+[tasks.clippy]
+description = "Run the pedantic Clippy gate"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.test]
+description = "Run the complete workspace test suite"
+run = "cargo test --workspace --locked"
+
+[tasks.doc]
+description = "Build API documentation with warnings denied"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --workspace --no-deps --locked"
+
+[tasks.ci]
+description = "Run every local CI gate in order"
+depends = ["fmt", "check", "clippy", "test", "doc"]
