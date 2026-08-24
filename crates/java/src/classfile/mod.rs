@@ -2,17 +2,41 @@
 
 mod access_flags;
 mod assemble;
+pub mod attribute;
+mod build;
+mod code;
 mod constant_pool;
 mod io;
 mod modified_utf8;
 mod parser;
+mod validation;
 pub mod version;
 
-pub use self::access_flags::{ClassAccessFlags, FieldAccessFlags, MethodAccessFlags};
+pub use self::access_flags::{
+    ClassAccessFlags, FieldAccessFlags, InnerClassAccessFlags, MethodAccessFlags,
+    MethodParameterAccessFlags, ModuleAccessFlags, ModuleExportsFlags, ModuleOpensFlags,
+    ModuleRequiresFlags,
+};
 pub use self::assemble::assemble_class;
+pub use self::attribute::{
+    Annotation, AnnotationConstantKind, AnnotationDefaultAttribute, AnnotationElement,
+    AnnotationsAttribute, BootstrapMethod, BootstrapMethodsAttribute, BytesAttribute, ElementValue,
+    EnclosingMethodAttribute, IndexAttribute, IndexListAttribute, InnerClass,
+    InnerClassesAttribute, KnownAttribute, KnownAttributeKind, LineNumber,
+    LineNumberTableAttribute, LocalVariable, LocalVariableTableAttribute, LocalVariableTarget,
+    LocalVariableType, LocalVariableTypeTableAttribute, MarkerAttribute, MethodParameter,
+    MethodParametersAttribute, ModuleAttribute, ModuleExport, ModuleOpen, ModuleProvide,
+    ModuleRequire, ParameterAnnotationsAttribute, RecordAttribute, RecordComponent, StackMapFrame,
+    StackMapTableAttribute, TypeAnnotation, TypeAnnotationTarget, TypeAnnotationsAttribute,
+    TypePathEntry, VerificationType,
+};
+pub use self::code::BytecodeOffsetMap;
 pub use self::constant_pool::{
     Constant, ConstantPool, ConstantSlotWidth, ConstantTag, FIRST_USABLE_CONSTANT_POOL_INDEX,
     MethodHandleKind, RESERVED_CONSTANT_POOL_INDEX, Utf8Constant,
+};
+pub use self::validation::{
+    ClassValidationReport, MAX_SUPPORTED_CLASS_MAJOR, MIN_SUPPORTED_CLASS_MAJOR,
 };
 pub use self::version::JavaRelease;
 
@@ -37,12 +61,7 @@ pub(crate) enum AttributeLocation {
     Field,
     Method,
     Code,
-}
-
-impl AttributeLocation {
-    const fn allows_code(self) -> bool {
-        matches!(self, Self::Method)
-    }
+    RecordComponent,
 }
 
 /// A parsed JVM class file.
@@ -127,6 +146,25 @@ impl ClassFile {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         assemble_class(self)
     }
+
+    /// Performs full structural validation without assembling the class.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported versions, invalid flags, descriptors,
+    /// constant references, attributes, bytecode, or metadata offsets.
+    pub fn validate(&self) -> Result<()> {
+        validation::validate_class(self).map(|_| ())
+    }
+
+    /// Validates the class and returns deterministic aggregate counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structural errors as [`Self::validate`].
+    pub fn validation_report(&self) -> Result<ClassValidationReport> {
+        validation::validate_class(self)
+    }
 }
 
 /// A field declaration.
@@ -201,7 +239,7 @@ impl MethodInfo {
             .iter()
             .find_map(|attribute| match attribute {
                 Attribute::Code(code) => Some(code),
-                Attribute::Raw(_) => None,
+                Attribute::Known(_) | Attribute::Raw(_) => None,
             })
     }
 
@@ -212,17 +250,19 @@ impl MethodInfo {
             .iter_mut()
             .find_map(|attribute| match attribute {
                 Attribute::Code(code) => Some(code),
-                Attribute::Raw(_) => None,
+                Attribute::Known(_) | Attribute::Raw(_) => None,
             })
     }
 }
 
-/// A parsed or raw class-file attribute.
-#[derive(Debug, Clone)]
+/// A parsed standard or losslessly retained custom class-file attribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attribute {
     /// A method's JVM `Code` attribute.
     Code(CodeAttribute),
-    /// Any attribute that the disassembler does not need to interpret.
+    /// Any recognized standard attribute other than `Code`.
+    Known(KnownAttribute),
+    /// Unrecognized attribute retained byte-for-byte.
     Raw(RawAttribute),
 }
 
@@ -232,13 +272,24 @@ impl Attribute {
     pub fn name(&self) -> &str {
         match self {
             Self::Code(_) => CODE_ATTRIBUTE_NAME,
+            Self::Known(attribute) => attribute.name(),
             Self::Raw(attribute) => &attribute.name,
+        }
+    }
+
+    /// Returns the constant-pool index of the attribute name.
+    #[must_use]
+    pub const fn name_index(&self) -> u16 {
+        match self {
+            Self::Code(attribute) => attribute.name_index,
+            Self::Known(attribute) => attribute.name_index(),
+            Self::Raw(attribute) => attribute.name_index,
         }
     }
 }
 
 /// An uninterpreted class-file attribute.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawAttribute {
     /// Constant-pool index of the attribute name.
     pub name_index: u16,
@@ -249,7 +300,7 @@ pub struct RawAttribute {
 }
 
 /// The executable body of a JVM method.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeAttribute {
     /// Constant-pool index of the `Code` attribute name.
     pub name_index: u16,
@@ -262,40 +313,7 @@ pub struct CodeAttribute {
     /// Protected regions and handlers.
     pub exception_table: Vec<ExceptionHandler>,
     /// Nested code attributes such as line numbers and stack maps.
-    pub attributes: Vec<RawAttribute>,
-}
-
-impl CodeAttribute {
-    /// Decodes this attribute into typed instructions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bytecode or exception-table boundaries are invalid.
-    pub fn instructions(&self) -> Result<Vec<crate::bytecode::Instruction>> {
-        crate::bytecode::decode_code(self)
-    }
-
-    /// Replaces this method body by assembling typed instructions.
-    ///
-    /// The old bytecode is retained if the new code invalidates an existing
-    /// exception-table boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the instructions cannot be encoded or the resulting
-    /// method body is structurally invalid.
-    pub fn set_instructions(
-        &mut self,
-        instructions: &[crate::bytecode::Instruction],
-    ) -> Result<()> {
-        let new_code = crate::bytecode::encode(instructions)?;
-        let old_code = std::mem::replace(&mut self.code, new_code);
-        if let Err(error) = crate::bytecode::decode_code(self) {
-            self.code = old_code;
-            return Err(error);
-        }
-        Ok(())
-    }
+    pub attributes: Vec<Attribute>,
 }
 
 /// One entry in a `Code` attribute exception table.

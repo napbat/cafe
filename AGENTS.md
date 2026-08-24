@@ -36,6 +36,9 @@ These rules apply to the entire repository.
 - Split files by concept and keep every source file at or below 1,000 physical
   lines, including tests and documentation comments. Split before the limit;
   do not compress formatting or combine unrelated concepts to evade it.
+- When a concept needs multiple implementation files, give it a directory
+  with a narrow `mod.rs` facade and plainly named child modules. Do not place
+  ad-hoc `<concept>_<concern>.rs` siblings beside `<concept>.rs`.
 - In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `cafe/`
   independent. Keep descriptors, textual presentation, crate errors, and
   public entry points at the source root.

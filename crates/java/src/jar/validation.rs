@@ -1,13 +1,40 @@
 //! Full-archive class-file and bytecode validation.
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 use crate::bytecode::{self, Operand};
 use crate::classfile::ClassFile;
 use crate::descriptor;
 use crate::{Error, Result};
 
-use super::{JarFile, is_class_entry, read_zip_file};
+use super::entry::validate_entry_name;
+use super::{
+    EntryKind, JarFile, SERVICE_PREFIX, is_class_entry, is_service_entry, parse_versioned_entry,
+};
+
+/// Aggregate results from structurally validating every JAR entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveValidationReport {
+    /// Total number of physical ZIP members.
+    pub entries: usize,
+    /// Number of regular files.
+    pub files: usize,
+    /// Number of directory markers.
+    pub directories: usize,
+    /// Number of Unix symbolic links.
+    pub symlinks: usize,
+    /// Total uncompressed payload bytes read and CRC-checked.
+    pub uncompressed_bytes: u64,
+    /// Number of JVM class-file entries.
+    pub class_entries: usize,
+    /// Number of service-provider configuration entries.
+    pub service_configurations: usize,
+    /// Number of standard top-level signature artifacts.
+    pub signature_artifacts: usize,
+    /// Whether the manifest enables multi-release lookup.
+    pub multi_release: bool,
+}
 
 /// Aggregate results from parsing and decoding every class in a JAR.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,24 +62,104 @@ pub struct ValidationReport {
 }
 
 impl JarFile {
+    /// Validates archive names, uniqueness, entry payloads, manifest structure,
+    /// service configurations, and multi-release paths.
+    ///
+    /// Reading each payload also verifies decompression and CRC-32 through the
+    /// ZIP reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error identifying the first unsafe, duplicate, malformed,
+    /// encrypted, unreadable, or unsupported entry.
+    pub fn validate_archive(&self) -> Result<ArchiveValidationReport> {
+        let mut report = ArchiveValidationReport {
+            entries: self.entries.len(),
+            signature_artifacts: self.signature_entry_ids().len(),
+            ..ArchiveValidationReport::default()
+        };
+        let mut names = HashSet::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            validate_entry_name(&entry.name, entry.kind)?;
+            if !names.insert(&entry.name) {
+                return Err(Error::DuplicateJarEntry(entry.name.clone()));
+            }
+            if entry.encrypted {
+                return Err(Error::UnsupportedJarEntry {
+                    entry: entry.name.clone(),
+                    message: "encrypted members are not valid portable JAR entries".to_owned(),
+                });
+            }
+            let bytes = self
+                .read_entry_by_id(entry.id)
+                .map_err(|error| error.in_jar_entry(entry.name.clone()))?;
+            report.uncompressed_bytes =
+                report
+                    .uncompressed_bytes
+                    .checked_add(bytes.len() as u64)
+                    .ok_or_else(|| Error::InvalidJar("archive byte count overflow".to_owned()))?;
+            match entry.kind {
+                EntryKind::File => report.files += 1,
+                EntryKind::Directory => {
+                    report.directories += 1;
+                    if !bytes.is_empty() {
+                        return Err(Error::UnsupportedJarEntry {
+                            entry: entry.name.clone(),
+                            message: "directory marker contains payload bytes".to_owned(),
+                        });
+                    }
+                }
+                EntryKind::Symlink => {
+                    report.symlinks += 1;
+                    std::str::from_utf8(&bytes).map_err(|_| Error::UnsupportedJarEntry {
+                        entry: entry.name.clone(),
+                        message: "symbolic-link target is not UTF-8".to_owned(),
+                    })?;
+                }
+            }
+            report.class_entries +=
+                usize::from(entry.kind == EntryKind::File && is_class_entry(&entry.name));
+            report.service_configurations += usize::from(is_service_entry(&entry.name));
+            if entry.kind == EntryKind::File
+                && entry.name.starts_with("META-INF/versions/")
+                && parse_versioned_entry(&entry.name).is_none()
+            {
+                return Err(Error::InvalidJar(format!(
+                    "malformed multi-release entry `{}`",
+                    entry.name
+                )));
+            }
+            if entry.kind == EntryKind::File
+                && entry.name.starts_with(SERVICE_PREFIX)
+                && !is_service_entry(&entry.name)
+            {
+                return Err(Error::InvalidJar(format!(
+                    "malformed service configuration entry `{}`",
+                    entry.name
+                )));
+            }
+        }
+        self.manifest()?;
+        self.service_configurations()?;
+        report.multi_release = self.is_multi_release()?;
+        Ok(report)
+    }
+
     /// Parses every class and decodes every method body in archive order.
     ///
     /// # Errors
     ///
     /// Returns an error identifying the first unreadable or invalid class entry.
-    pub fn validate_all(&mut self) -> Result<ValidationReport> {
+    pub fn validate_all(&self) -> Result<ValidationReport> {
+        self.validate_archive()?;
         let mut report = ValidationReport::default();
-        for index in 0..self.archive.len() {
-            let (name, size, bytes) = {
-                let mut file = self.archive.by_index(index)?;
-                if file.is_dir() || !is_class_entry(file.name()) {
-                    continue;
-                }
-                let name = file.name().to_owned();
-                let size = file.size();
-                let bytes = read_zip_file(&mut file)?;
-                (name, size, bytes)
-            };
+        for entry in &self.entries {
+            if entry.kind != EntryKind::File || !is_class_entry(&entry.name) {
+                continue;
+            }
+            let name = entry.name.clone();
+            let bytes = self.read_entry_by_id(entry.id)?;
+            let size = bytes.len() as u64;
 
             let class = validate_class_round_trip(&bytes, &name)?;
             record_class(&mut report, &class, size);
@@ -103,26 +210,43 @@ fn validate_fields(class: &ClassFile, entry: &str) -> Result<()> {
 }
 
 fn validate_methods(class: &ClassFile, entry: &str, report: &mut ValidationReport) -> Result<()> {
+    let owner = class
+        .class_name()
+        .map_err(|error| error.in_jar_entry(entry))?
+        .to_owned();
     for method in &class.methods {
-        method
+        let name = method
             .name(&class.constant_pool)
-            .map_err(|error| error.in_jar_entry(entry))?;
+            .map_err(|error| error.in_jar_entry(entry))?
+            .to_owned();
         let descriptor = method
             .descriptor(&class.constant_pool)
-            .map_err(|error| error.in_jar_entry(entry))?;
-        descriptor::parse_method(descriptor).map_err(|error| error.in_jar_entry(entry))?;
+            .map_err(|error| error.in_jar_entry(entry))?
+            .to_owned();
+        descriptor::parse_method(&descriptor).map_err(|error| {
+            error
+                .in_class_method(&owner, &name, &descriptor)
+                .in_jar_entry(entry)
+        })?;
         if let Some(code) = method.code() {
-            let instructions =
-                bytecode::decode_code(code).map_err(|error| error.in_jar_entry(entry))?;
-            let encoded =
-                bytecode::encode(&instructions).map_err(|error| error.in_jar_entry(entry))?;
+            let instructions = bytecode::decode_code(code).map_err(|error| {
+                error
+                    .in_class_method(&owner, &name, &descriptor)
+                    .in_jar_entry(entry)
+            })?;
+            let encoded = bytecode::encode(&instructions).map_err(|error| {
+                error
+                    .in_class_method(&owner, &name, &descriptor)
+                    .in_jar_entry(entry)
+            })?;
             if encoded != code.code {
                 return Err(Error::invalid_assembly(
                     "decode/encode round trip changed the method bytecode",
                 )
+                .in_class_method(&owner, &name, &descriptor)
                 .in_jar_entry(entry));
             }
-            validate_constant_references(class, &instructions, entry)?;
+            validate_constant_references(class, &instructions, entry, &owner, &name, &descriptor)?;
             report.code_methods += 1;
             report.instructions += instructions.len();
         }
@@ -134,13 +258,17 @@ fn validate_constant_references(
     class: &ClassFile,
     instructions: &[bytecode::Instruction],
     entry: &str,
+    owner: &str,
+    method: &str,
+    descriptor: &str,
 ) -> Result<()> {
     for instruction in instructions {
         if let Some(index) = referenced_constant(&instruction.operand) {
-            class
-                .constant_pool
-                .describe(index)
-                .map_err(|error| error.in_jar_entry(entry))?;
+            class.constant_pool.describe(index).map_err(|error| {
+                error
+                    .in_class_method(owner, method, descriptor)
+                    .in_jar_entry(entry)
+            })?;
         }
     }
     Ok(())

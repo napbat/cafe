@@ -45,6 +45,20 @@ pub enum Error {
     #[error("cannot assemble JVM data: {0}")]
     InvalidAssembly(String),
 
+    /// A class-file error scoped to one overload-qualified method.
+    #[error("in class `{class}`, method `{method}{descriptor}`: {source}")]
+    ClassMethod {
+        /// Internal JVM class name or an index placeholder if unresolved.
+        class: String,
+        /// JVM method name or an index placeholder if unresolved.
+        method: String,
+        /// JVM method descriptor, or an empty string if unresolved.
+        descriptor: String,
+        /// Underlying structural, descriptor, bytecode, or assembly error.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// Shared disassembly IR could not be converted into a valid control-flow graph.
     #[error(transparent)]
     DisassemblyGraph(#[from] disassembler::GraphError),
@@ -77,6 +91,53 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+
+    /// A JAR entry name is unsafe or does not match its entry kind.
+    #[error("invalid JAR entry name `{name}`: {message}")]
+    InvalidJarEntryName {
+        /// Rejected archive-relative name.
+        name: String,
+        /// Explanation of the violated JAR path rule.
+        message: String,
+    },
+
+    /// No JAR entry has the requested name.
+    #[error("JAR entry `{0}` was not found")]
+    JarEntryNotFound(String),
+
+    /// A name-based operation found more than one matching JAR entry.
+    #[error("JAR entry name `{name}` is ambiguous ({count} entries)")]
+    AmbiguousJarEntry {
+        /// Duplicate entry name.
+        name: String,
+        /// Number of entries with that name.
+        count: usize,
+    },
+
+    /// A stable JAR entry identifier is no longer present.
+    #[error("JAR entry id {0} was not found")]
+    JarEntryIdNotFound(u64),
+
+    /// A mutation would introduce a duplicate archive name.
+    #[error("JAR already contains an entry named `{0}`")]
+    DuplicateJarEntry(String),
+
+    /// JAR metadata or a manifest is malformed.
+    #[error("invalid JAR metadata: {0}")]
+    InvalidJar(String),
+
+    /// A JAR entry cannot be rewritten with the configured ZIP codecs.
+    #[error("cannot rewrite JAR entry `{entry}`: {message}")]
+    UnsupportedJarEntry {
+        /// Entry that cannot be rewritten.
+        entry: String,
+        /// Unsupported feature or encoding.
+        message: String,
+    },
+
+    /// Saving would silently invalidate existing JAR signatures.
+    #[error("refusing to rewrite a signed JAR without an explicit signature policy")]
+    SignedJarMutation,
 }
 
 impl Error {
@@ -109,6 +170,30 @@ impl Error {
         Self::JarEntry {
             entry: entry.into(),
             source: Box::new(self),
+        }
+    }
+
+    pub(crate) fn in_class_method(
+        self,
+        class: impl Into<String>,
+        method: impl Into<String>,
+        descriptor: impl Into<String>,
+    ) -> Self {
+        Self::ClassMethod {
+            class: class.into(),
+            method: method.into(),
+            descriptor: descriptor.into(),
+            source: Box::new(self),
+        }
+    }
+
+    pub(crate) fn invalid_jar_entry_name(
+        name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvalidJarEntryName {
+            name: name.into(),
+            message: message.into(),
         }
     }
 }

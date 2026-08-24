@@ -1,10 +1,10 @@
 //! Binary parser for JVM class files and their attributes.
 
+use super::attribute::parse_attributes;
 use super::io::Reader;
 use super::{
-    Attribute, AttributeLocation, CATCH_ALL_EXCEPTION_INDEX, CLASS_MAGIC, CLASS_MAGIC_OFFSET,
-    ClassAccessFlags, ClassFile, CodeAttribute, ConstantPool, ExceptionHandler, FieldAccessFlags,
-    FieldInfo, MAX_CODE_LENGTH, MethodAccessFlags, MethodInfo, NO_SUPER_CLASS_INDEX, RawAttribute,
+    AttributeLocation, CLASS_MAGIC, CLASS_MAGIC_OFFSET, ClassAccessFlags, ClassFile, ConstantPool,
+    FieldAccessFlags, FieldInfo, MethodAccessFlags, MethodInfo, NO_SUPER_CLASS_INDEX,
 };
 use crate::{Error, Result};
 
@@ -41,7 +41,7 @@ pub(super) fn parse_class(bytes: &[u8]) -> Result<ClassFile> {
     let attributes = parse_attributes(&mut reader, &constant_pool, AttributeLocation::Class)?;
     reader.finish("class file")?;
 
-    Ok(ClassFile {
+    let class = ClassFile {
         minor_version,
         major_version,
         constant_pool,
@@ -52,7 +52,9 @@ pub(super) fn parse_class(bytes: &[u8]) -> Result<ClassFile> {
         fields,
         methods,
         attributes,
-    })
+    };
+    class.validate()?;
+    Ok(class)
 }
 
 fn parse_fields(reader: &mut Reader<'_>, pool: &ConstantPool) -> Result<Vec<FieldInfo>> {
@@ -93,94 +95,6 @@ fn parse_methods(reader: &mut Reader<'_>, pool: &ConstantPool) -> Result<Vec<Met
         });
     }
     Ok(methods)
-}
-
-fn parse_attributes(
-    reader: &mut Reader<'_>,
-    pool: &ConstantPool,
-    location: AttributeLocation,
-) -> Result<Vec<Attribute>> {
-    let count = usize::from(reader.read_u16()?);
-    let mut attributes = Vec::with_capacity(count);
-    for _ in 0..count {
-        let name_index = reader.read_u16()?;
-        let name = pool.utf8(name_index)?.to_owned();
-        let length = usize::try_from(reader.read_u32()?).map_err(|_| {
-            Error::invalid_class(
-                reader.absolute_position(),
-                "attribute length does not fit usize",
-            )
-        })?;
-        let info_offset = reader.absolute_position();
-        let info = reader.read_bytes(length)?;
-
-        if location.allows_code() && name == super::CODE_ATTRIBUTE_NAME {
-            let code = parse_code_attribute(info, info_offset, name_index, pool)?;
-            attributes.push(Attribute::Code(code));
-        } else {
-            attributes.push(Attribute::Raw(RawAttribute {
-                name_index,
-                name,
-                info: info.to_vec(),
-            }));
-        }
-    }
-    Ok(attributes)
-}
-
-fn parse_code_attribute(
-    info: &[u8],
-    info_offset: usize,
-    name_index: u16,
-    pool: &ConstantPool,
-) -> Result<CodeAttribute> {
-    let mut reader = Reader::with_base(info, info_offset);
-    let max_stack = reader.read_u16()?;
-    let max_locals = reader.read_u16()?;
-    let code_length = usize::try_from(reader.read_u32()?).map_err(|_| {
-        Error::invalid_class(reader.absolute_position(), "code length does not fit usize")
-    })?;
-    if code_length > MAX_CODE_LENGTH {
-        return Err(Error::invalid_class(
-            reader.absolute_position(),
-            format!("Code attribute is too large: {code_length} bytes"),
-        ));
-    }
-    let code = reader.read_bytes(code_length)?.to_vec();
-
-    let exception_count = usize::from(reader.read_u16()?);
-    let mut exception_table = Vec::with_capacity(exception_count);
-    for _ in 0..exception_count {
-        let handler = ExceptionHandler {
-            start_pc: reader.read_u16()?,
-            end_pc: reader.read_u16()?,
-            handler_pc: reader.read_u16()?,
-            catch_type: reader.read_u16()?,
-        };
-        if handler.catch_type != CATCH_ALL_EXCEPTION_INDEX {
-            pool.expect_class(handler.catch_type)?;
-        }
-        exception_table.push(handler);
-    }
-
-    let nested = parse_attributes(&mut reader, pool, AttributeLocation::Code)?;
-    let mut attributes = Vec::with_capacity(nested.len());
-    for attribute in nested {
-        match attribute {
-            Attribute::Raw(attribute) => attributes.push(attribute),
-            Attribute::Code(_) => unreachable!("nested Code parsing is disabled"),
-        }
-    }
-    reader.finish("Code attribute")?;
-
-    Ok(CodeAttribute {
-        name_index,
-        max_stack,
-        max_locals,
-        code,
-        exception_table,
-        attributes,
-    })
 }
 
 fn read_indices(reader: &mut Reader<'_>) -> Result<Vec<u16>> {

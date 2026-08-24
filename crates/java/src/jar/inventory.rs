@@ -3,28 +3,30 @@
 use crate::Result;
 use crate::classfile::{ClassAccessFlags, ClassFile};
 
-use super::{JarFile, is_class_entry, read_zip_file};
-
-/// Broad kind of a JAR archive entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EntryKind {
-    /// A regular archive member containing bytes.
-    File,
-    /// A directory marker.
-    Directory,
-}
+use super::entry::EntryData;
+use super::{EntryId, EntryKind, EntryMetadata, JarFile, is_class_entry};
 
 /// Metadata for one archive entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryInfo {
-    /// Entry name using the JAR's forward-slash separator.
+    /// Stable identity within the open JAR.
+    pub id: EntryId,
+    /// Current entry name using the JAR's forward-slash separator.
     pub name: String,
-    /// Uncompressed byte length.
+    /// Name read from the original archive, or `None` for a new entry.
+    pub original_name: Option<String>,
+    /// Current uncompressed byte length.
     pub size: u64,
-    /// Compressed byte length.
+    /// Original compressed length, or zero for new/replaced payloads.
     pub compressed_size: u64,
-    /// Whether this member is a file or directory marker.
+    /// Original CRC-32, or `None` for new/replaced payloads.
+    pub crc32: Option<u32>,
+    /// Whether this member is a file, directory marker, or symbolic link.
     pub kind: EntryKind,
+    /// Editable ZIP metadata retained for the entry.
+    pub metadata: EntryMetadata,
+    /// Whether the source ZIP marked the member as encrypted.
+    pub encrypted: bool,
 }
 
 impl EntryInfo {
@@ -39,11 +41,25 @@ impl EntryInfo {
     pub const fn is_dir(&self) -> bool {
         matches!(self.kind, EntryKind::Directory)
     }
+
+    /// Returns whether this entry is a Unix symbolic link.
+    #[must_use]
+    pub const fn is_symlink(&self) -> bool {
+        matches!(self.kind, EntryKind::Symlink)
+    }
+
+    /// Returns whether the entry payload still comes from the original ZIP.
+    #[must_use]
+    pub const fn has_original_payload(&self) -> bool {
+        self.crc32.is_some()
+    }
 }
 
 /// Metadata obtained by parsing one class entry during archive enumeration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassSummary {
+    /// Stable identity of the class entry.
+    pub entry_id: EntryId,
     /// Exact entry name in the JAR.
     pub entry_name: String,
     /// Internal JVM class name declared by the class file.
@@ -63,45 +79,56 @@ pub struct ClassSummary {
 }
 
 impl JarFile {
-    /// Collects metadata for every archive entry.
+    /// Collects metadata for every archive entry in current order.
     ///
     /// # Errors
     ///
-    /// Returns an error if ZIP metadata for an entry cannot be read.
-    pub fn entries(&mut self) -> Result<Vec<EntryInfo>> {
-        let mut entries = Vec::with_capacity(self.archive.len());
-        for index in 0..self.archive.len() {
-            let file = self.archive.by_index(index)?;
-            entries.push(EntryInfo {
-                name: file.name().to_owned(),
-                size: file.size(),
-                compressed_size: file.compressed_size(),
-                kind: if file.is_dir() {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-            });
-        }
-        Ok(entries)
+    /// This cached inventory currently cannot fail; the result wrapper is
+    /// retained for source compatibility with the original read-only API.
+    pub fn entries(&self) -> Result<Vec<EntryInfo>> {
+        Ok(self
+            .entries
+            .iter()
+            .map(|entry| {
+                let (size, compressed_size, crc32) = match &entry.data {
+                    EntryData::Original(_) => (
+                        entry.original_size,
+                        entry.original_compressed_size,
+                        Some(entry.original_crc32),
+                    ),
+                    EntryData::Owned(bytes) => (bytes.len() as u64, 0, None),
+                };
+                EntryInfo {
+                    id: entry.id,
+                    name: entry.name.clone(),
+                    original_name: entry.original_name.clone(),
+                    size,
+                    compressed_size,
+                    crc32,
+                    kind: entry.kind,
+                    metadata: entry.metadata.clone(),
+                    encrypted: entry.encrypted,
+                }
+            })
+            .collect())
     }
 
     /// Returns all `.class` entry names in archive order.
     #[must_use]
     pub fn class_entry_names(&self) -> Vec<String> {
-        self.archive
-            .file_names()
-            .filter(|name| is_class_entry(name))
-            .map(str::to_owned)
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::File && is_class_entry(&entry.name))
+            .map(|entry| entry.name.clone())
             .collect()
     }
 
     /// Returns the number of `.class` entries without reading their payloads.
     #[must_use]
     pub fn class_entry_count(&self) -> usize {
-        self.archive
-            .file_names()
-            .filter(|name| is_class_entry(name))
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::File && is_class_entry(&entry.name))
             .count()
     }
 
@@ -109,35 +136,31 @@ impl JarFile {
     ///
     /// # Errors
     ///
-    /// Returns an error identifying the first unreadable or invalid class entry.
-    pub fn class_summaries(&mut self) -> Result<Vec<ClassSummary>> {
+    /// Returns an error identifying the first unreadable or invalid class
+    /// entry.
+    pub fn class_summaries(&self) -> Result<Vec<ClassSummary>> {
         let mut summaries = Vec::new();
-        for index in 0..self.archive.len() {
-            let (entry_name, size, bytes) = {
-                let mut file = self.archive.by_index(index)?;
-                if file.is_dir() || !is_class_entry(file.name()) {
-                    continue;
-                }
-                let entry_name = file.name().to_owned();
-                let size = file.size();
-                let bytes = read_zip_file(&mut file)?;
-                (entry_name, size, bytes)
-            };
+        for entry in &self.entries {
+            if entry.kind != EntryKind::File || !is_class_entry(&entry.name) {
+                continue;
+            }
+            let bytes = self.read_entry_by_id(entry.id)?;
             let class =
-                ClassFile::parse(&bytes).map_err(|error| error.in_jar_entry(entry_name.clone()))?;
+                ClassFile::parse(&bytes).map_err(|error| error.in_jar_entry(entry.name.clone()))?;
             let internal_name = class
                 .class_name()
-                .map_err(|error| error.in_jar_entry(entry_name.clone()))?
+                .map_err(|error| error.in_jar_entry(entry.name.clone()))?
                 .to_owned();
             summaries.push(ClassSummary {
-                entry_name,
+                entry_id: entry.id,
+                entry_name: entry.name.clone(),
                 internal_name,
                 minor_version: class.minor_version,
                 major_version: class.major_version,
                 access_flags: class.access_flags,
                 fields: class.fields.len(),
                 methods: class.methods.len(),
-                size,
+                size: bytes.len() as u64,
             });
         }
         Ok(summaries)

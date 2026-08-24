@@ -107,6 +107,90 @@ define_access_flags! {
 }
 
 define_access_flags! {
+    /// Type-safe access flags recorded for an `InnerClasses` entry.
+    InnerClassAccessFlags {
+        /// `ACC_PUBLIC`.
+        PUBLIC = 0x0001,
+        /// `ACC_PRIVATE`.
+        PRIVATE = 0x0002,
+        /// `ACC_PROTECTED`.
+        PROTECTED = 0x0004,
+        /// `ACC_STATIC`.
+        STATIC = 0x0008,
+        /// `ACC_FINAL`.
+        FINAL = 0x0010,
+        /// `ACC_INTERFACE`.
+        INTERFACE = 0x0200,
+        /// `ACC_ABSTRACT`.
+        ABSTRACT = 0x0400,
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_ANNOTATION`.
+        ANNOTATION = 0x2000,
+        /// `ACC_ENUM`.
+        ENUM = 0x4000,
+    }
+}
+
+define_access_flags! {
+    /// Type-safe flags recorded for a `MethodParameters` entry.
+    MethodParameterAccessFlags {
+        /// `ACC_FINAL`.
+        FINAL = 0x0010,
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_MANDATED`.
+        MANDATED = 0x8000,
+    }
+}
+
+define_access_flags! {
+    /// Type-safe flags recorded on a `Module` attribute.
+    ModuleAccessFlags {
+        /// `ACC_OPEN`.
+        OPEN = 0x0020,
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_MANDATED`.
+        MANDATED = 0x8000,
+    }
+}
+
+define_access_flags! {
+    /// Type-safe flags recorded on a module `requires` directive.
+    ModuleRequiresFlags {
+        /// `ACC_TRANSITIVE`.
+        TRANSITIVE = 0x0020,
+        /// `ACC_STATIC_PHASE`.
+        STATIC_PHASE = 0x0040,
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_MANDATED`.
+        MANDATED = 0x8000,
+    }
+}
+
+define_access_flags! {
+    /// Type-safe flags recorded on a module `exports` directive.
+    ModuleExportsFlags {
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_MANDATED`.
+        MANDATED = 0x8000,
+    }
+}
+
+define_access_flags! {
+    /// Type-safe flags recorded on a module `opens` directive.
+    ModuleOpensFlags {
+        /// `ACC_SYNTHETIC`.
+        SYNTHETIC = 0x1000,
+        /// `ACC_MANDATED`.
+        MANDATED = 0x8000,
+    }
+}
+
+define_access_flags! {
     /// Type-safe field declaration access flags.
     FieldAccessFlags {
         /// `ACC_PUBLIC`.

@@ -1,5 +1,7 @@
 //! JVM constant-pool types, parsing, validation, and display helpers.
 
+mod intern;
+
 use std::fmt::Write;
 
 use crate::{Error, Result};
@@ -150,7 +152,7 @@ impl ConstantSlotWidth {
 }
 
 /// A constant-pool slot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     /// Index zero or the second slot occupied by a `long` or `double`.
     Unusable,
@@ -291,7 +293,7 @@ impl Constant {
 /// The ordinary Rust string view is convenient for names and descriptors. The
 /// exact UTF-16 units are retained because Java strings can contain unpaired
 /// surrogates, which a Rust [`String`] cannot represent directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Utf8Constant {
     text: String,
     utf16_units: Vec<u16>,
@@ -399,6 +401,35 @@ impl ConstantPool {
     /// Returns an error if the constant pool has no remaining slot.
     pub fn push_utf8(&mut self, value: &str) -> Result<u16> {
         self.push(Constant::Utf8(Utf8Constant::new(value)))
+    }
+
+    /// Replaces a constant without changing the pool's slot layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for index zero, an unusable slot, an explicit
+    /// [`Constant::Unusable`], or a replacement with a different slot width.
+    pub fn replace(&mut self, index: u16, constant: Constant) -> Result<Constant> {
+        if matches!(constant, Constant::Unusable) {
+            return Err(Error::invalid_assembly(
+                "cannot explicitly place an unusable constant-pool slot",
+            ));
+        }
+        let slot = self
+            .entries
+            .get_mut(usize::from(index))
+            .ok_or_else(|| Error::invalid_assembly(format!("constant index #{index} is absent")))?;
+        if matches!(slot, Constant::Unusable) {
+            return Err(Error::invalid_assembly(format!(
+                "constant index #{index} is an unusable slot"
+            )));
+        }
+        if slot.slot_width() != constant.slot_width() {
+            return Err(Error::invalid_assembly(format!(
+                "replacing constant #{index} would change its slot width"
+            )));
+        }
+        Ok(std::mem::replace(slot, constant))
     }
 
     pub(crate) fn parse(reader: &mut Reader<'_>) -> Result<Self> {
@@ -551,6 +582,36 @@ impl ConstantPool {
         match self.get(index)? {
             Constant::Utf8(value) => Ok(value.as_str()),
             constant => Err(Self::wrong_tag(index, "Utf8", constant)),
+        }
+    }
+
+    /// Returns the exact modified UTF-8 constant at an index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index does not refer to a UTF-8 constant.
+    pub fn utf8_constant(&self, index: u16) -> Result<&Utf8Constant> {
+        match self.get(index)? {
+            Constant::Utf8(value) => Ok(value),
+            constant => Err(Self::wrong_tag(index, "Utf8", constant)),
+        }
+    }
+
+    /// Returns a mutable exact modified UTF-8 constant at an index.
+    ///
+    /// Mutating this value cannot disturb the constant-pool slot layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index does not refer to a UTF-8 constant.
+    pub fn utf8_constant_mut(&mut self, index: u16) -> Result<&mut Utf8Constant> {
+        match self.entries.get_mut(usize::from(index)) {
+            Some(Constant::Utf8(value)) => Ok(value),
+            Some(constant) => Err(Self::wrong_tag(index, "Utf8", constant)),
+            None => Err(Error::invalid_class(
+                UNAVAILABLE_SOURCE_OFFSET,
+                format!("invalid constant-pool index #{index}"),
+            )),
         }
     }
 

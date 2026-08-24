@@ -5,7 +5,7 @@ use std::fmt::{self, Write};
 use crate::bytecode::{Instruction, Operand};
 use crate::classfile::{
     Attribute, CATCH_ALL_EXCEPTION_INDEX, ClassAccessFlags, ClassFile, CodeAttribute, ConstantPool,
-    FieldAccessFlags, FieldInfo, MethodAccessFlags, MethodInfo, RawAttribute,
+    FieldAccessFlags, FieldInfo, MethodAccessFlags, MethodInfo,
 };
 use crate::descriptor::{self, JavaType};
 use crate::{Error, Result};
@@ -291,7 +291,7 @@ fn write_code(
     }
     write_exception_table(output, code, pool)?;
     if show_attributes {
-        write_raw_attribute_summary(output, "      code attributes", &code.attributes);
+        write_attribute_summary(output, "      code attributes", &code.attributes);
     }
     Ok(())
 }
@@ -332,26 +332,17 @@ fn write_exception_table(
 }
 
 fn write_method_attribute_summary(output: &mut String, method: &MethodInfo) {
-    let raw = method
+    let attributes = method
         .attributes
         .iter()
-        .filter_map(|attribute| match attribute {
-            Attribute::Raw(attribute) => Some(attribute),
-            Attribute::Code(_) => None,
-        });
-    let mut raw = raw.peekable();
-    if raw.peek().is_none() {
+        .filter(|attribute| !matches!(attribute, Attribute::Code(_)))
+        .collect::<Vec<_>>();
+    if attributes.is_empty() {
         return;
     }
     output.push_str("    method attributes:");
-    for attribute in raw {
-        write!(
-            output,
-            " {} ({} bytes)",
-            attribute.name,
-            attribute.info.len()
-        )
-        .expect("writing to a String cannot fail");
+    for attribute in attributes {
+        write_attribute_label(output, attribute);
     }
     output.push('\n');
 }
@@ -459,31 +450,31 @@ fn write_attribute_summary(output: &mut String, label: &str, attributes: &[Attri
     }
     write!(output, "{label}:").expect("writing to a String cannot fail");
     for attribute in attributes {
-        let length = match attribute {
-            Attribute::Code(code) => code.code.len(),
-            Attribute::Raw(attribute) => attribute.info.len(),
-        };
-        write!(output, " {} ({length} bytes)", attribute.name())
-            .expect("writing to a String cannot fail");
+        write_attribute_label(output, attribute);
     }
     output.push('\n');
 }
 
-fn write_raw_attribute_summary(output: &mut String, label: &str, attributes: &[RawAttribute]) {
-    if attributes.is_empty() {
-        return;
+fn write_attribute_label(output: &mut String, attribute: &Attribute) {
+    match attribute {
+        Attribute::Code(code) => {
+            write!(output, " Code ({} code bytes)", code.code.len())
+                .expect("writing to a String cannot fail");
+        }
+        Attribute::Known(attribute) => {
+            write!(output, " {} (typed)", attribute.name())
+                .expect("writing to a String cannot fail");
+        }
+        Attribute::Raw(attribute) => {
+            write!(
+                output,
+                " {} ({} bytes)",
+                attribute.name,
+                attribute.info.len()
+            )
+            .expect("writing to a String cannot fail");
+        }
     }
-    write!(output, "{label}:").expect("writing to a String cannot fail");
-    for attribute in attributes {
-        write!(
-            output,
-            " {} ({} bytes)",
-            attribute.name,
-            attribute.info.len()
-        )
-        .expect("writing to a String cannot fail");
-    }
-    output.push('\n');
 }
 
 fn line(output: &mut String, arguments: fmt::Arguments<'_>) {

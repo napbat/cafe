@@ -21,7 +21,16 @@ pub fn lower_class(class: &ClassFile) -> Result<Disassembly> {
     let functions = class
         .methods
         .iter()
-        .map(|method| lower_method(class, method, &owner))
+        .map(|method| {
+            let name = method
+                .name(&class.constant_pool)
+                .unwrap_or("<invalid-name>");
+            let descriptor = method
+                .descriptor(&class.constant_pool)
+                .unwrap_or("<invalid-descriptor>");
+            lower_method(class, method, &owner)
+                .map_err(|error| error.in_class_method(&owner, name, descriptor))
+        })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(Disassembly {

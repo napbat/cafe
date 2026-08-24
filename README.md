@@ -41,6 +41,14 @@ Unknown class-file attributes remain exact raw payloads. Modified UTF-8
 constants retain their original UTF-16 units, including unpaired surrogates,
 so unchanged classes remain byte-for-byte reproducible.
 
+Every standard JVM attribute through Java 26 has a typed, editable model,
+including stack maps, bootstrap methods, annotations, modules, nests, records,
+and permitted subclasses. Constant-pool interning and class/member constructors
+avoid manual index bookkeeping. Method-body edits are transactional: callers
+either retain an unchanged instruction layout, explicitly discard code
+metadata, or provide a `BytecodeOffsetMap` that remaps exception handlers,
+stack maps, debugging ranges, and code-level type annotations together.
+
 Cafe definitions retain format-qualified and overload-qualified identities.
 Java adapters can load complete executable bodies or declarations only, which
 keeps metadata-oriented consumers from paying for bytecode decoding.
@@ -63,6 +71,34 @@ fn inspect(installation: &str) -> Result<(), java::Error> {
     Ok(())
 }
 ```
+
+JARs are also fully editable. Entry IDs remain stable across renames and
+reordering, unchanged archives serialize byte-for-byte, and rewrites retain
+entry metadata, archive order, comments, manifests, service configurations,
+and multi-release overlays:
+
+```rust
+use java::jar::{JarFile, Manifest, SignaturePolicy};
+
+fn rewrite(input: &str, output: &str) -> Result<(), java::Error> {
+    let mut jar = JarFile::open(input)?;
+    jar.put_file("assets/config.json", br#"{"enabled":true}"#.to_vec())?;
+    jar.rename_entry("old/name.txt", "new/name.txt")?;
+
+    let mut manifest = jar.manifest()?.unwrap_or_else(Manifest::new);
+    manifest.main_mut().set("Implementation-Title", "Cafe")?;
+    jar.set_manifest(&manifest)?;
+    jar.set_multi_release(true)?;
+    jar.add_versioned_file(17, "assets/config.json", b"java 17".to_vec())?;
+
+    jar.validate_archive()?;
+    jar.save_with_signature_policy(output, SignaturePolicy::Strip)
+}
+```
+
+The default save policy refuses to rewrite a signed JAR. Callers must choose
+to preserve potentially stale signature entries or strip the signature files
+and manifest digests explicitly.
 
 Class-file assembly and bytecode encoding operate on public structured models:
 
