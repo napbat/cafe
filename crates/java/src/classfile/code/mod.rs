@@ -68,9 +68,9 @@ impl CodeAttribute {
 
     /// Replaces this body and remaps every modeled offset-sensitive structure.
     ///
-    /// Unknown nested code attributes are rejected because Cafe cannot know
-    /// whether their payload embeds bytecode offsets. The operation is
-    /// transactional and retains the original body on any failure.
+    /// Unknown nested code attributes are rejected because this frontend
+    /// cannot know whether their payload embeds bytecode offsets. The operation
+    /// is transactional and retains the original body on any failure.
     ///
     /// # Errors
     ///

@@ -9,7 +9,7 @@ use crate::{Error, Result};
 ///
 /// The map is deliberately explicit: inserted or removed instructions have no
 /// universally correct metadata correspondence. Callers retain control over
-/// those semantic choices while Cafe validates every referenced boundary.
+/// those semantic choices while this frontend validates every boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BytecodeOffsetMap {
     offsets: BTreeMap<u16, u16>,

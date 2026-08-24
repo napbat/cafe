@@ -1,4 +1,4 @@
-//! Repository-level architectural constraints.
+//! Repository-level architecture and entry-point constraints.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -102,6 +102,50 @@ fn rust_toolchain_is_unpinned_stable() {
     }
 }
 
+#[test]
+fn cafe_facade_covers_every_focused_crate() {
+    let workspace_root = workspace_root();
+    let crates = workspace_root.join("crates");
+    let cafe_manifest =
+        fs::read_to_string(crates.join("cafe").join("Cargo.toml")).expect("read Cafe manifest");
+    let cafe_source = fs::read_to_string(crates.join("cafe").join("src").join("lib.rs"))
+        .expect("read Cafe facade");
+    let mut entries = fs::read_dir(&crates)
+        .expect("read crates directory")
+        .collect::<std::io::Result<Vec<_>>>()
+        .expect("read crate entries");
+    entries.sort_by_key(fs::DirEntry::path);
+
+    for entry in entries {
+        if !entry.file_type().expect("read crate entry type").is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let manifest = fs::read_to_string(path.join("Cargo.toml")).expect("read crate manifest");
+        let name = package_name(&manifest);
+        if name == "cafe" {
+            continue;
+        }
+
+        let dependency = format!("{name}.workspace = true");
+        assert!(
+            cafe_manifest.lines().any(|line| line.trim() == dependency),
+            "Cafe does not depend on focused crate `{name}`"
+        );
+
+        let rust_name = name.replace('-', "_");
+        let reexport = format!("pub use ::{rust_name};");
+        assert!(
+            cafe_source.lines().any(|line| line.trim() == reexport),
+            "Cafe does not publicly re-export focused crate `{name}`"
+        );
+        assert!(
+            !declares_dependency(&manifest, "cafe"),
+            "focused crate `{name}` must not depend back on the Cafe facade"
+        );
+    }
+}
+
 fn workspace_root() -> PathBuf {
     let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     package_root
@@ -116,6 +160,26 @@ fn declares_rust_version(manifest: &str) -> bool {
     manifest
         .lines()
         .any(|line| line.trim_start().starts_with("rust-version"))
+}
+
+fn package_name(manifest: &str) -> &str {
+    manifest
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("name = \"")
+                .and_then(|name| name.strip_suffix('"'))
+        })
+        .expect("crate manifest declares a package name")
+}
+
+fn declares_dependency(manifest: &str, dependency: &str) -> bool {
+    let workspace_dependency = format!("{dependency}.workspace");
+    let explicit_dependency = format!("{dependency} =");
+    manifest.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with(&workspace_dependency) || line.starts_with(&explicit_dependency)
+    })
 }
 
 fn collect_source_files(directory: &Path, files: &mut Vec<PathBuf>) {

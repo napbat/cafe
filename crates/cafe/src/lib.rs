@@ -4,6 +4,23 @@
 //! under [`java`], [`dex`], and [`jni`]; shared instruction and graph APIs live
 //! under [`disassembler`]; and the owned definition model is available both at
 //! this crate's root and under [`program`].
+//!
+//! ```
+//! use cafe::{Program, cfglib, dex, disassembler, java, jni, program};
+//!
+//! let owned = Program::new();
+//! let dex_file = dex::DexFile::new(dex::DexVersion::V040);
+//! assert!(owned.modules().next().is_none());
+//! assert_eq!(dex_file.version(), dex::DexVersion::V040);
+//! assert_eq!(
+//!     cafe::BinaryFormat::JavaClass,
+//!     disassembler::BinaryFormat::JavaClass,
+//! );
+//! let _: program::Program = owned;
+//! let _ = std::any::type_name::<java::jar::JarFile>();
+//! let _ = std::any::type_name::<jni::NativeMethod>();
+//! let _ = std::any::type_name::<cfglib::BlockId>();
+//! ```
 
 /// Android DEX files, Dalvik instructions, APKs, and program adapters.
 pub use ::dex;
