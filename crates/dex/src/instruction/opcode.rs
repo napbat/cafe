@@ -422,3 +422,52 @@ define_opcodes! {
     ConstMethodHandle = 0xfe, "const-method-handle", F21c, MethodHandle;
     ConstMethodType = 0xff, "const-method-type", F21c, Prototype;
 }
+
+impl Opcode {
+    /// Returns whether this opcode conditionally transfers control.
+    #[must_use]
+    pub const fn is_conditional_branch(self) -> bool {
+        matches!(
+            self,
+            Self::IfEq
+                | Self::IfNe
+                | Self::IfLt
+                | Self::IfGe
+                | Self::IfGt
+                | Self::IfLe
+                | Self::IfEqz
+                | Self::IfNez
+                | Self::IfLtz
+                | Self::IfGez
+                | Self::IfGtz
+                | Self::IfLez
+        )
+    }
+
+    /// Returns whether this opcode unconditionally branches to a direct target.
+    #[must_use]
+    pub const fn is_unconditional_branch(self) -> bool {
+        matches!(self, Self::Goto | Self::Goto16 | Self::Goto32)
+    }
+
+    /// Returns whether this opcode returns from its current method.
+    #[must_use]
+    pub const fn is_return(self) -> bool {
+        matches!(
+            self,
+            Self::ReturnVoid | Self::Return | Self::ReturnWide | Self::ReturnObject
+        )
+    }
+
+    /// Returns whether this opcode dispatches through a switch payload.
+    #[must_use]
+    pub const fn is_switch(self) -> bool {
+        matches!(self, Self::PackedSwitch | Self::SparseSwitch)
+    }
+
+    /// Returns whether this opcode invokes an interface method reference.
+    #[must_use]
+    pub const fn is_interface_invoke(self) -> bool {
+        matches!(self, Self::InvokeInterface | Self::InvokeInterfaceRange)
+    }
+}

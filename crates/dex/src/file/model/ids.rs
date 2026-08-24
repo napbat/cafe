@@ -173,6 +173,22 @@ impl MethodHandleKind {
     pub const fn as_u16(self) -> u16 {
         self as u16
     }
+
+    /// Returns the format-defined handle-kind name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::StaticPut => "static-put",
+            Self::StaticGet => "static-get",
+            Self::InstancePut => "instance-put",
+            Self::InstanceGet => "instance-get",
+            Self::InvokeStatic => "invoke-static",
+            Self::InvokeInstance => "invoke-instance",
+            Self::InvokeConstructor => "invoke-constructor",
+            Self::InvokeDirect => "invoke-direct",
+            Self::InvokeInterface => "invoke-interface",
+        }
+    }
 }
 
 /// One method handle retaining its native target index.

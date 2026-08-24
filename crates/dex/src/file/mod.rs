@@ -7,11 +7,15 @@ mod layout;
 mod model;
 mod mutf8;
 mod parse;
+mod resolve;
 mod validation;
 mod write;
 
 pub use self::header::{DexHeader, DexVersion, Endian, Section};
 pub use self::model::*;
+pub use self::resolve::{
+    ResolvedField, ResolvedMethod, ResolvedMethodHandle, ResolvedMethodHandleTarget,
+};
 
 use crate::{Error, Result};
 

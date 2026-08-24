@@ -28,6 +28,10 @@ pub enum ReferenceKind {
     Method,
     /// Interface method reference.
     InterfaceMethod,
+    /// Standalone method-prototype reference.
+    MethodPrototype,
+    /// Method-handle reference.
+    MethodHandle,
     /// Dynamically resolved call site.
     DynamicCallSite,
 }
@@ -92,6 +96,13 @@ pub enum Operand {
     Local(u32),
     /// DEX virtual register or another register-based format operand.
     Register(u32),
+    /// Contiguous range of registers in a register-based format.
+    RegisterRange {
+        /// First register in the range.
+        start: u32,
+        /// Number of registers in the range.
+        count: u32,
+    },
     /// Indexed constant, type, field, method, or call-site reference.
     Reference(Reference),
     /// Direct code target.
@@ -100,6 +111,8 @@ pub enum Operand {
     Switch(SwitchTable),
     /// Native type name not represented by an indexed reference.
     TypeName(String),
+    /// Opaque inline data owned by an instruction-stream payload.
+    Data(Vec<u8>),
     /// Format-owned textual operand that has no shared semantic category.
     Text(String),
 }
@@ -111,6 +124,9 @@ impl fmt::Display for Operand {
             Self::Immediate(Immediate::Unsigned(value)) => value.fmt(formatter),
             Self::Local(index) => write!(formatter, "local[{index}]"),
             Self::Register(index) => write!(formatter, "v{index}"),
+            Self::RegisterRange { start, count } => {
+                write!(formatter, "v{start}..v{}", start.saturating_add(*count))
+            }
             Self::Reference(reference) => {
                 write!(formatter, "#{}", reference.index)?;
                 if let Some(display) = &reference.display {
@@ -130,6 +146,16 @@ impl fmt::Display for Operand {
                 formatter.write_str("]")
             }
             Self::TypeName(name) | Self::Text(name) => name.fmt(formatter),
+            Self::Data(bytes) => {
+                formatter.write_str("[")?;
+                for (position, byte) in bytes.iter().enumerate() {
+                    if position != 0 {
+                        formatter.write_str(" ")?;
+                    }
+                    write!(formatter, "{byte:02x}")?;
+                }
+                formatter.write_str("]")
+            }
         }
     }
 }

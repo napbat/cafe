@@ -1,9 +1,43 @@
 //! Errors produced by DEX and Android-container operations.
 
+use std::fmt;
 use std::io;
 
 /// Result type returned by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// DEX identifier table named by an index-resolution error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdentifierTable {
+    /// String identifier table.
+    String,
+    /// Type identifier table.
+    Type,
+    /// Prototype identifier table.
+    Prototype,
+    /// Field identifier table.
+    Field,
+    /// Method identifier table.
+    Method,
+    /// Call-site identifier table.
+    CallSite,
+    /// Method-handle table.
+    MethodHandle,
+}
+
+impl fmt::Display for IdentifierTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::String => "string",
+            Self::Type => "type",
+            Self::Prototype => "prototype",
+            Self::Field => "field",
+            Self::Method => "method",
+            Self::CallSite => "call-site",
+            Self::MethodHandle => "method-handle",
+        })
+    }
+}
 
 /// DEX parsing, assembly, lowering, and APK errors.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +71,15 @@ pub enum Error {
     /// An edited DEX model cannot be represented in binary form.
     #[error("cannot assemble DEX data: {0}")]
     InvalidAssembly(String),
+
+    /// An editable model contains an index outside its identifier table.
+    #[error("{table} identifier index {index} is out of bounds")]
+    InvalidIndex {
+        /// Identifier table selected by the reference.
+        table: IdentifierTable,
+        /// Invalid native index.
+        index: u32,
+    },
 
     /// A DEX method-scoped error with its native identity retained.
     #[error("in DEX class `{class}`, method `{method}{signature}`: {source}")]

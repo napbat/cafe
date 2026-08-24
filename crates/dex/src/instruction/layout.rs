@@ -63,14 +63,19 @@ pub(super) const ALIGNMENT_ROUNDING_BIAS_U32: u32 = BYTES_PER_CODE_UNIT_U32 - 1;
 /// Identifying pseudo-opcode stored at the start of a payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(super) enum PayloadKind {
+pub enum PayloadKind {
+    /// Packed-switch payload identifier.
     PackedSwitch = 0x0100,
+    /// Sparse-switch payload identifier.
     SparseSwitch = 0x0200,
+    /// Array-data payload identifier.
     ArrayData = 0x0300,
 }
 
 impl PayloadKind {
-    pub(super) const fn from_identifier(value: u16) -> Option<Self> {
+    /// Parses the complete 16-bit payload identifier.
+    #[must_use]
+    pub const fn from_identifier(value: u16) -> Option<Self> {
         match value {
             0x0100 => Some(Self::PackedSwitch),
             0x0200 => Some(Self::SparseSwitch),
@@ -79,7 +84,19 @@ impl PayloadKind {
         }
     }
 
-    pub(super) const fn identifier(self) -> u16 {
+    /// Returns the exact 16-bit identifier stored in the instruction stream.
+    #[must_use]
+    pub const fn identifier(self) -> u16 {
         self as u16
+    }
+
+    /// Returns the conventional pseudo-instruction mnemonic.
+    #[must_use]
+    pub const fn mnemonic(self) -> &'static str {
+        match self {
+            Self::PackedSwitch => "packed-switch-payload",
+            Self::SparseSwitch => "sparse-switch-payload",
+            Self::ArrayData => "array-data-payload",
+        }
     }
 }

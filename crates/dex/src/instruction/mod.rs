@@ -13,6 +13,7 @@ mod opcode;
 
 pub use self::decode::decode;
 pub use self::encode::encode;
+pub use self::layout::PayloadKind;
 pub use self::model::{
     ArrayDataPayload, Instruction, InstructionData, Operands, PackedSwitchPayload,
     SparseSwitchPayload,
