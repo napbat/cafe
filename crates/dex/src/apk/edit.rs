@@ -9,6 +9,7 @@ use zip::ZipWriter;
 
 use super::entry::{ApkEntry, EntryData, validate_entry_name};
 use super::layout::{ZIP_MAXIMUM_COMMENT_SIZE, write_central_directory_offset, zip_sections};
+use super::reader::EntryReader;
 use super::{ApkFile, EntryId, EntryKind, EntryMetadata};
 use crate::{Error, Result};
 
@@ -485,10 +486,13 @@ impl ApkFile {
         self.validate_rewrite_entries()?;
         let cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
+        let mut reader = EntryReader::new(self);
         writer.set_raw_comment(self.comment.clone().into_boxed_slice())?;
         for entry in &self.entries {
             let options = entry.metadata.write_options(&entry.name)?;
-            let data = self.read_entry_by_id(entry.id)?;
+            let data = reader
+                .read(entry)
+                .map_err(|error| error.in_apk_entry(entry.name.clone()))?;
             match entry.kind {
                 EntryKind::File => {
                     writer.start_file(&entry.name, options)?;

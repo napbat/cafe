@@ -18,6 +18,7 @@ mod edit;
 mod entry;
 mod inventory;
 mod layout;
+mod reader;
 mod signature;
 
 pub use self::dex::{DexArtifact, DexEntry, DexOrdinal, dex_entry_name, parse_dex_entry_name};
@@ -32,9 +33,8 @@ pub use self::signature::{
 pub use zip::{CompressionMethod, DateTime, System};
 
 use self::entry::{ApkEntry, EntryData, OriginalEntryStats};
+use self::reader::EntryReader;
 use self::signature::parse_signing_block;
-
-type SourceReader = Cursor<Arc<[u8]>>;
 
 /// In-memory editable APK with stable entry identities and exact pristine output.
 #[derive(Debug, Clone)]
@@ -167,14 +167,7 @@ impl ApkFile {
     /// Returns an error when the ID is absent or its payload cannot be read.
     pub fn read_entry_by_id(&self, id: EntryId) -> Result<Vec<u8>> {
         let entry = self.entry_record(id)?;
-        match &entry.data {
-            EntryData::Owned(bytes) => Ok(bytes.clone()),
-            EntryData::Original(index) => {
-                let mut archive = self.source_archive()?;
-                let mut file = archive.by_index(*index)?;
-                read_zip_file(&mut file)
-            }
-        }
+        EntryReader::new(self).read(entry)
     }
 
     /// Returns stable IDs for every exact name match in archive order.
@@ -214,14 +207,6 @@ impl ApkFile {
             .iter_mut()
             .find(|entry| entry.id == id)
             .ok_or(Error::ApkEntryIdNotFound(id.get()))
-    }
-
-    fn source_archive(&self) -> Result<ZipArchive<SourceReader>> {
-        let original = self
-            .original
-            .as_ref()
-            .ok_or_else(|| Error::invalid_apk("entry has no original archive backing"))?;
-        Ok(ZipArchive::new(Cursor::new(Arc::clone(original)))?)
     }
 }
 
