@@ -17,8 +17,8 @@ pub struct EntryInfo {
     pub original_name: Option<String>,
     /// Current uncompressed byte length.
     pub size: u64,
-    /// Original compressed length, or zero for new/replaced payloads.
-    pub compressed_size: u64,
+    /// Original compressed length, or `None` for new/replaced payloads.
+    pub compressed_size: Option<u64>,
     /// Original CRC-32, or `None` for new/replaced payloads.
     pub crc32: Option<u32>,
     /// Whether this member is a file, directory marker, or symbolic link.
@@ -90,13 +90,16 @@ impl JarFile {
             .entries
             .iter()
             .map(|entry| {
-                let (size, compressed_size, crc32) = match &entry.data {
-                    EntryData::Original(_) => (
-                        entry.original_size,
-                        entry.original_compressed_size,
-                        Some(entry.original_crc32),
-                    ),
-                    EntryData::Owned(bytes) => (bytes.len() as u64, 0, None),
+                let (size, compressed_size, crc32) = match (&entry.data, entry.original_stats) {
+                    (EntryData::Original(_), Some(stats)) => {
+                        (stats.size, Some(stats.compressed_size), Some(stats.crc32))
+                    }
+                    (EntryData::Owned(bytes), _) => {
+                        (u64::try_from(bytes.len()).unwrap_or(u64::MAX), None, None)
+                    }
+                    (EntryData::Original(_), None) => {
+                        unreachable!("original JAR entries retain their source statistics")
+                    }
                 };
                 EntryInfo {
                     id: entry.id,

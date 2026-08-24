@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use crate::{Error, Result};
 
 use super::entry::validate_entry_name;
-use super::{EntryId, EntryKind, JarFile, Manifest};
+use super::{
+    EntryId, EntryKind, JarFile, META_INF_PREFIX, MULTI_RELEASE_ENABLED_VALUE,
+    MULTI_RELEASE_ENTRY_PREFIX, MULTI_RELEASE_HEADER, Manifest,
+};
 
-const VERSIONED_PREFIX: &str = "META-INF/versions/";
 const FIRST_VERSIONED_RELEASE: u16 = 9;
 
 /// One entry selected for an effective multi-release JAR view.
@@ -28,7 +30,7 @@ pub struct ResolvedEntry {
 /// Releases below Java 9 and paths without a logical entry are rejected.
 #[must_use]
 pub fn parse_versioned_entry(name: &str) -> Option<(u16, &str)> {
-    let remainder = name.strip_prefix(VERSIONED_PREFIX)?;
+    let remainder = name.strip_prefix(MULTI_RELEASE_ENTRY_PREFIX)?;
     let (release, logical_name) = remainder.split_once('/')?;
     let release = release.parse().ok()?;
     (release >= FIRST_VERSIONED_RELEASE && !logical_name.is_empty())
@@ -48,12 +50,14 @@ pub fn versioned_entry_name(release: u16, logical_name: &str) -> Result<String> 
         )));
     }
     validate_entry_name(logical_name, EntryKind::File)?;
-    if starts_with_ascii_case(logical_name, "META-INF/") {
+    if starts_with_ascii_case(logical_name, META_INF_PREFIX) {
         return Err(Error::InvalidJar(
             "multi-release entries cannot override `META-INF`".to_owned(),
         ));
     }
-    Ok(format!("{VERSIONED_PREFIX}{release}/{logical_name}"))
+    Ok(format!(
+        "{MULTI_RELEASE_ENTRY_PREFIX}{release}/{logical_name}"
+    ))
 }
 
 impl JarFile {
@@ -72,14 +76,18 @@ impl JarFile {
                 return Ok(());
             }
             let mut manifest = Manifest::new();
-            manifest.main_mut().set("Multi-Release", "true")?;
+            manifest
+                .main_mut()
+                .set(MULTI_RELEASE_HEADER, MULTI_RELEASE_ENABLED_VALUE)?;
             self.set_manifest(&manifest)?;
             return Ok(());
         };
         if enabled {
-            manifest.main_mut().set("Multi-Release", "true")?;
+            manifest
+                .main_mut()
+                .set(MULTI_RELEASE_HEADER, MULTI_RELEASE_ENABLED_VALUE)?;
         } else {
-            manifest.main_mut().remove("Multi-Release");
+            manifest.main_mut().remove(MULTI_RELEASE_HEADER);
         }
         self.set_manifest(&manifest)?;
         Ok(())
@@ -147,15 +155,18 @@ impl JarFile {
         if target_release < FIRST_VERSIONED_RELEASE || !self.is_multi_release()? {
             return Ok(selected);
         }
-        let mut best_release = 0;
+        let mut best_release = None;
         for entry in &self.entries {
             let Some((release, candidate)) = parse_versioned_entry(&entry.name) else {
                 continue;
             };
-            if candidate != logical_name || release > target_release || release < best_release {
+            if candidate != logical_name
+                || release > target_release
+                || best_release.is_some_and(|best| release < best)
+            {
                 continue;
             }
-            if release == best_release
+            if best_release == Some(release)
                 && selected.as_ref().is_some_and(|item| item.release.is_some())
             {
                 return Err(Error::AmbiguousJarEntry {
@@ -163,7 +174,7 @@ impl JarFile {
                     count: 2,
                 });
             }
-            best_release = release;
+            best_release = Some(release);
             selected = Some(ResolvedEntry {
                 id: entry.id,
                 logical_name: logical_name.to_owned(),
@@ -236,19 +247,30 @@ impl JarFile {
                 });
                 continue;
             };
-            let previous_release = result[position].release.unwrap_or(0);
-            if release > previous_release {
-                result[position] = ResolvedEntry {
-                    id: entry.id,
-                    logical_name: logical_name.to_owned(),
-                    physical_name: entry.name.clone(),
-                    release: Some(release),
-                };
-            } else if release == previous_release && previous_release != 0 {
-                return Err(Error::AmbiguousJarEntry {
-                    name: entry.name.clone(),
-                    count: 2,
-                });
+            match result[position].release {
+                None => {
+                    result[position] = ResolvedEntry {
+                        id: entry.id,
+                        logical_name: logical_name.to_owned(),
+                        physical_name: entry.name.clone(),
+                        release: Some(release),
+                    };
+                }
+                Some(previous_release) if release > previous_release => {
+                    result[position] = ResolvedEntry {
+                        id: entry.id,
+                        logical_name: logical_name.to_owned(),
+                        physical_name: entry.name.clone(),
+                        release: Some(release),
+                    };
+                }
+                Some(previous_release) if release == previous_release => {
+                    return Err(Error::AmbiguousJarEntry {
+                        name: entry.name.clone(),
+                        count: 2,
+                    });
+                }
+                Some(_) => {}
             }
         }
         Ok(result)

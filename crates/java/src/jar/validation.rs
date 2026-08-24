@@ -121,7 +121,7 @@ impl JarFile {
                 usize::from(entry.kind == EntryKind::File && is_class_entry(&entry.name));
             report.service_configurations += usize::from(is_service_entry(&entry.name));
             if entry.kind == EntryKind::File
-                && entry.name.starts_with("META-INF/versions/")
+                && entry.name.starts_with(super::MULTI_RELEASE_ENTRY_PREFIX)
                 && parse_versioned_entry(&entry.name).is_none()
             {
                 return Err(Error::InvalidJar(format!(

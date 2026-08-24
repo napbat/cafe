@@ -2,7 +2,10 @@
 
 use crate::Result;
 
-use super::{EntryId, JarFile};
+use super::{EntryId, JarFile, META_INF_PREFIX};
+
+const CUSTOM_SIGNATURE_PREFIX: &str = "SIG-";
+const SIGNATURE_SUFFIXES: &[&str] = &[".SF", ".DSA", ".RSA", ".EC"];
 
 /// Observable signature state of an editable JAR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,15 +24,15 @@ pub enum SignatureState {
 /// excluded because it also belongs to unsigned JARs.
 #[must_use]
 pub fn is_signature_entry(name: &str) -> bool {
-    let Some(remainder) = strip_prefix_ascii_case(name, "META-INF/") else {
+    let Some(remainder) = strip_prefix_ascii_case(name, META_INF_PREFIX) else {
         return false;
     };
     if remainder.is_empty() || remainder.contains('/') {
         return false;
     }
     let uppercase = remainder.to_ascii_uppercase();
-    uppercase.starts_with("SIG-")
-        || [".SF", ".DSA", ".RSA", ".EC"]
+    uppercase.starts_with(CUSTOM_SIGNATURE_PREFIX)
+        || SIGNATURE_SUFFIXES
             .iter()
             .any(|suffix| uppercase.ends_with(suffix))
 }

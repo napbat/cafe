@@ -14,6 +14,7 @@ mod discovery;
 mod edit;
 mod entry;
 mod inventory;
+mod layout;
 mod manifest;
 mod multi_release;
 mod services;
@@ -24,20 +25,33 @@ pub use self::discovery::{Traversal, discover_jars, is_jar_path};
 pub use self::edit::SignaturePolicy;
 pub use self::entry::{EntryId, EntryKind, EntryMetadata, ExtraField, ExtraFieldPlacement};
 pub use self::inventory::{ClassSummary, EntryInfo};
-pub use self::manifest::{Manifest, ManifestAttribute, ManifestSection, NamedManifestSection};
+pub use self::manifest::{
+    DEFAULT_MANIFEST_VERSION, MANIFEST_VERSION_HEADER, Manifest, ManifestAttribute,
+    ManifestSection, NAME_HEADER, NamedManifestSection,
+};
 pub use self::multi_release::{ResolvedEntry, parse_versioned_entry, versioned_entry_name};
 pub use self::services::{SERVICE_PREFIX, ServiceConfiguration, is_service_entry};
 pub use self::signature::{SignatureState, is_signature_entry};
 pub use self::validation::{ArchiveValidationReport, ValidationReport};
 pub use zip::{CompressionMethod, DateTime, System};
 
-use self::entry::{EntryData, JarEntry};
+use self::entry::{EntryData, JarEntry, OriginalEntryStats};
 
 /// Conventional path of a JAR manifest.
 pub const MANIFEST_ENTRY: &str = "META-INF/MANIFEST.MF";
 
 /// File-name suffix used by JVM class entries in a JAR.
 pub const CLASS_ENTRY_SUFFIX: &str = ".class";
+/// Conventional top-level metadata directory.
+pub const META_INF_DIRECTORY: &str = META_INF_PREFIX;
+/// Prefix of every top-level JAR metadata entry.
+pub const META_INF_PREFIX: &str = "META-INF/";
+/// Manifest header enabling multi-release entry selection.
+pub const MULTI_RELEASE_HEADER: &str = "Multi-Release";
+/// Canonical enabled value of [`MULTI_RELEASE_HEADER`].
+pub const MULTI_RELEASE_ENABLED_VALUE: &str = "true";
+/// Archive prefix containing version-specific multi-release entries.
+pub const MULTI_RELEASE_ENTRY_PREFIX: &str = "META-INF/versions/";
 
 type SourceReader = Cursor<Arc<[u8]>>;
 
@@ -51,7 +65,7 @@ pub struct JarFile {
     pub(crate) entries: Vec<JarEntry>,
     pub(crate) comment: Vec<u8>,
     pub(crate) dirty: bool,
-    pub(crate) next_id: u64,
+    pub(crate) next_id: EntryId,
 }
 
 impl JarFile {
@@ -63,7 +77,7 @@ impl JarFile {
             entries: Vec::new(),
             comment: Vec::new(),
             dirty: true,
-            next_id: 0,
+            next_id: EntryId::initial(),
         }
     }
 
@@ -98,15 +112,17 @@ impl JarFile {
                 EntryKind::File
             };
             entries.push(JarEntry {
-                id: EntryId(index as u64),
+                id: EntryId::from_position(index)?,
                 name: name.clone(),
                 original_name: Some(name),
                 kind,
                 metadata: EntryMetadata::from_zip(&file)?,
                 data: EntryData::Original(index),
-                original_size: file.size(),
-                original_compressed_size: file.compressed_size(),
-                original_crc32: file.crc32(),
+                original_stats: Some(OriginalEntryStats {
+                    size: file.size(),
+                    compressed_size: file.compressed_size(),
+                    crc32: file.crc32(),
+                }),
                 encrypted: file.encrypted(),
             });
         }
@@ -115,7 +131,7 @@ impl JarFile {
             entries,
             comment,
             dirty: false,
-            next_id: archive.len() as u64,
+            next_id: EntryId::from_position(archive.len())?,
         })
     }
 

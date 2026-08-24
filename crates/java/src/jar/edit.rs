@@ -11,6 +11,7 @@ use crate::classfile::ClassFile;
 use crate::{Error, Result};
 
 use super::entry::{EntryData, JarEntry, validate_entry_name};
+use super::layout::ZIP_U16_MAXIMUM;
 use super::{EntryId, EntryKind, EntryMetadata, JarFile, normalize_class_entry};
 
 /// Policy used when a rewrite encounters JAR signature artifacts.
@@ -33,7 +34,7 @@ impl JarFile {
     /// Returns an error when the comment exceeds the ZIP 16-bit length limit.
     pub fn set_archive_comment(&mut self, comment: impl Into<Vec<u8>>) -> Result<()> {
         let comment = comment.into();
-        if comment.len() > usize::from(u16::MAX) {
+        if comment.len() > ZIP_U16_MAXIMUM {
             return Err(Error::InvalidJar(
                 "archive comment is longer than the ZIP limit".to_owned(),
             ));
@@ -324,9 +325,7 @@ impl JarFile {
             });
         }
         entry.data = EntryData::Owned(data);
-        entry.original_size = 0;
-        entry.original_compressed_size = 0;
-        entry.original_crc32 = 0;
+        entry.original_stats = None;
         entry.encrypted = false;
         self.dirty = true;
         Ok(())
@@ -360,9 +359,7 @@ impl JarFile {
         entry.kind = kind;
         entry.metadata = metadata;
         entry.data = EntryData::Owned(data);
-        entry.original_size = 0;
-        entry.original_compressed_size = 0;
-        entry.original_crc32 = 0;
+        entry.original_stats = None;
         entry.encrypted = false;
         self.dirty = true;
         Ok(())
@@ -636,10 +633,10 @@ impl JarFile {
         }
         validate_new_entry(&name, kind, &data)?;
         self.ensure_name_available(&name, None)?;
-        let id = EntryId(self.next_id);
+        let id = self.next_id;
         self.next_id = self
             .next_id
-            .checked_add(1)
+            .next()
             .ok_or_else(|| Error::InvalidJar("entry ID space exhausted".to_owned()))?;
         self.entries.insert(
             index,
@@ -650,9 +647,7 @@ impl JarFile {
                 kind,
                 metadata,
                 data: EntryData::Owned(data),
-                original_size: 0,
-                original_compressed_size: 0,
-                original_crc32: 0,
+                original_stats: None,
                 encrypted: false,
             },
         );

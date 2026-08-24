@@ -8,6 +8,13 @@ use zip::{CompressionMethod, DateTime, HasZipMetadata, System};
 
 use crate::{Error, Result};
 
+use super::layout::{
+    ARCHIVE_SEPARATOR, CURRENT_DIRECTORY_COMPONENT, INITIAL_ENTRY_ID, NUL_CHARACTER,
+    PARENT_DIRECTORY_COMPONENT, PORTABLE_DIRECTORY_MODE, PORTABLE_FILE_MODE, PORTABLE_SYMLINK_MODE,
+    WINDOWS_SEPARATOR, ZIP_EXTRA_FIELD_HEADER_SIZE, ZIP_EXTRA_FIELD_ID_OFFSET,
+    ZIP_EXTRA_FIELD_LENGTH_OFFSET, ZIP_U16_FIELD_WIDTH, ZIP_U16_MAXIMUM,
+};
+
 /// Stable identity of one entry within an open [`super::JarFile`].
 ///
 /// IDs survive renames and reordering. Removing an entry permanently retires
@@ -20,6 +27,23 @@ impl EntryId {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+
+    pub(crate) const fn initial() -> Self {
+        Self(INITIAL_ENTRY_ID)
+    }
+
+    pub(crate) fn from_position(position: usize) -> Result<Self> {
+        u64::try_from(position)
+            .map(Self)
+            .map_err(|_| Error::InvalidJar("entry position does not fit the ID type".to_owned()))
+    }
+
+    pub(crate) const fn next(self) -> Option<Self> {
+        match self.0.checked_add(super::layout::ENTRY_ID_INCREMENT) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
     }
 }
 
@@ -82,7 +106,7 @@ impl Default for EntryMetadata {
             compression: CompressionMethod::Deflated,
             compression_level: None,
             last_modified: Some(DateTime::default()),
-            unix_mode: Some(0o644),
+            unix_mode: Some(PORTABLE_FILE_MODE),
             system: System::Unix,
             comment: String::new(),
             extra_fields: Vec::new(),
@@ -96,7 +120,7 @@ impl EntryMetadata {
     pub fn directory() -> Self {
         Self {
             compression: CompressionMethod::Stored,
-            unix_mode: Some(0o755),
+            unix_mode: Some(PORTABLE_DIRECTORY_MODE),
             ..Self::default()
         }
     }
@@ -106,7 +130,7 @@ impl EntryMetadata {
     pub fn symlink() -> Self {
         Self {
             compression: CompressionMethod::Stored,
-            unix_mode: Some(0o777),
+            unix_mode: Some(PORTABLE_SYMLINK_MODE),
             ..Self::default()
         }
     }
@@ -177,16 +201,19 @@ impl EntryMetadata {
 
 fn parse_extra_fields(raw: &[u8], placement: ExtraFieldPlacement) -> Result<Vec<ExtraField>> {
     let mut fields = Vec::new();
-    let mut cursor = 0;
+    let mut cursor = ZIP_EXTRA_FIELD_ID_OFFSET;
     while cursor < raw.len() {
-        if raw.len() - cursor < 4 {
-            return Err(Error::InvalidJar(
-                "truncated ZIP extra-field header".to_owned(),
-            ));
-        }
-        let header_id = u16::from_le_bytes([raw[cursor], raw[cursor + 1]]);
-        let length = usize::from(u16::from_le_bytes([raw[cursor + 2], raw[cursor + 3]]));
-        cursor += 4;
+        let header_end = cursor
+            .checked_add(ZIP_EXTRA_FIELD_HEADER_SIZE)
+            .ok_or_else(|| {
+                Error::InvalidJar("ZIP extra-field header offset overflow".to_owned())
+            })?;
+        let header = raw
+            .get(cursor..header_end)
+            .ok_or_else(|| Error::InvalidJar("truncated ZIP extra-field header".to_owned()))?;
+        let header_id = read_extra_u16(header, ZIP_EXTRA_FIELD_ID_OFFSET);
+        let length = usize::from(read_extra_u16(header, ZIP_EXTRA_FIELD_LENGTH_OFFSET));
+        cursor = header_end;
         let end = cursor
             .checked_add(length)
             .ok_or_else(|| Error::InvalidJar("ZIP extra-field length overflow".to_owned()))?;
@@ -203,41 +230,49 @@ fn parse_extra_fields(raw: &[u8], placement: ExtraFieldPlacement) -> Result<Vec<
     Ok(fields)
 }
 
+fn read_extra_u16(header: &[u8], offset: usize) -> u16 {
+    let end = offset + ZIP_U16_FIELD_WIDTH;
+    u16::from_le_bytes(
+        header[offset..end]
+            .try_into()
+            .expect("extra-field header length was checked"),
+    )
+}
+
 pub(crate) fn validate_entry_name(name: &str, kind: EntryKind) -> Result<()> {
     if name.is_empty() {
         return Err(Error::invalid_jar_entry_name(name, "name is empty"));
     }
-    if name.len() > usize::from(u16::MAX) {
+    if name.len() > ZIP_U16_MAXIMUM {
         return Err(Error::invalid_jar_entry_name(
             name,
             "UTF-8 name is longer than the ZIP limit",
         ));
     }
-    if name.starts_with('/') || name.starts_with('\\') {
+    if name.starts_with(ARCHIVE_SEPARATOR) || name.starts_with(WINDOWS_SEPARATOR) {
         return Err(Error::invalid_jar_entry_name(
             name,
             "name must be archive-relative",
         ));
     }
-    if name.contains('\\') {
+    if name.contains(WINDOWS_SEPARATOR) {
         return Err(Error::invalid_jar_entry_name(
             name,
             "JAR names must use forward slashes",
         ));
     }
-    if name.contains('\0') {
+    if name.contains(NUL_CHARACTER) {
         return Err(Error::invalid_jar_entry_name(name, "name contains NUL"));
     }
-    if name
-        .split('/')
-        .any(|component| component == "." || component == "..")
-    {
+    if name.split(ARCHIVE_SEPARATOR).any(|component| {
+        component == CURRENT_DIRECTORY_COMPONENT || component == PARENT_DIRECTORY_COMPONENT
+    }) {
         return Err(Error::invalid_jar_entry_name(
             name,
             "dot path components are not allowed",
         ));
     }
-    let is_directory_name = name.ends_with('/');
+    let is_directory_name = name.ends_with(ARCHIVE_SEPARATOR);
     if (kind == EntryKind::Directory) != is_directory_name {
         let expectation = if kind == EntryKind::Directory {
             "directory names must end in `/`"
@@ -255,6 +290,13 @@ pub(crate) enum EntryData {
     Owned(Vec<u8>),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OriginalEntryStats {
+    pub(crate) size: u64,
+    pub(crate) compressed_size: u64,
+    pub(crate) crc32: u32,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct JarEntry {
     pub(crate) id: EntryId,
@@ -263,8 +305,6 @@ pub(crate) struct JarEntry {
     pub(crate) kind: EntryKind,
     pub(crate) metadata: EntryMetadata,
     pub(crate) data: EntryData,
-    pub(crate) original_size: u64,
-    pub(crate) original_compressed_size: u64,
-    pub(crate) original_crc32: u32,
+    pub(crate) original_stats: Option<OriginalEntryStats>,
     pub(crate) encrypted: bool,
 }

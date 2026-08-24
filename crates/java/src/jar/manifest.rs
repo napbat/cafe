@@ -2,9 +2,39 @@
 
 use crate::{Error, Result};
 
-use super::{EntryId, EntryKind, EntryMetadata, JarFile, MANIFEST_ENTRY};
+use super::layout::{NUL_CHARACTER, ZIP_U16_MAXIMUM};
+use super::{
+    EntryId, EntryKind, EntryMetadata, JarFile, MANIFEST_ENTRY, META_INF_DIRECTORY,
+    MULTI_RELEASE_ENABLED_VALUE, MULTI_RELEASE_HEADER,
+};
 
 const MAX_PHYSICAL_LINE: usize = 72;
+const MANIFEST_HEADER_SEPARATOR: &str = ": ";
+const MANIFEST_LINE_ENDING: &[u8] = b"\r\n";
+const CONTINUATION_MARKER: u8 = b' ';
+const CONTINUATION_PREFIX_WIDTH: usize = size_of::<u8>();
+const MAIN_SECTION_COUNT: usize = 1;
+const FIRST_HEADER_INDEX: usize = 0;
+const FOLLOWING_HEADER_INDEX: usize = FIRST_HEADER_INDEX + 1;
+const FIRST_PHYSICAL_LINE_NUMBER: usize = 1;
+const LINE_NUMBER_INCREMENT: usize = 1;
+const BYTE_OFFSET_INCREMENT: usize = size_of::<u8>();
+const INITIAL_BYTE_OFFSET: usize = 0;
+const MAX_ATTRIBUTE_NAME_LENGTH: usize = MAX_PHYSICAL_LINE - MANIFEST_HEADER_SEPARATOR.len();
+const MIN_ATTRIBUTE_NAME_LENGTH: usize = 1;
+const MAX_ATTRIBUTE_VALUE_LENGTH: usize = ZIP_U16_MAXIMUM;
+const CARRIAGE_RETURN: u8 = b'\r';
+const LINE_FEED: u8 = b'\n';
+const ATTRIBUTE_NAME_UNDERSCORE: u8 = b'_';
+const ATTRIBUTE_NAME_HYPHEN: u8 = b'-';
+const DIGEST_ATTRIBUTE_MARKER: &str = "-digest";
+
+/// Mandatory first header of a JAR manifest.
+pub const MANIFEST_VERSION_HEADER: &str = "Manifest-Version";
+/// Default manifest format version emitted by [`Manifest::new`].
+pub const DEFAULT_MANIFEST_VERSION: &str = "1.0";
+/// Header naming a non-main manifest section.
+pub const NAME_HEADER: &str = "Name";
 
 /// One case-insensitive manifest header and its UTF-8 value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,8 +252,8 @@ impl Manifest {
     pub fn new() -> Self {
         let mut main = ManifestSection::new();
         main.attributes.push(ManifestAttribute {
-            name: "Manifest-Version".to_owned(),
-            value: "1.0".to_owned(),
+            name: MANIFEST_VERSION_HEADER.to_owned(),
+            value: DEFAULT_MANIFEST_VERSION.to_owned(),
         });
         Self {
             main,
@@ -256,12 +286,12 @@ impl Manifest {
         validate_main_section(&main)?;
 
         let mut sections: Vec<NamedManifestSection> = Vec::new();
-        for group in groups.iter().skip(1) {
+        for group in groups.iter().skip(MAIN_SECTION_COUNT) {
             if group.is_empty() {
                 continue;
             }
-            let first = &group[0];
-            if !first.name.eq_ignore_ascii_case("Name") {
+            let first = &group[FIRST_HEADER_INDEX];
+            if !first.name.eq_ignore_ascii_case(NAME_HEADER) {
                 return Err(invalid_manifest(
                     first.line,
                     "named section does not begin with `Name`",
@@ -281,8 +311,8 @@ impl Manifest {
             };
             let section = &mut sections[section_index];
             let mut encountered = ManifestSection::new();
-            for header in group.iter().skip(1) {
-                if header.name.eq_ignore_ascii_case("Name") {
+            for header in group.iter().skip(FOLLOWING_HEADER_INDEX) {
+                if header.name.eq_ignore_ascii_case(NAME_HEADER) {
                     return Err(invalid_manifest(
                         header.line,
                         "`Name` may only be the first header in a named section",
@@ -391,18 +421,18 @@ impl Manifest {
         for attribute in &self.main.attributes {
             write_attribute(&mut output, attribute.name(), attribute.value())?;
         }
-        output.extend_from_slice(b"\r\n");
+        output.extend_from_slice(MANIFEST_LINE_ENDING);
         for section in &self.sections {
-            write_attribute(&mut output, "Name", &section.name)?;
+            write_attribute(&mut output, NAME_HEADER, &section.name)?;
             for attribute in &section.attributes.attributes {
-                if attribute.name.eq_ignore_ascii_case("Name") {
+                if attribute.name.eq_ignore_ascii_case(NAME_HEADER) {
                     return Err(Error::InvalidJar(
                         "named-section attributes must not contain `Name`".to_owned(),
                     ));
                 }
                 write_attribute(&mut output, attribute.name(), attribute.value())?;
             }
-            output.extend_from_slice(b"\r\n");
+            output.extend_from_slice(MANIFEST_LINE_ENDING);
         }
         Ok(output)
     }
@@ -446,10 +476,9 @@ impl JarFile {
             self.replace_entry_by_id(id, bytes)?;
             return Ok(id);
         }
-        let insertion =
-            usize::from(self.entries.first().is_some_and(|entry| {
-                entry.kind == EntryKind::Directory && entry.name == "META-INF/"
-            }));
+        let insertion = usize::from(self.entries.first().is_some_and(|entry| {
+            entry.kind == EntryKind::Directory && entry.name == META_INF_DIRECTORY
+        }));
         self.insert_file(insertion, MANIFEST_ENTRY, bytes, EntryMetadata::default())
     }
 
@@ -476,8 +505,8 @@ impl JarFile {
     pub fn is_multi_release(&self) -> Result<bool> {
         Ok(self
             .manifest()?
-            .and_then(|manifest| manifest.main().get("Multi-Release").map(str::to_owned))
-            .is_some_and(|value| value.eq_ignore_ascii_case("true")))
+            .and_then(|manifest| manifest.main().get(MULTI_RELEASE_HEADER).map(str::to_owned))
+            .is_some_and(|value| value.eq_ignore_ascii_case(MULTI_RELEASE_ENABLED_VALUE)))
     }
 
     pub(crate) fn manifest_entry_id(&self) -> Result<Option<EntryId>> {
@@ -526,14 +555,14 @@ fn logical_sections(bytes: &[u8]) -> Result<Vec<Vec<LogicalHeader>>> {
             }
             continue;
         }
-        if line[0] == b' ' {
+        if line.first() == Some(&CONTINUATION_MARKER) {
             let Some((_, header)) = pending.as_mut() else {
                 return Err(invalid_manifest(
                     line_number,
                     "continuation line has no preceding header",
                 ));
             };
-            header.extend_from_slice(&line[1..]);
+            header.extend_from_slice(&line[CONTINUATION_PREFIX_WIDTH..]);
             continue;
         }
         let group = groups.last_mut().ok_or_else(|| {
@@ -554,20 +583,22 @@ fn logical_sections(bytes: &[u8]) -> Result<Vec<Vec<LogicalHeader>>> {
 
 fn physical_lines(bytes: &[u8]) -> Vec<(usize, &[u8])> {
     let mut lines = Vec::new();
-    let mut start = 0;
-    let mut line_number = 1;
-    let mut index = 0;
+    let mut start = INITIAL_BYTE_OFFSET;
+    let mut line_number = FIRST_PHYSICAL_LINE_NUMBER;
+    let mut index = INITIAL_BYTE_OFFSET;
     while index < bytes.len() {
-        if bytes[index] == b'\r' || bytes[index] == b'\n' {
+        if bytes[index] == CARRIAGE_RETURN || bytes[index] == LINE_FEED {
             lines.push((line_number, &bytes[start..index]));
-            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
-                index += 1;
+            if bytes[index] == CARRIAGE_RETURN
+                && bytes.get(index + BYTE_OFFSET_INCREMENT) == Some(&LINE_FEED)
+            {
+                index += BYTE_OFFSET_INCREMENT;
             }
-            index += 1;
+            index += BYTE_OFFSET_INCREMENT;
             start = index;
-            line_number += 1;
+            line_number += LINE_NUMBER_INCREMENT;
         } else {
-            index += 1;
+            index += BYTE_OFFSET_INCREMENT;
         }
     }
     if start < bytes.len() {
@@ -585,7 +616,7 @@ fn flush_header(
     };
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| invalid_manifest(line, "header is not valid UTF-8"))?;
-    let Some((name, value)) = text.split_once(": ") else {
+    let Some((name, value)) = text.split_once(MANIFEST_HEADER_SEPARATOR) else {
         return Err(invalid_manifest(line, "header is missing `: `"));
     };
     output.push(LogicalHeader {
@@ -602,7 +633,7 @@ fn validate_main_section(main: &ManifestSection) -> Result<()> {
             "manifest main section is empty".to_owned(),
         ));
     };
-    if !first.name.eq_ignore_ascii_case("Manifest-Version") {
+    if !first.name.eq_ignore_ascii_case(MANIFEST_VERSION_HEADER) {
         return Err(Error::InvalidJar(
             "manifest must begin with `Manifest-Version`".to_owned(),
         ));
@@ -611,15 +642,15 @@ fn validate_main_section(main: &ManifestSection) -> Result<()> {
 }
 
 fn validate_attribute_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > 70 {
-        return Err(Error::InvalidJar(
-            "manifest attribute name must contain 1 through 70 ASCII bytes".to_owned(),
-        ));
+    if name.is_empty() || name.len() > MAX_ATTRIBUTE_NAME_LENGTH {
+        return Err(Error::InvalidJar(format!(
+            "manifest attribute name must contain {MIN_ATTRIBUTE_NAME_LENGTH} through {MAX_ATTRIBUTE_NAME_LENGTH} ASCII bytes"
+        )));
     }
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
+    if !name.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, ATTRIBUTE_NAME_UNDERSCORE | ATTRIBUTE_NAME_HYPHEN)
+    }) {
         return Err(Error::InvalidJar(format!(
             "invalid manifest attribute name `{name}`"
         )));
@@ -628,15 +659,19 @@ fn validate_attribute_name(name: &str) -> Result<()> {
 }
 
 fn validate_attribute_value(value: &str) -> Result<()> {
-    if value.contains(['\0', '\r', '\n']) {
+    if value.contains([
+        NUL_CHARACTER,
+        char::from(CARRIAGE_RETURN),
+        char::from(LINE_FEED),
+    ]) {
         return Err(Error::InvalidJar(
             "manifest values must not contain NUL or line breaks".to_owned(),
         ));
     }
-    if value.len() > usize::from(u16::MAX) {
-        return Err(Error::InvalidJar(
-            "manifest value exceeds the 65,535-byte limit".to_owned(),
-        ));
+    if value.len() > MAX_ATTRIBUTE_VALUE_LENGTH {
+        return Err(Error::InvalidJar(format!(
+            "manifest value exceeds the {MAX_ATTRIBUTE_VALUE_LENGTH}-byte limit"
+        )));
     }
     Ok(())
 }
@@ -644,19 +679,19 @@ fn validate_attribute_value(value: &str) -> Result<()> {
 fn write_attribute(output: &mut Vec<u8>, name: &str, value: &str) -> Result<()> {
     validate_attribute_name(name)?;
     validate_attribute_value(value)?;
-    let prefix = format!("{name}: ");
+    let prefix = format!("{name}{MANIFEST_HEADER_SEPARATOR}");
     let mut remainder = value;
     let first_capacity = MAX_PHYSICAL_LINE - prefix.len();
     output.extend_from_slice(prefix.as_bytes());
     let first = utf8_prefix(remainder, first_capacity);
     output.extend_from_slice(first.as_bytes());
-    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(MANIFEST_LINE_ENDING);
     remainder = &remainder[first.len()..];
     while !remainder.is_empty() {
-        output.push(b' ');
-        let chunk = utf8_prefix(remainder, MAX_PHYSICAL_LINE - 1);
+        output.push(CONTINUATION_MARKER);
+        let chunk = utf8_prefix(remainder, MAX_PHYSICAL_LINE - CONTINUATION_PREFIX_WIDTH);
         output.extend_from_slice(chunk.as_bytes());
-        output.extend_from_slice(b"\r\n");
+        output.extend_from_slice(MANIFEST_LINE_ENDING);
         remainder = &remainder[chunk.len()..];
     }
     Ok(())
@@ -665,13 +700,13 @@ fn write_attribute(output: &mut Vec<u8>, name: &str, value: &str) -> Result<()> 
 fn utf8_prefix(value: &str, limit: usize) -> &str {
     let mut end = value.len().min(limit);
     while !value.is_char_boundary(end) {
-        end -= 1;
+        end -= BYTE_OFFSET_INCREMENT;
     }
     &value[..end]
 }
 
 fn is_digest_attribute(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("-digest")
+    name.to_ascii_lowercase().contains(DIGEST_ATTRIBUTE_MARKER)
 }
 
 fn invalid_manifest(line: usize, message: impl std::fmt::Display) -> Error {
