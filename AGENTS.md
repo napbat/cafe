@@ -25,6 +25,11 @@ These rules apply to the entire repository.
   assembly, Dalvik instruction decoding and encoding, APK and multidex
   provenance, and adapters into the disassembler and Cafe. Do not leak DEX or
   APK implementation details into another crate.
+- Keep `crates/jni` a safe, Java-specific linkage-metadata layer. It owns JNI
+  descriptor-to-ABI mapping, exact symbol escaping, native declaration sets,
+  explicit registration keys, and adapters from Java and DEX artifacts. It
+  must not load native libraries, expose raw pointer APIs, or absorb native
+  instruction decoding.
 - Keep each package name identical to its directory name and declare every
   shared dependency once under `[workspace.dependencies]`.
 
@@ -46,6 +51,9 @@ These rules apply to the entire repository.
 - In DEX, keep `file/`, `instruction/`, `apk/`, `disassembly/`, and `cafe/`
   independent. Treat APK as a container and provenance boundary, not another
   instruction set.
+- In JNI, keep `descriptor/`, `method/`, `symbol/`, `binding/`, `java/`, and
+  `dex/` independent. Preserve exact UTF-16 precursors through descriptor
+  parsing and symbol escaping.
 - Preserve established public API paths with narrow re-export facades when an
   implementation moves between modules.
 - Document every public contract. Body comments explain constraints and design
@@ -85,7 +93,7 @@ These rules apply to the entire repository.
 
 - Add focused tests for shared IR and graphs, Cafe ownership and resolution,
   native-format adapters, class parsing and assembly, bytecode, descriptors,
-  and JAR traversal.
+  JAR traversal, JNI ABI mapping, symbol escaping, and native overload plans.
 - Require all of these commands to pass:
 
   ```text

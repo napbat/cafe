@@ -73,7 +73,31 @@ Keep exact pristine output, matching parse/assemble coverage, contextual
 malformed-input errors, and verified control flow as release gates rather than
 future aspirations.
 
-## 3. Android runtime encodings and containers
+## 3. JNI boundary hardening
+
+The `jni` crate now provides the safe metadata boundary between Java native
+declarations and their implementations. It preserves exact UTF-16 names,
+parses JVM descriptors into typed JNI ABI signatures, implements canonical
+short and long symbol mapping, models explicit registration keys, chooses
+exports using native-only overload sets, and extracts declarations from JVM
+class files, DEX files, and APK multidex sets.
+
+Extend that boundary only for concrete native-integration consumers:
+
+- add target-Java-version selection before scanning multi-release JARs;
+- retain class-file, DEX, and APK provenance in aggregate binding reports;
+- render portable C header declarations from the typed ABI model when a code
+  generation consumer defines its naming and formatting policy;
+- model resolved `RegisterNatives` tables when a consumer can supply reliable
+  registration metadata;
+- report module native-access requirements without trying to reproduce JVM
+  library loading or class-loader state.
+
+Native library parsing, platform calling-convention implementation, process
+loading, and machine-code analysis remain outside this workspace. JNI metadata
+does not introduce another instruction set.
+
+## 4. Android runtime encodings and containers
 
 Add these only when Cafe must inspect installed or runtime-produced Android
 artifacts:
@@ -88,7 +112,7 @@ artifacts:
 - Any quickened instruction must be restored to a well-defined canonical form
   before it is lowered into shared disassembly.
 
-## 4. Java Card
+## 5. Java Card
 
 If a real smart-card consumer appears, add a sibling `crates/javacard`
 frontend for CAP components and Java Card VM bytecode. Do not place CAP parsing

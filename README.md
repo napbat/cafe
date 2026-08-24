@@ -5,7 +5,7 @@ shared bytecode analysis across Java ecosystem formats. It separates
 format-specific parsing from shared disassembly and from the editable program
 model, so consumers can use only the layer they need.
 
-The workspace contains four library crates:
+The workspace contains five library crates:
 
 - `disassembler` defines instructions and references shared across Java
   bytecode formats, executable bodies, and cfglib-backed control-flow graphs.
@@ -17,15 +17,20 @@ The workspace contains four library crates:
 - `dex` parses, validates, and assembles DEX files, provides a complete
   standard Dalvik instruction codec, edits APK containers, tracks multidex
   provenance, and adapts DEX definitions into the shared layers.
+- `jni` models native declarations, JVM descriptors, JNI ABI types, canonical
+  dynamic-link symbols, explicit registration keys, and overload-aware binding
+  plans extracted from class files, DEX files, or APK multidex sets.
 
-All four packages are libraries. Tool-specific command-line behavior belongs
+All five packages are libraries. Tool-specific command-line behavior belongs
 in consuming repositories.
 
 ```text
-JVM .class / JAR ─────► java ───┐
-                               ├──► disassembler ───► cfglib CFGs
-Android DEX / APK ────► dex ────┤
-                               └──► cafe
+JVM .class / JAR ─────► java ───┬──► disassembler ───► cfglib CFGs
+                               ├──► cafe
+                               └──► jni
+Android DEX / APK ────► dex ────┬──► disassembler ───► cfglib CFGs
+                               ├──► cafe
+                               └──► jni
 ```
 
 ## Capabilities
@@ -65,6 +70,14 @@ separate instruction set. It provides stable entry identities, deterministic
 multidex ordering, exact pristine output, typed signature-block IDs, and
 explicit reject, preserve, or strip policies for signature material during
 rewrites.
+
+`jni` preserves exact Java UTF-16 names while parsing method descriptors into
+typed Java and JNI ABI values. It implements the specification's short and
+long symbol forms, escape-failure rules, and short-then-long lookup order.
+Binding plans use long symbols only when native declarations with the same
+owner and name are overloaded; non-native overloads do not affect the plan.
+The crate is a safe metadata boundary and does not load libraries, expose raw
+pointers, or analyze native machine code.
 
 ## Java and JAR inspection
 
@@ -200,6 +213,40 @@ Structured DEX edits are assembled through `DexFile::to_bytes`. APK rewrites
 require an explicit signature policy whenever existing v1 or signing-block
 material could be invalidated.
 
+## JNI declaration inspection
+
+JNI declarations can be extracted directly from the Java and DEX frontend
+models. Each binding retains its typed Java declaration and selected export
+symbol:
+
+```rust
+use java::jar::JarFile;
+use jni::java as jni_java;
+
+fn inspect_natives(path: &str) -> Result<(), jni::Error> {
+    let jar = JarFile::open(path)?;
+    let class = jar.read_class("com.example.NativeCodec")?;
+    let methods = jni_java::native_methods(&class)?;
+
+    for binding in methods.bindings()? {
+        let prototype = binding.method().prototype();
+        println!(
+            "{} -> {} returns {}",
+            binding.method().id(),
+            binding.symbol(),
+            prototype.return_type().c_name()
+        );
+    }
+    Ok(())
+}
+```
+
+Use `jni::dex::native_methods` for one `DexFile` or
+`jni::dex::native_methods_in_apk` for a complete canonical multidex set.
+`NativeMethod::registration` exposes the exact name-and-descriptor key needed
+by explicit registration even when the conventional symbol escape is
+unavailable.
+
 ## Workspace layout
 
 ```text
@@ -218,12 +265,20 @@ crates/
 │   ├── src/cafe/
 │   ├── src/jar/
 │   └── tests/
-└── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
+├── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
     ├── src/file/
     ├── src/instruction/
     ├── src/disassembly/
     ├── src/cafe/
     ├── src/apk/
+    └── tests/
+└── jni/                 JNI declarations, ABI types, symbols, and adapters
+    ├── src/descriptor/
+    ├── src/method/
+    ├── src/symbol/
+    ├── src/binding/
+    ├── src/java/
+    ├── src/dex/
     └── tests/
 ```
 
