@@ -12,6 +12,8 @@ keywords = ["java", "jvm", "jni", "native", "dex"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+dex.workspace = true
+java.workspace = true
 thiserror.workspace = true
 
 [lints]

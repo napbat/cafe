@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::descriptor::DescriptorError;
 use crate::method::NativeMethodId;
 use crate::symbol::{NativeSymbol, SymbolError};
+use crate::text::JavaText;
 
 /// Error produced while modeling a JNI declaration.
 #[derive(Debug, Error)]
@@ -31,6 +32,30 @@ pub enum Error {
     /// A declaration cannot use JNI's dynamic symbol lookup mapping.
     #[error(transparent)]
     Symbol(#[from] SymbolError),
+    /// A Java class-file operation failed.
+    #[error(transparent)]
+    Java(Box<::java::Error>),
+    /// A DEX or APK operation failed.
+    #[error(transparent)]
+    Dex(Box<::dex::Error>),
+    /// A DEX method owner is not encoded as an object descriptor.
+    #[error("DEX native method owner `{descriptor}` is not an object descriptor")]
+    InvalidDexDeclaringType {
+        /// Exact invalid DEX type descriptor.
+        descriptor: Box<JavaText>,
+    },
+}
+
+impl From<::java::Error> for Error {
+    fn from(error: ::java::Error) -> Self {
+        Self::Java(Box::new(error))
+    }
+}
+
+impl From<::dex::Error> for Error {
+    fn from(error: ::dex::Error) -> Self {
+        Self::Dex(Box::new(error))
+    }
 }
 
 /// Result alias used by JNI operations.

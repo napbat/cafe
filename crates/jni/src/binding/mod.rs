@@ -169,6 +169,15 @@ impl<'a> IntoIterator for &'a NativeMethods {
     }
 }
 
+impl IntoIterator for NativeMethods {
+    type Item = NativeMethod;
+    type IntoIter = std::vec::IntoIter<NativeMethod>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.methods.into_iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::NativeMethods;

@@ -152,6 +152,8 @@ dependencies = [
 name = "jni"
 version = "0.1.0"
 dependencies = [
+ "dex",
+ "java",
  "thiserror",
 ]
 

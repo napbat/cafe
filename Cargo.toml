@@ -28,6 +28,7 @@ cafe = { version = "0.1.0", path = "crates/cafe" }
 disassembler = { version = "0.1.0", path = "crates/disassembler" }
 dex = { version = "0.1.0", path = "crates/dex" }
 jni = { version = "0.1.0", path = "crates/jni" }
+java = { version = "0.1.0", path = "crates/java" }
 cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib", rev = "5331ad5684d14568ef94a2e8714026dec5712117" }
 thiserror = "2.0.20"
 sha1 = "0.10.6"
