@@ -5,8 +5,10 @@
 //! and disassembly models. APK support is exposed as archive provenance around
 //! one or more DEX artifacts; an APK is not treated as another instruction set.
 
+pub mod aab;
 pub mod analysis;
 pub mod apk;
+pub mod corpus;
 pub mod disassembly;
 mod error;
 pub mod file;
@@ -14,7 +16,7 @@ pub mod instruction;
 pub mod program;
 
 pub use self::error::{Error, IdentifierTable, Result};
-pub use self::file::{DexFile, DexVersion};
+pub use self::file::{CompactDexFile, CompactDexVersion, DexFile, DexSourceFormat, DexVersion};
 pub use self::program::{
     MethodBodyMode, ProgramOptions, lower_file, lower_file_named, lower_file_named_with_options,
     lower_file_with_options,

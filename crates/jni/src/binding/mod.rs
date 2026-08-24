@@ -6,6 +6,13 @@ use crate::method::{NativeMethod, NativeMethodId};
 use crate::symbol::{NativeSymbol, SymbolStyle};
 use crate::{Error, Result};
 
+mod registration;
+
+pub use self::registration::{
+    NativeImplementation, RegisterNativesEntry, RegisterNativesTable, ResolvedRegistration,
+    ResolvedRegistrationTable,
+};
+
 /// One native declaration paired with the symbol it should export.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeBinding<'a> {

@@ -12,6 +12,7 @@ keywords = ["java", "jvm", "dex", "jni", "bytecode"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+art.workspace = true
 dex.workspace = true
 disassembler.workspace = true
 java.workspace = true

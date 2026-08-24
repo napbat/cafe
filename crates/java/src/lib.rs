@@ -5,10 +5,13 @@ mod error;
 pub mod analysis;
 pub mod bytecode;
 pub mod classfile;
+pub mod corpus;
 pub mod descriptor;
 pub mod disassemble;
 pub mod disassembly;
 pub mod jar;
+pub mod jimage;
+pub mod jmod;
 pub mod program;
 
 pub use self::program::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};

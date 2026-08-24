@@ -121,6 +121,51 @@ impl JarFile {
         self.visit_classes_with_reader(&mut reader, select, visit)
     }
 
+    /// Visits selected raw class payloads in archive order using one ZIP reader.
+    ///
+    /// Unlike [`Self::visit_classes`], payload failures are delivered to the
+    /// visitor. This lets aggregate validators record a malformed member and
+    /// continue to later entries without constructing another archive reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns only an error produced by the visitor. Individual archive-read
+    /// errors are qualified with the physical entry name and passed as values.
+    pub fn visit_class_bytes<S, V, E>(
+        &self,
+        mut select: S,
+        mut visit: V,
+    ) -> std::result::Result<(), E>
+    where
+        for<'entry> S: FnMut(ClassEntry<'entry>) -> bool,
+        for<'entry, 'payload> V: FnMut(
+            ClassEntry<'entry>,
+            std::result::Result<&'payload [u8], Error>,
+        ) -> std::result::Result<ClassVisitControl, E>,
+    {
+        let mut reader = EntryReader::new(self);
+        for entry in &self.entries {
+            if !is_physical_class(entry) {
+                continue;
+            }
+            let info = class_entry(entry);
+            if !select(info) {
+                continue;
+            }
+            let bytes = reader
+                .read(entry)
+                .map_err(|error| error.in_jar_entry(entry.name.clone()));
+            let control = match bytes {
+                Ok(bytes) => visit(info, Ok(&bytes))?,
+                Err(error) => visit(info, Err(error))?,
+            };
+            if control == ClassVisitControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// Parses and returns metadata for every class entry in archive order.
     ///
     /// # Errors

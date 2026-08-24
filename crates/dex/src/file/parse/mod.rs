@@ -53,6 +53,19 @@ pub(super) fn parse(bytes: &[u8], header_offset: usize) -> Result<DexFile> {
         &method_handles,
     )?;
 
+    let original_end = header_offset
+        .checked_add(usize::try_from(header.file_size).map_err(|_| {
+            Error::invalid_dex(
+                header_offset,
+                "logical file size does not fit this platform",
+            )
+        })?)
+        .ok_or_else(|| Error::invalid_dex(header_offset, "logical file range overflowed"))?;
+    let original = bytes
+        .get(header_offset..original_end)
+        .ok_or_else(|| Error::invalid_dex(header_offset, "logical file is truncated"))?
+        .to_vec();
+
     Ok(DexFile {
         header,
         strings,
@@ -66,7 +79,7 @@ pub(super) fn parse(bytes: &[u8], header_offset: usize) -> Result<DexFile> {
         map,
         link_data,
         hidden_api,
-        original: Some(bytes.to_vec()),
+        original: Some(original),
         dirty: false,
     })
 }

@@ -22,7 +22,7 @@ pub(super) fn write(writer: &mut Writer, file: &DexFile) -> Result<TableLayout> 
     let mut sections = vec![MapItem {
         item_type: MapItemType::Header,
         size: SINGLE_ITEM_COUNT,
-        offset: crate::file::header::ABSENT_OFFSET,
+        offset: writer.base(),
     }];
     let string_ids = reserve_table(
         writer,

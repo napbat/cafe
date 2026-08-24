@@ -26,6 +26,34 @@ pub(super) fn assemble(file: &DexFile) -> Result<Vec<u8>> {
             "edited version 041 members must be assembled through a DEX container",
         ));
     }
+    assemble_at(file, LEGACY_HEADER_OFFSET, None)
+}
+
+/// Assembles one version 041 member with container-relative offsets.
+pub(super) fn assemble_member(
+    file: &DexFile,
+    header_offset: u32,
+    container_size: u32,
+) -> Result<Vec<u8>> {
+    if file.header.version != DexVersion::V041 {
+        return Err(Error::invalid_assembly(
+            "a DEX container member must use version 041",
+        ));
+    }
+    assemble_at(
+        file,
+        usize::try_from(header_offset).map_err(|_| {
+            Error::invalid_assembly("DEX container header offset does not fit this platform")
+        })?,
+        Some(container_size),
+    )
+}
+
+fn assemble_at(
+    file: &DexFile,
+    header_offset: usize,
+    container_size: Option<u32>,
+) -> Result<Vec<u8>> {
     if file
         .map
         .iter()
@@ -37,7 +65,13 @@ pub(super) fn assemble(file: &DexFile) -> Result<Vec<u8>> {
     }
     validate_model(file)?;
 
-    let mut writer = Writer::new(file.header.endian);
+    let header_offset = u32::try_from(header_offset)
+        .map_err(|_| Error::invalid_assembly("DEX header offset exceeds 32 bits"))?;
+    let mut writer = if header_offset == 0 {
+        Writer::new(file.header.endian)
+    } else {
+        Writer::new_at(file.header.endian, header_offset)
+    };
     writer.reserve(
         usize::try_from(file.header.version.header_size())
             .map_err(|_| Error::invalid_assembly("DEX header size does not fit this platform"))?,
@@ -74,8 +108,9 @@ pub(super) fn assemble(file: &DexFile) -> Result<Vec<u8>> {
         sections.push(hidden_api);
     }
     let map_offset = write_map(&mut writer, &mut sections)?;
-    let file_size = writer.position()?;
-    let data_size = file_size
+    let logical_end = writer.position()?;
+    let file_size = writer.local_position()?;
+    let data_size = logical_end
         .checked_sub(data_offset)
         .ok_or_else(|| Error::invalid_assembly("DEX data size underflowed"))?;
     patch_header(
@@ -88,12 +123,15 @@ pub(super) fn assemble(file: &DexFile) -> Result<Vec<u8>> {
         map_offset,
         data_size,
         data_offset,
+        container_size,
     )?;
     patch_integrity(&mut writer)?;
     let bytes = writer.into_bytes();
-    super::parse::parse(&bytes, LEGACY_HEADER_OFFSET).map_err(|error| {
-        Error::invalid_assembly(format!("canonical output failed self-validation: {error}"))
-    })?;
+    if container_size.is_none() {
+        super::parse::parse(&bytes, LEGACY_HEADER_OFFSET).map_err(|error| {
+            Error::invalid_assembly(format!("canonical output failed self-validation: {error}"))
+        })?;
+    }
     Ok(bytes)
 }
 
@@ -187,21 +225,22 @@ fn patch_header(
     map_offset: u32,
     data_size: u32,
     data_offset: u32,
+    container_size: Option<u32>,
 ) -> Result<()> {
     let mut magic = [MAGIC_TERMINATOR; MAGIC_SIZE];
     magic[..VERSION_START].copy_from_slice(MAGIC_PREFIX);
     magic[VERSION_START..VERSION_END].copy_from_slice(&file.header.version.digits());
     magic[MAGIC_TERMINATOR_INDEX] = MAGIC_TERMINATOR;
-    writer.patch(field(HeaderField::Magic)?, &magic)?;
-    writer.patch_u32(field(HeaderField::FileSize)?, file_size)?;
+    writer.patch(field(writer, HeaderField::Magic)?, &magic)?;
+    writer.patch_u32(field(writer, HeaderField::FileSize)?, file_size)?;
     writer.patch_u32(
-        field(HeaderField::HeaderSize)?,
+        field(writer, HeaderField::HeaderSize)?,
         file.header.version.header_size(),
     )?;
-    writer.patch_u32(field(HeaderField::EndianTag)?, ENDIAN_CONSTANT)?;
-    writer.patch_u32(field(HeaderField::LinkSize)?, link_size)?;
-    writer.patch_u32(field(HeaderField::LinkOffset)?, link_offset)?;
-    writer.patch_u32(field(HeaderField::MapOffset)?, map_offset)?;
+    writer.patch_u32(field(writer, HeaderField::EndianTag)?, ENDIAN_CONSTANT)?;
+    writer.patch_u32(field(writer, HeaderField::LinkSize)?, link_size)?;
+    writer.patch_u32(field(writer, HeaderField::LinkOffset)?, link_offset)?;
+    writer.patch_u32(field(writer, HeaderField::MapOffset)?, map_offset)?;
     patch_section(
         writer,
         HeaderField::StringIds,
@@ -233,13 +272,22 @@ fn patch_header(
         sections,
         MapItemType::ClassDefinition,
     )?;
-    writer.patch_u32(field(HeaderField::Data)?, data_size)?;
+    let (data_size, data_offset) = if container_size.is_some() {
+        (ABSENT_OFFSET, ABSENT_OFFSET)
+    } else {
+        (data_size, data_offset)
+    };
+    writer.patch_u32(field(writer, HeaderField::Data)?, data_size)?;
     writer.patch_u32(
-        field(HeaderField::Data)?
+        field(writer, HeaderField::Data)?
             .checked_add(SECTION_OFFSET_DELTA_U32)
             .ok_or_else(|| Error::invalid_assembly("data-offset header field overflowed"))?,
         data_offset,
     )?;
+    if let Some(container_size) = container_size {
+        writer.patch_u32(field(writer, HeaderField::ContainerSize)?, container_size)?;
+        writer.patch_u32(field(writer, HeaderField::HeaderOffset)?, writer.base())?;
+    }
     Ok(())
 }
 
@@ -255,7 +303,7 @@ fn patch_section(
     let (size, offset) = section.map_or((ABSENT_OFFSET, ABSENT_OFFSET), |section| {
         (section.size, section.offset)
     });
-    let base = field(field_name)?;
+    let base = field(writer, field_name)?;
     writer.patch_u32(base, size)?;
     writer.patch_u32(
         base.checked_add(SECTION_OFFSET_DELTA_U32)
@@ -270,18 +318,23 @@ fn patch_integrity(writer: &mut Writer) -> Result<()> {
         integrity::signature(writer.as_bytes().get(signature_start..).ok_or_else(|| {
             Error::invalid_assembly("DEX output is shorter than its signature range")
         })?);
-    writer.patch(field(HeaderField::Signature)?, &signature)?;
+    writer.patch(field(writer, HeaderField::Signature)?, &signature)?;
     let checksum_start = HeaderField::Signature.offset();
     let checksum =
         integrity::adler32(writer.as_bytes().get(checksum_start..).ok_or_else(|| {
             Error::invalid_assembly("DEX output is shorter than its checksum range")
         })?);
-    writer.patch_u32(field(HeaderField::Checksum)?, checksum)
+    writer.patch_u32(field(writer, HeaderField::Checksum)?, checksum)
 }
 
-fn field(field: HeaderField) -> Result<u32> {
-    u32::try_from(field.offset())
-        .map_err(|_| Error::invalid_assembly("header field offset exceeds 32 bits"))
+fn field(writer: &Writer, field: HeaderField) -> Result<u32> {
+    writer
+        .base()
+        .checked_add(
+            u32::try_from(field.offset())
+                .map_err(|_| Error::invalid_assembly("header field offset exceeds 32 bits"))?,
+        )
+        .ok_or_else(|| Error::invalid_assembly("header field offset overflowed"))
 }
 
 fn count(value: usize, what: &str) -> Result<u32> {

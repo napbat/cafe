@@ -1,5 +1,8 @@
 //! DEX container header, identifier tables, definitions, and binary round trips.
 
+mod builder;
+pub mod compact;
+mod container;
 mod header;
 mod integrity;
 mod io;
@@ -11,6 +14,12 @@ mod resolve;
 mod validation;
 mod write;
 
+pub use self::builder::{
+    BuiltDex, DexBuilder, DexIndices, FieldHandle, MethodIdHandle, PrototypeHandle, StringHandle,
+    TypeHandle,
+};
+pub use self::compact::{CompactDexFile, CompactDexVersion};
+pub use self::container::DexContainer;
 pub use self::header::{DexHeader, DexVersion, Endian, Section};
 pub use self::layout::ItemWidth;
 pub use self::model::*;
@@ -20,6 +29,15 @@ pub use self::resolve::{
 
 use self::header::LEGACY_HEADER_OFFSET;
 use crate::{Error, Result};
+
+/// Physical encoding that supplied a logical DEX artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DexSourceFormat {
+    /// Standard `dex\nNNN\0` encoding.
+    Standard(DexVersion),
+    /// ART `CompactDex` encoding.
+    Compact(CompactDexVersion),
+}
 
 /// Parsed and editable logical DEX file.
 #[derive(Debug, Clone)]
@@ -43,9 +61,8 @@ pub struct DexFile {
 impl DexFile {
     /// Creates an empty editable DEX model using the requested format version.
     ///
-    /// Versions 035 through 040 can be assembled directly. Version 041 is a
-    /// container-member format and therefore requires a future container
-    /// assembler before a newly created value can be serialized.
+    /// Versions 035 through 040 can be assembled directly. Put version 041
+    /// values in a [`DexContainer`] before serializing them.
     #[must_use]
     pub fn new(version: DexVersion) -> Self {
         Self {
@@ -68,16 +85,23 @@ impl DexFile {
 
     /// Parses one logical DEX file from memory.
     ///
-    /// This entry point reads a logical file whose header starts at the input
-    /// boundary. Traversal of later version 041 container members is not yet a
-    /// public API.
+    /// This entry point accepts legacy files and single-member version 041
+    /// containers. Use [`DexContainer::parse`] for a multi-header container.
     ///
     /// # Errors
     ///
     /// Returns an error for malformed magic, integrity fields, offsets, tables,
     /// variable-length data, instructions, or cross references.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        parse::parse(bytes, LEGACY_HEADER_OFFSET)
+        let file = parse::parse(bytes, LEGACY_HEADER_OFFSET)?;
+        if file.version() == DexVersion::V041 && file.header.file_size != file.header.container_size
+        {
+            return Err(Error::invalid_dex(
+                LEGACY_HEADER_OFFSET,
+                "multi-header DEX 041 input must be parsed as DexContainer",
+            ));
+        }
+        Ok(file)
     }
 
     /// Returns the parsed header and exact original section coordinates.
@@ -90,6 +114,12 @@ impl DexFile {
     #[must_use]
     pub const fn version(&self) -> DexVersion {
         self.header.version
+    }
+
+    /// Returns the physical encoding identity of this standard DEX file.
+    #[must_use]
+    pub const fn source_format(&self) -> DexSourceFormat {
+        DexSourceFormat::Standard(self.header.version)
     }
 
     /// Selects the DEX version used by the next assembly.
@@ -344,7 +374,10 @@ impl DexFile {
         !self.dirty
     }
 
-    /// Returns the exact parsed logical-file bytes while pristine.
+    /// Returns the exact parsed logical-member bytes while pristine.
+    ///
+    /// A version 041 member can contain container-relative offsets; use its
+    /// owning [`DexContainer`] for a self-contained round trip.
     #[must_use]
     pub fn original_bytes(&self) -> Option<&[u8]> {
         (!self.dirty).then_some(self.original.as_deref()).flatten()

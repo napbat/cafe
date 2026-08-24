@@ -1,0 +1,22 @@
+[package]
+name = "art"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Safe Android runtime container parsing and DEX dequickening"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["android", "art", "vdex", "odex", "oat"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+dex.workspace = true
+disassembler.workspace = true
+program.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

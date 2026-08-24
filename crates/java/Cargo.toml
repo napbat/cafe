@@ -13,6 +13,7 @@ categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
 disassembler.workspace = true
+flate2.workspace = true
 program.workspace = true
 thiserror.workspace = true
 zip.workspace = true

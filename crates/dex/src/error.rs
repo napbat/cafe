@@ -76,6 +76,10 @@ pub enum Error {
     #[error("invalid APK: {0}")]
     InvalidApk(String),
 
+    /// An Android App Bundle or its ZIP container is structurally invalid.
+    #[error("invalid Android App Bundle: {0}")]
+    InvalidAab(String),
+
     /// An APK entry name is unsafe or inconsistent with its entry kind.
     #[error("invalid APK entry name `{name}`: {message}")]
     InvalidApkEntryName {
@@ -148,6 +152,16 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    /// An App Bundle entry-scoped DEX error.
+    #[error("in App Bundle entry `{entry}`: {source}")]
+    AabEntry {
+        /// Exact archive-relative entry name.
+        entry: String,
+        /// Underlying archive or DEX error.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// Shared disassembly could not be represented as a valid graph.
     #[error(transparent)]
     Graph(#[from] disassembler::GraphError),
@@ -184,6 +198,10 @@ impl Error {
         Self::InvalidApk(message.into())
     }
 
+    pub(crate) fn invalid_aab(message: impl Into<String>) -> Self {
+        Self::InvalidAab(message.into())
+    }
+
     pub(crate) fn invalid_apk_entry_name(
         name: impl Into<String>,
         message: impl Into<String>,
@@ -210,6 +228,13 @@ impl Error {
 
     pub(crate) fn in_apk_entry(self, entry: impl Into<String>) -> Self {
         Self::ApkEntry {
+            entry: entry.into(),
+            source: Box::new(self),
+        }
+    }
+
+    pub(crate) fn in_aab_entry(self, entry: impl Into<String>) -> Self {
+        Self::AabEntry {
             entry: entry.into(),
             source: Box::new(self),
         }

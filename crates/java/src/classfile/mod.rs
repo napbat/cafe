@@ -47,6 +47,10 @@ pub use self::version::{
 
 use crate::Result;
 
+pub(crate) use self::modified_utf8::{
+    decode as decode_modified_utf8, encode as encode_modified_utf8,
+};
+
 /// The magic number at the start of every JVM class file.
 pub const CLASS_MAGIC: u32 = 0xcafe_babe;
 /// The constant-pool sentinel used when a class has no superclass.

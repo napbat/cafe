@@ -214,6 +214,43 @@ impl ApkFile {
         self.visit_dex_with_reader(&mut reader, select, visit)
     }
 
+    /// Visits selected raw DEX payloads in numeric multidex order using one ZIP reader.
+    ///
+    /// Unlike [`Self::visit_dex`], entry read failures are delivered to `visit`
+    /// so corpus and diagnostic consumers can record the failure and continue.
+    /// The visitor owns the payload and can independently choose standard DEX,
+    /// DEX 041 container, or another explicit decoding policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a multidex-layout error or an error returned by `visit`.
+    pub fn visit_dex_bytes<S, V, E>(
+        &self,
+        mut select: S,
+        mut visit: V,
+    ) -> std::result::Result<(), E>
+    where
+        S: FnMut(&DexEntry) -> bool,
+        V: FnMut(DexEntry, Result<Vec<u8>>) -> std::result::Result<DexVisitControl, E>,
+        E: From<Error>,
+    {
+        let entries = self.validated_dex_entries().map_err(E::from)?;
+        let mut reader = EntryReader::new(self);
+        for origin in entries {
+            if !select(&origin) {
+                continue;
+            }
+            let bytes = self
+                .entry_record(origin.entry_id)
+                .and_then(|entry| reader.read(entry))
+                .map_err(|error| error.in_apk_entry(origin.entry_name.clone()));
+            if visit(origin, bytes)? == DexVisitControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// Parses every DEX artifact in numeric multidex order.
     ///
     /// # Errors

@@ -17,19 +17,36 @@ const LOW_BYTE_INDEX: usize = 0;
 pub(crate) struct Writer {
     bytes: Vec<u8>,
     endian: Endian,
+    base: u32,
 }
 
 impl Writer {
     pub(crate) fn new(endian: Endian) -> Self {
+        Self::new_at(endian, 0)
+    }
+
+    /// Creates a segment writer whose emitted offsets are container-relative.
+    pub(crate) fn new_at(endian: Endian, base: u32) -> Self {
         Self {
             bytes: Vec::new(),
             endian,
+            base,
         }
     }
 
     pub(crate) fn position(&self) -> Result<u32> {
+        self.base
+            .checked_add(self.local_position()?)
+            .ok_or_else(|| Error::invalid_assembly("DEX output exceeds 32-bit address space"))
+    }
+
+    pub(crate) fn local_position(&self) -> Result<u32> {
         u32::try_from(self.bytes.len())
-            .map_err(|_| Error::invalid_assembly("DEX output exceeds 32-bit address space"))
+            .map_err(|_| Error::invalid_assembly("DEX segment exceeds 32-bit address space"))
+    }
+
+    pub(crate) const fn base(&self) -> u32 {
+        self.base
     }
 
     pub(crate) fn into_bytes(self) -> Vec<u8> {
@@ -100,7 +117,10 @@ impl Writer {
     }
 
     pub(crate) fn patch(&mut self, offset: u32, value: &[u8]) -> Result<()> {
-        let start = usize::try_from(offset)
+        let relative = offset
+            .checked_sub(self.base)
+            .ok_or_else(|| Error::invalid_assembly("patch offset points before the DEX segment"))?;
+        let start = usize::try_from(relative)
             .map_err(|_| Error::invalid_assembly("patch offset does not fit platform"))?;
         let end = start
             .checked_add(value.len())

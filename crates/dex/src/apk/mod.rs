@@ -8,7 +8,7 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use zip::ZipArchive;
+use zip::{HasZipMetadata, ZipArchive};
 
 use crate::{Error, Result};
 
@@ -19,6 +19,7 @@ mod entry;
 mod inventory;
 mod layout;
 mod reader;
+mod report;
 mod signature;
 
 pub use self::dex::{
@@ -28,6 +29,7 @@ pub use self::discovery::{APK_EXTENSION, Traversal, discover_apks, is_apk_path};
 pub use self::edit::SignaturePolicy;
 pub use self::entry::{EntryId, EntryKind, EntryMetadata, ExtraField, ExtraFieldPlacement};
 pub use self::inventory::EntryInfo;
+pub use self::report::{RewriteIssue, RewriteIssueKind, RewriteReport, RewriteSeverity};
 pub use self::signature::{
     SOURCE_STAMP_CERTIFICATE_ENTRY, SignatureState, SigningBlock, SigningBlockEntry,
     SigningBlockId, SigningBlockKind, V1_MANIFEST_ENTRY, is_v1_signature_entry,
@@ -108,6 +110,12 @@ impl ApkFile {
                     size: file.size(),
                     compressed_size: file.compressed_size(),
                     crc32: file.crc32(),
+                    raw_name: file.name_raw().to_vec(),
+                    flags: file.get_metadata().flags,
+                    version_made_by: file.get_metadata().version_made_by,
+                    using_data_descriptor: file.get_metadata().using_data_descriptor,
+                    external_attributes: file.get_metadata().external_attributes,
+                    large_file: file.get_metadata().large_file,
                 }),
                 encrypted: file.encrypted(),
             });

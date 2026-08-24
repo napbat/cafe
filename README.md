@@ -1,12 +1,13 @@
 # Cafe
 
 Cafe is the single consumer entry point for Java-specific binary tooling. One
-dependency exposes lossless JVM class files and JARs, Android DEX and APKs,
-shared disassembly and control-flow graphs, an editable program model, and JNI
-linkage metadata through coherent namespaces.
+dependency exposes lossless JVM class files and JDK containers, Android DEX and
+application containers, ART runtime artifacts, shared disassembly and
+control-flow graphs, an editable program model, and JNI linkage metadata
+through coherent namespaces.
 
-The workspace contains six library crates. `cafe` is the public umbrella; the
-other five are focused implementation boundaries:
+The workspace contains seven library crates. `cafe` is the public umbrella; the
+other six are focused implementation boundaries:
 
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
@@ -15,13 +16,16 @@ other five are focused implementation boundaries:
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
-  construction, frame and stack-map analysis, JAR utilities, javap-like
-  presentation, and lowering into shared layers.
-- `dex` owns DEX parsing and assembly, Dalvik instructions, executable-body and
-  register analysis, APK editing, multidex provenance, and lowering into shared
-  layers.
+  construction, frame and stack-map analysis, JAR/JMOD/JIMAGE utilities,
+  corpus validation, javap-like presentation, and lowering into shared layers.
+- `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
+  Dalvik instructions, executable-body and register analysis, APK/AAB handling,
+  corpus validation, provenance, and lowering into shared layers.
+- `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
+  and canonical DEX adapters without interpreting native code.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
-  registration keys, and Java/DEX extraction.
+  registration resolution, C headers, provenance reports, module native-access
+  requirements, and Java/DEX extraction.
 
 Tool-specific command-line behavior belongs in consuming repositories.
 Consumers depend on `cafe`, not its implementation crates:
@@ -34,8 +38,9 @@ cafe = { git = "https://github.com/napbat/cafe" }
 ```text
 consumer
 └── cafe
-    ├── java             JVM .class, bytecode, and JAR
-    ├── dex              Android DEX, Dalvik, and APK
+    ├── java             JVM .class, bytecode, JAR, JMOD, and JIMAGE
+    ├── dex              DEX, CompactDex, APK, and AAB
+    ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
     ├── disassembler     shared instruction IR and CFGs
     │   └── cfglib       graph algorithms
@@ -51,6 +56,13 @@ body, checks descriptors and constant references, and constructs every shared
 control-flow graph. Archive metadata, resources, and classes are validated in
 one payload pass using one ZIP reader. Both binary round trips must reproduce
 the original bytes.
+
+The same frontend reads JMOD archives and JIMAGE runtime images without
+introducing another bytecode model. JMOD class traversal shares one archive
+reader; JIMAGE supports both endiannesses, indexed resources, OpenJDK compact
+constant-pool compression, and zlib-compressed payloads. The non-fail-fast
+`java::corpus` runner accepts class, JAR, JMOD, and JIMAGE artifacts and reports
+every failure with its artifact, entry, class, method, byte offset, and stage.
 
 Unknown class-file attributes remain exact raw payloads. Modified UTF-8
 constants retain their original UTF-16 units, including unpaired surrogates,
@@ -79,10 +91,12 @@ keeps metadata-oriented consumers from paying for bytecode decoding.
 `cafe::dex` retains native identifier tables, indices, code-unit addresses,
 encoded values, annotations, debug programs, exception handlers, hidden-API
 data, and map provenance. It parses DEX versions 035, 037, 038, 039, 040, and
-041, and assembles editable standalone versions 035 through 040. Every standard
-Dalvik opcode and payload has matching decoding and encoding, and validation
-covers descriptor, index, register-width, invocation, branch, payload, and
-exception constraints.
+041; assembles editable standalone versions 035 through 040; and parses,
+transactionally edits, and assembles multi-header DEX 041 with `DexContainer`.
+`DexBuilder` provides stable symbolic interning for nontrivial identifier
+tables. Every standard Dalvik opcode and payload has matching decoding and
+encoding, and validation covers descriptor, index, register-width, invocation,
+branch, payload, and exception constraints.
 
 DEX executable analysis is available independently of any output format.
 Every standard opcode has typed register uses, definitions, result behavior,
@@ -103,15 +117,35 @@ APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
 multidex ordering, exact pristine output, typed signature-block IDs, and
 explicit reject, preserve, or strip policies for signature material during
-rewrites.
+rewrites. `RewriteReport` identifies both blocking signature conditions and ZIP
+metadata that configured encoders cannot reproduce exactly.
+
+CompactDex 001 support retains an explicit source-format identity and split
+main/shared-data representation. Typed headers, feature flags, offset tables,
+method locations, debug offsets, and compact code items have matching checked
+decode/encode APIs. Android App Bundles provide deterministic module-qualified
+DEX discovery and one-reader traversal. The non-fail-fast `dex::corpus` runner
+validates standalone DEX, DEX 041 containers, APKs, and AABs while retaining
+artifact, entry, method, code-unit offset, and stage diagnostics.
+
+`cafe::art` handles runtime-produced Android artifacts without leaking ART
+state into canonical DEX. It validates VDEX 009, 012, 020, 021, and sectioned
+027, restores quickened standard opcodes before shared lowering, preserves
+CompactDex split sections explicitly, and parses/preserves ODEX 036. OAT
+support discovers the stable metadata prefix in direct or ELF-contained input;
+architecture-specific fields and native instructions remain opaque.
 
 `cafe::jni` preserves exact Java UTF-16 names while parsing method descriptors
 into typed Java and JNI ABI values. It implements the specification's short
 and long symbol forms, escape-failure rules, and short-then-long lookup order.
 Binding plans use long symbols only when native declarations with the same
 owner and name are overloaded; non-native overloads do not affect the plan.
-The crate is a safe metadata boundary and does not load libraries, expose raw
-pointers, or analyze native machine code.
+The crate also resolves caller-supplied `RegisterNatives` tables through opaque
+implementation keys, renders policy-controlled portable C headers, retains
+class/JAR/DEX/APK/AAB origins in aggregate reports, selects effective
+multi-release JAR classes for a target release, and reports Java 24-and-later
+module native-access requirements. It remains a safe metadata boundary and
+does not load libraries, expose raw pointers, or analyze native machine code.
 
 ## Java and JAR inspection
 
@@ -323,11 +357,17 @@ fn inspect_apk(path: &str) -> Result<(), dex::Error> {
 `visit_dex` validates canonical contiguous multidex provenance, selects entries
 before decompression, supports early stopping, and keeps one ZIP reader alive
 for the complete visit. `read_all_dex` provides the collecting convenience API
-over the same single-pass implementation.
+over the same single-pass implementation. `visit_dex_bytes` is the raw-payload
+variant used by corpus tools that must continue after a malformed member.
+`cafe::dex::aab::AabFile` provides the corresponding module-qualified APIs for
+Android App Bundles.
 
 Structured DEX edits are assembled through `DexFile::to_bytes`. APK rewrites
 require an explicit signature policy whenever existing v1 or signing-block
-material could be invalidated.
+material could be invalidated; inspect `ApkFile::rewrite_report` before saving
+when reproducible ZIP metadata matters. Use `DexContainer` for physical DEX 041
+multi-header files and `CompactDexFile` when source CompactDex identity and
+shared data must remain intact.
 
 ## JNI declaration inspection
 
@@ -359,9 +399,13 @@ fn inspect_natives(path: &str) -> Result<(), jni::Error> {
 
 Use `cafe::jni::dex::native_methods` for one `DexFile` or
 `cafe::jni::dex::native_methods_in_apk` for a complete canonical multidex set.
+`native_methods_in_aab` covers module-qualified bundle members, and the
+`binding_report` variants retain exact artifact provenance.
 `NativeMethod::registration` exposes the exact name-and-descriptor key needed
 by explicit registration even when the conventional symbol escape is
-unavailable.
+unavailable. `RegisterNativesTable::resolve` safely associates those keys with
+opaque consumer implementation IDs, while `render_c_header` generates portable
+declarations without introducing pointer or loader APIs.
 
 ## Workspace layout
 
@@ -386,26 +430,37 @@ crates/
 │   ├── src/analysis/
 │   ├── src/bytecode/
 │   ├── src/classfile/
+│   ├── src/corpus/
 │   ├── src/disassembly/
-│   ├── src/program/
 │   ├── src/jar/
+│   ├── src/jimage/
+│   ├── src/jmod/
+│   ├── src/program/
 │   └── tests/
-├── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
+├── dex/                 DEX/CompactDex, Android archives, and adapters
 │   ├── src/analysis/
+│   ├── src/aab/
+│   ├── src/apk/
+│   ├── src/corpus/
+│   ├── src/disassembly/
 │   ├── src/file/
 │   ├── src/instruction/
-│   ├── src/disassembly/
 │   ├── src/program/
-│   ├── src/apk/
 │   └── tests/
-└── jni/                 JNI declarations, ABI types, symbols, and adapters
-    ├── src/descriptor/
-    ├── src/method/
-    ├── src/symbol/
+├── art/                 VDEX, ODEX, OAT metadata, and quickening
+│   ├── src/oat/
+│   ├── src/odex/
+│   ├── src/quickening/
+│   └── src/vdex/
+└── jni/                 JNI metadata, reports, headers, and adapters
     ├── src/binding/
-    ├── src/java/
+    ├── src/descriptor/
     ├── src/dex/
-    └── tests/
+    ├── src/header/
+    ├── src/java/
+    ├── src/method/
+    ├── src/report/
+    └── src/symbol/
 ```
 
 Every source file is limited to 1,000 physical lines by a repository-wide
@@ -414,8 +469,9 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for JVM and DEX hardening, optional Android runtime
-containers and Java Card work, and explicit Java-specific non-goals.
+See [future.md](future.md) for the completed hardening baseline, the explicitly
+deferred DEX-to-JVM transformation boundary, conditional Java Card support, and
+Java-specific non-goals.
 
 ## Build and verify
 

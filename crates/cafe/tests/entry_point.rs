@@ -1,6 +1,6 @@
 //! Proof that a consumer can reach every Cafe capability through one crate.
 
-use cafe::{ModuleSource, Program, cfglib, dex, disassembler, java, jni, program};
+use cafe::{ModuleSource, Program, art, cfglib, dex, disassembler, java, jni, program};
 
 #[test]
 fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +25,11 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let native_methods = jni::java::native_methods(&class)?;
     let bindings = native_methods.bindings()?;
     let empty_dex = dex::DexFile::new(dex::DexVersion::V040);
+    let vdex = art::VdexFile::from_standard_dex_files(std::slice::from_ref(&empty_dex), &[], &[])?;
+    assert!(matches!(
+        vdex.runtime_dex(0)?,
+        art::RuntimeDex::Standard(file) if file.source_format() == empty_dex.source_format()
+    ));
     let mut apk = dex::apk::ApkFile::new();
     apk.put_dex(dex::apk::DexOrdinal::PRIMARY, &empty_dex)?;
     let mut visited_dex = false;
@@ -66,9 +71,94 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _: program::Program = program;
     let _ = std::any::type_name::<java::jar::JarFile>();
     let _ = std::any::type_name::<dex::apk::ApkFile>();
+    let _ = std::any::type_name::<art::VdexFile>();
     let _ = std::any::type_name::<cfglib::BlockId>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
+    Ok(())
+}
+
+#[test]
+fn resolves_equivalent_jvm_and_dex_definitions_without_identity_collisions()
+-> Result<(), Box<dyn std::error::Error>> {
+    const OWNER: &str = "sample/Equivalent";
+    const DEX_OWNER: &str = "Lsample/Equivalent;";
+    const METHOD: &str = "transform";
+    const DESCRIPTOR: &str = "(I)Ljava/lang/String;";
+
+    let mut class = java::classfile::ClassFile::new(
+        java::classfile::JAVA_8_MAJOR_VERSION,
+        OWNER,
+        Some("java/lang/Object"),
+        java::classfile::ClassAccessFlags::PUBLIC,
+    )?;
+    class.add_method(
+        java::classfile::MethodAccessFlags::PUBLIC
+            | java::classfile::MethodAccessFlags::STATIC
+            | java::classfile::MethodAccessFlags::NATIVE,
+        METHOD,
+        DESCRIPTOR,
+    )?;
+
+    let mut builder = dex::file::DexBuilder::new(dex::DexVersion::V040);
+    let owner_handle = builder.intern_type(DEX_OWNER)?;
+    let method_handle =
+        builder.intern_method_named(DEX_OWNER, METHOD, "Ljava/lang/String;", &["I"])?;
+    let mut built = builder.build()?;
+    let owner = built
+        .indices
+        .type_index(owner_handle)
+        .expect("owner was interned");
+    let method = built
+        .indices
+        .method(method_handle)
+        .expect("method was interned");
+    built.file.push_class(dex::file::ClassDefinition {
+        class: owner,
+        access_flags: dex::file::AccessFlags::PUBLIC,
+        superclass: None,
+        interfaces: Vec::new(),
+        source_file: None,
+        annotations: dex::file::AnnotationDirectory::default(),
+        class_data: Some(dex::file::ClassData {
+            static_fields: Vec::new(),
+            instance_fields: Vec::new(),
+            direct_methods: vec![dex::file::EncodedMethod {
+                method,
+                access_flags: dex::file::AccessFlags::from_bits_retain(
+                    dex::file::AccessFlags::PUBLIC.bits()
+                        | dex::file::AccessFlags::STATIC.bits()
+                        | dex::file::AccessFlags::NATIVE.bits(),
+                ),
+                code: None,
+            }],
+            virtual_methods: Vec::new(),
+            data_offset: 0,
+        }),
+        static_values: Vec::new(),
+        definition_index: 0,
+    })?;
+
+    let program = Program::from_modules([class.to_module()?, built.file.to_module()?]);
+    let java_owner = cafe::TypeId::new(cafe::BinaryFormat::JavaClass, OWNER);
+    let dex_owner = cafe::TypeId::new(cafe::BinaryFormat::Dex, DEX_OWNER);
+    let method = cafe::MethodId::new(METHOD, DESCRIPTOR);
+
+    assert!(program.resolve_type(&java_owner).unique().is_some());
+    assert!(program.resolve_type(&dex_owner).unique().is_some());
+    assert!(
+        program
+            .resolve_method(&java_owner, &method)
+            .unique()
+            .is_some()
+    );
+    assert!(
+        program
+            .resolve_method(&dex_owner, &method)
+            .unique()
+            .is_some()
+    );
+    assert_ne!(java_owner, dex_owner);
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 //! Extraction of native declarations from DEX files and APK multidex sets.
 
+use ::dex::aab::{AabDexVisitControl, AabFile};
 use ::dex::apk::{ApkFile, DexVisitControl};
 use ::dex::file::{
     AccessFlags, DexFile, DexString, EncodedMethod, PrototypeIndex, StringIndex, TypeIndex,
@@ -8,6 +9,7 @@ use ::dex::file::{
 use crate::binding::NativeMethods;
 use crate::descriptor::{DescriptorTag, MethodDescriptor};
 use crate::method::{InvocationKind, NativeMethod};
+use crate::report::{NativeBindingReport, NativeOrigin, ProvenancedNativeMethod};
 use crate::text::JavaText;
 use crate::{Error, Result};
 
@@ -23,15 +25,8 @@ use crate::{Error, Result};
 /// types, malformed method descriptors, or duplicate declarations.
 pub fn native_methods(file: &DexFile) -> Result<NativeMethods> {
     let mut methods = NativeMethods::new();
-    for class in file.classes() {
-        let Some(data) = &class.class_data else {
-            continue;
-        };
-        for declaration in data.direct_methods.iter().chain(&data.virtual_methods) {
-            if declaration.access_flags.contains(AccessFlags::NATIVE) {
-                methods.insert(native_method(file, declaration)?)?;
-            }
-        }
+    for (_, method) in native_methods_with_class(file)? {
+        methods.insert(method)?;
     }
     Ok(methods)
 }
@@ -52,6 +47,127 @@ pub fn native_methods_in_apk(apk: &ApkFile) -> Result<NativeMethods> {
             Ok(DexVisitControl::Continue)
         },
     )?;
+    Ok(methods)
+}
+
+/// Extracts native declarations from every module DEX in an App Bundle.
+///
+/// # Errors
+///
+/// Returns an error for an invalid bundle layout, unreadable DEX payload,
+/// invalid native metadata, or a declaration repeated across modules.
+pub fn native_methods_in_aab(aab: &AabFile) -> Result<NativeMethods> {
+    let mut methods = NativeMethods::new();
+    aab.visit_dex(
+        |_| true,
+        |artifact| -> Result<AabDexVisitControl> {
+            methods.extend(native_methods(&artifact.file)?)?;
+            Ok(AabDexVisitControl::Continue)
+        },
+    )?;
+    Ok(methods)
+}
+
+/// Builds a provenance-retaining binding report for a standalone DEX file.
+///
+/// # Errors
+///
+/// Returns an error for invalid native metadata, duplicate identities, or
+/// conventional export mapping failures.
+pub fn binding_report(file: &DexFile, artifact: impl Into<String>) -> Result<NativeBindingReport> {
+    let artifact = artifact.into();
+    let declarations = native_methods_with_class(file)?
+        .into_iter()
+        .map(|(class_definition, method)| {
+            ProvenancedNativeMethod::new(
+                NativeOrigin::DexFile {
+                    artifact: artifact.clone(),
+                    class_definition,
+                },
+                method,
+            )
+        })
+        .collect();
+    NativeBindingReport::new(declarations)
+}
+
+/// Builds a provenance-retaining aggregate binding report for an APK.
+///
+/// # Errors
+///
+/// Returns an error for invalid multidex layout, a selected payload failure,
+/// native metadata, duplicate identity, or export collision.
+pub fn binding_report_in_apk(
+    apk: &ApkFile,
+    artifact: impl Into<String>,
+) -> Result<NativeBindingReport> {
+    let artifact = artifact.into();
+    let mut declarations = Vec::new();
+    apk.visit_dex(
+        |_| true,
+        |dex| -> Result<DexVisitControl> {
+            for (class_definition, method) in native_methods_with_class(&dex.file)? {
+                declarations.push(ProvenancedNativeMethod::new(
+                    NativeOrigin::ApkDex {
+                        artifact: artifact.clone(),
+                        entry: dex.origin.entry_name.clone(),
+                        ordinal: dex.origin.ordinal,
+                        class_definition,
+                    },
+                    method,
+                ));
+            }
+            Ok(DexVisitControl::Continue)
+        },
+    )?;
+    NativeBindingReport::new(declarations)
+}
+
+/// Builds a module- and entry-provenanced binding report for an App Bundle.
+///
+/// # Errors
+///
+/// Returns an error for invalid module multidex layout, a selected payload
+/// failure, native metadata, duplicate identity, or export collision.
+pub fn binding_report_in_aab(
+    aab: &AabFile,
+    artifact: impl Into<String>,
+) -> Result<NativeBindingReport> {
+    let artifact = artifact.into();
+    let mut declarations = Vec::new();
+    aab.visit_dex(
+        |_| true,
+        |dex| -> Result<AabDexVisitControl> {
+            for (class_definition, method) in native_methods_with_class(&dex.file)? {
+                declarations.push(ProvenancedNativeMethod::new(
+                    NativeOrigin::AabDex {
+                        artifact: artifact.clone(),
+                        module: dex.origin.module.clone(),
+                        entry: dex.origin.entry_name.clone(),
+                        ordinal: dex.origin.ordinal,
+                        class_definition,
+                    },
+                    method,
+                ));
+            }
+            Ok(AabDexVisitControl::Continue)
+        },
+    )?;
+    NativeBindingReport::new(declarations)
+}
+
+fn native_methods_with_class(file: &DexFile) -> Result<Vec<(u32, NativeMethod)>> {
+    let mut methods = Vec::new();
+    for class in file.classes() {
+        let Some(data) = &class.class_data else {
+            continue;
+        };
+        for declaration in data.direct_methods.iter().chain(&data.virtual_methods) {
+            if declaration.access_flags.contains(AccessFlags::NATIVE) {
+                methods.push((class.definition_index, native_method(file, declaration)?));
+            }
+        }
+    }
     Ok(methods)
 }
 
@@ -116,7 +232,7 @@ fn exact_text(value: &DexString) -> JavaText {
 
 #[cfg(test)]
 mod tests {
-    use super::{native_methods, native_methods_in_apk};
+    use super::{binding_report_in_apk, native_methods, native_methods_in_apk};
     use crate::descriptor::NativeType;
     use crate::method::InvocationKind;
     use ::dex::apk::{ApkFile, DexOrdinal};
@@ -157,6 +273,14 @@ mod tests {
         assert_eq!(methods.len(), 2);
         assert_eq!(methods.as_slice()[0].owner().as_str(), "sample/First");
         assert_eq!(methods.as_slice()[1].owner().as_str(), "sample/Second");
+        let report = binding_report_in_apk(&apk, "application.apk").unwrap();
+        let crate::report::NativeOrigin::ApkDex { entry, ordinal, .. } =
+            report.declarations()[1].origin()
+        else {
+            panic!("expected APK provenance")
+        };
+        assert_eq!(entry, "classes2.dex");
+        assert_eq!(ordinal.get(), 2);
     }
 
     fn native_dex(owner: &str, method_name: &str) -> DexFile {

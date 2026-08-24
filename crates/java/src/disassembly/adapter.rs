@@ -48,7 +48,13 @@ impl DisassemblySource for ClassFile {
     }
 }
 
-fn lower_method(class: &ClassFile, method: &MethodInfo, owner: &str) -> Result<Function> {
+/// Lowers one JVM method into the neutral disassembly model.
+///
+/// # Errors
+///
+/// Returns an error for unresolved method metadata, malformed bytecode, or an
+/// invalid native control-flow target.
+pub fn lower_method(class: &ClassFile, method: &MethodInfo, owner: &str) -> Result<Function> {
     let pool = &class.constant_pool;
     let body = method
         .code()

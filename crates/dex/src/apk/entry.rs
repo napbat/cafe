@@ -287,11 +287,17 @@ pub(super) enum EntryData {
     Owned(Vec<u8>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct OriginalEntryStats {
     pub(super) size: u64,
     pub(super) compressed_size: u64,
     pub(super) crc32: u32,
+    pub(super) raw_name: Vec<u8>,
+    pub(super) flags: u16,
+    pub(super) version_made_by: u8,
+    pub(super) using_data_descriptor: bool,
+    pub(super) external_attributes: u32,
+    pub(super) large_file: bool,
 }
 
 #[derive(Debug, Clone)]

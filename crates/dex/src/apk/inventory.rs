@@ -53,7 +53,7 @@ impl ApkFile {
         self.entries
             .iter()
             .map(|entry| {
-                let (size, compressed_size, crc32) = match (&entry.data, entry.original_stats) {
+                let (size, compressed_size, crc32) = match (&entry.data, &entry.original_stats) {
                     (EntryData::Original(_), Some(stats)) => {
                         (stats.size, Some(stats.compressed_size), Some(stats.crc32))
                     }

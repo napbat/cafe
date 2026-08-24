@@ -1,173 +1,141 @@
 # Future work
 
-Cafe is Java-specific. Its shared model and disassembly layers exist to bridge
-instruction formats used by the Java ecosystem, not to become a universal
-binary-analysis framework.
+Cafe is Java-specific. Its shared model and disassembly layers bridge binary
+formats used by the Java ecosystem; they are not a universal binary-analysis
+framework.
 
-Cafe currently needs exactly two primary instruction families:
+Cafe has two primary instruction families:
 
 - JVM bytecode stored in `.class` files;
-- Android DEX bytecode.
+- Android DEX bytecode, including its CompactDex storage form.
 
-Both are implemented by the current `java` and `dex` frontends. No additional
-instruction set is needed for the present scope. CompactDex is an alternate
-Android encoding of DEX concepts rather than a new language target. Java Card
-CAP bytecode is the only other distinct Java-specific instruction set worth
-reserving architectural space for, and it remains demand-driven.
+Both families now have the parsing, assembly, executable-analysis, corpus,
+archive, provenance, and shared-adapter infrastructure needed by downstream
+tools. The only planned cross-family capability not implemented here is the
+explicit DEX-to-JVM transformation boundary described below.
 
 ## Development principles
 
-- Keep `cafe` as the only consumer dependency. Every new focused crate and
-  public capability must be re-exported through Cafe in the same change.
-- Add a format only for a concrete consumer and representative input corpus.
+- Keep `cafe` as the only consumer dependency. Re-export every focused crate
+  and public capability through Cafe in the same change.
+- Add a format only for a concrete consumer and representative fixtures.
 - Do not add speculative `BinaryFormat` variants before their frontend exists.
-- Implement parsing and assembly together. Every decoded structure and opcode
-  needs a matching encoding path.
-- Preserve unknown metadata and original string data so an unchanged artifact
+- Implement parsing and assembly together wherever a format is editable.
+- Preserve unknown metadata and original string data so unchanged artifacts
   can round-trip exactly.
-- Keep native indices, addresses, flags, signatures, references, and exception
-  metadata available to downstream consumers.
+- Retain native indices, addresses, flags, signatures, references, exception
+  metadata, and exact source identities for downstream consumers.
 - Lower executable bodies into `disassembler` and owned definitions into
-  `program`; format-specific structures remain in their frontend crate and all
-  consumer access remains rooted at `cafe`.
-- Build and verify control-flow graphs for ordinary, branch, switch,
-  exceptional, and legacy control flow.
+  `program`; format-specific structures remain in focused frontend crates.
+- Build and verify ordinary, branch, switch, exceptional, and legacy control
+  flow.
 - Keep format-qualified source maps and structured diagnostics in the neutral
-  disassembly boundary; transformation policy remains outside that crate.
+  disassembly boundary; transformation policy belongs in a focused consumer.
 
-## 1. JVM coverage and hardening
+## Completed JVM hardening baseline
 
-Continue hardening the existing `java` crate before broadening the workspace:
+The `java` crate now provides:
 
-The reusable generation baseline now includes label-based construction,
-branch relaxation, compact local/constant selection, symbolic exception
-regions, exact stack/local analysis, classpath-aware reference merging, and
-deterministic full-frame `StackMapTable` generation. Typed instruction-reference
-resolution retains exact Java UTF-16 names and validates descriptor categories.
-Continue hardening that baseline with:
+- lossless class-file parsing and assembly, including unknown attributes and
+  exact modified UTF-8/UTF-16 data;
+- complete JVM bytecode decoding and encoding, typed reference resolution,
+  malformed-input checks, symbolic layout, branch relaxation, exact
+  stack/local analysis, and deterministic stack-map generation;
+- independently testable attributes for stack maps, bootstrap methods,
+  dynamic constants, modules, records, nests, sealed types, annotations, and
+  debugging metadata;
+- one-reader JAR traversal, validation, editing, signature policy, and
+  multi-release selection;
+- read-only JMOD and JIMAGE ingestion, including compressed JIMAGE resources;
+- deterministic, non-fail-fast corpus validation with artifact, entry, class,
+  method, byte-offset, and processing-stage diagnostics;
+- explicit metadata-only and executable-body adapter policies for shared
+  disassembly and Program.
 
-- validate parsing, assembly, and method-bytecode round trips against class
-  files produced by multiple Java releases and compilers;
-- model class-file structures as typed APIs when consumers need them while
-  retaining unknown attributes losslessly;
-- keep stack maps, bootstrap methods, dynamic constants, modules, records,
-  nests, sealed types, annotations, and debugging metadata testable as
-  independent concepts;
-- expand malformed-input coverage for constant-pool references, descriptors,
-  attributes, bytecode targets, exception tables, and archive paths;
-- add deterministic corpus reporting that identifies the exact artifact,
-  class, method, and byte offset for every failure.
+JAR, JMOD, and JIMAGE are container boundaries around JVM class files. They do
+not introduce additional instruction semantics.
 
-JAR remains the primary archive boundary. JMOD and JIMAGE ingestion can be
-added when Cafe needs to inspect complete JDK distributions; they contain JVM
-class files and therefore do not introduce another instruction set.
+## Completed DEX and Android hardening baseline
 
-## 2. DEX and APK hardening
+The `dex` crate now provides:
 
-The `dex` crate now owns typed DEX files, the complete standard Dalvik
-instruction codec, shared adapters, APK editing, deterministic multidex
-provenance, explicit signature-material policies, and single-reader bulk DEX
-visitation and APK rewriting.
+- lossless standard DEX parsing and assembly for the supported 035 through 041
+  family, including first-class multi-header DEX 041 containers;
+- a complete standard Dalvik instruction codec, typed executable semantics,
+  verified normal and exceptional control flow, and fixed-point register
+  analysis;
+- stable symbolic interning and builders for strings, types, prototypes,
+  fields, and methods without manual table-order bookkeeping;
+- typed CompactDex 001 headers, split main/shared sections, offset tables,
+  method inventories, debug offsets, and code-item decoding and encoding;
+- one-reader APK and Android App Bundle traversal with deterministic multidex
+  or module provenance and raw-byte visitors for non-fail-fast consumers;
+- APK rewrite reports that distinguish blocking conditions from reproducibility
+  losses and require explicit signature-material policy;
+- deterministic, non-fail-fast corpus validation across standalone DEX,
+  multi-header DEX 041, APK, and AAB artifacts;
+- cross-format resolution coverage proving that equivalent JVM and DEX
+  declarations retain separate format-qualified identities.
 
-The executable-analysis baseline is also complete: all standard opcodes expose
-typed uses, definitions, result and throw semantics; payload and move-result
-associations are validated; control flow excludes data payloads and includes
-typed exceptional edges; and fixed-point register analysis tracks wide values,
-arrays, fields, calls, constructors, handler pre-states, and pluggable hierarchy
-relationships. Owned identifier and encoded-value resolution preserves exact
-Java string content.
+Exact pristine output, contextual malformed-input errors, and verified control
+flow remain release gates.
 
-Continue hardening that baseline with:
+## Remaining cross-format transformation boundary
 
-- representative DEX and APK corpora from multiple Android toolchain releases;
-- differential instruction and file-format tests against Android's published
-  format behavior;
-- cross-format resolution tests between equivalent JVM and DEX definitions;
-- ergonomic builders and interning APIs for creating nontrivial DEX files
-  without manual table-order bookkeeping;
-- a first-class multi-header parser and assembler for DEX version 041
-  containers;
-- stricter APK rewrite reporting for metadata that cannot be reproduced by the
-  configured ZIP encoders;
-- Android App Bundle discovery only when a concrete consumer needs it.
+Cafe has the reusable prerequisites for a DEX-to-JVM consumer: typed DEX
+semantics and register frames, symbolic JVM layout, JVM verification frames and
+stack maps, owned symbols, source maps, structured diagnostics, and
+format-qualified Program identities. It intentionally does not implement a
+DEX-to-JVM instruction translator, dex2jar equivalent, or DEX-to-JAR workflow.
 
-Keep exact pristine output, matching parse/assemble coverage, contextual
-malformed-input errors, and verified control flow as release gates rather than
-future aspirations.
+If that feature is added later, put policy in a focused feature crate that
+depends on both frontends. It must not move DEX/APK details into `java`,
+JVM/class-file details into `dex`, or either frontend into the neutral
+`disassembler` and `program` layers. Unsupported semantic cases must produce
+explicit diagnostics with native source locations rather than silent
+approximations.
 
-## Cross-format transformation boundary
+## Completed JNI boundary hardening
 
-Cafe now has the reusable prerequisites for a future cross-format consumer:
-typed DEX executable semantics and register frames, symbolic JVM layout, JVM
-verification frames and stack maps, owned symbols, source maps, and structured
-diagnostics. No cross-format instruction translator or archive conversion
-workflow is implemented by this baseline.
+The `jni` crate now provides:
 
-If one is added later, keep policy in a focused feature crate that depends on
-both frontends. It must not move DEX/APK details into `java`, JVM/class-file
-details into `dex`, or either frontend into the neutral `disassembler` and
-`program` layers. Unsupported semantic cases must be explicit diagnostics with
-native source locations rather than silent approximations.
-
-## 3. JNI boundary hardening
-
-The `jni` crate now provides the safe metadata boundary between Java native
-declarations and their implementations. It preserves exact UTF-16 names,
-parses JVM descriptors into typed JNI ABI signatures, implements canonical
-short and long symbol mapping, models explicit registration keys, chooses
-exports using native-only overload sets, and extracts declarations from JVM
-class files, DEX files, and APK multidex sets.
-
-Extend that boundary only for concrete native-integration consumers:
-
-- add target-Java-version selection before scanning multi-release JARs;
-- retain class-file, DEX, and APK provenance in aggregate binding reports;
-- render portable C header declarations from the typed ABI model when a code
-  generation consumer defines its naming and formatting policy;
-- model resolved `RegisterNatives` tables when a consumer can supply reliable
-  registration metadata;
-- report module native-access requirements without trying to reproduce JVM
-  library loading or class-loader state.
+- exact UTF-16 descriptor-to-ABI mapping and canonical short/long JNI symbols;
+- native-only overload planning and safe opaque `RegisterNatives` resolution;
+- Java target-release selection before multi-release JAR scanning;
+- provenance-retaining reports for class files, JARs, DEX, APK, and AAB;
+- policy-controlled portable C header rendering;
+- Java 24-and-later module native-access requirement reporting.
 
 Native library parsing, platform calling-convention implementation, process
-loading, and machine-code analysis remain outside this workspace. JNI metadata
-does not introduce another instruction set.
+loading, and machine-code analysis remain outside this workspace.
 
-## 4. Android runtime encodings and containers
+## Completed Android runtime boundary
 
-Add these only when Cafe must inspect installed or runtime-produced Android
-artifacts:
+The `art` crate keeps runtime container state outside canonical DEX and exposes
+it through `cafe::art`. It provides:
 
-- CompactDex decoding and encoding can extend the DEX frontend while retaining
-  an explicit source-format identity.
-- APK and future Android App Bundle support are archive discovery and
-  provenance, not additional instruction sets.
-- VDEX, ODEX, and OAT are ART runtime containers or optimized artifacts. Keep
-  their parsing and dequickening in a separate `crates/art` boundary rather
-  than leaking ART state into the canonical DEX model, and expose that boundary
-  through `cafe::art`.
-- Any quickened instruction must be restored to a well-defined canonical form
-  before it is lowered into shared disassembly.
+- validated VDEX 009, 012, 020, 021, and sectioned 027 layouts;
+- standard DEX restoration from quickening metadata and explicit CompactDex
+  split-section retention;
+- ODEX 036 parsing, exact preservation, checksums, opaque dependency and
+  optimization payloads, plus explicit same-width canonical patches;
+- stable OAT metadata discovery in direct or ELF-contained artifacts while
+  leaving native instructions and architecture-specific state opaque;
+- canonical quick-opcode restoration before standard DEX reaches shared
+  disassembly or Program adapters.
 
-## 5. Java Card
+APK, AAB, VDEX, ODEX, and OAT are containers or optimized encodings, not new
+shared instruction sets.
+
+## Conditional Java Card extension
 
 If a real smart-card consumer appears, add a sibling `crates/javacard`
 frontend for CAP components and Java Card VM bytecode. Do not place CAP parsing
 inside `java` or `dex`: its packaging, instruction encoding, linking model, and
-runtime constraints are distinct. Expose it to consumers as `cafe::javacard`.
+runtime constraints are distinct. Expose it as `cafe::javacard`.
 
-Until that consumer exists, Java Card remains a documented extension point,
-not planned implementation work.
-
-## Containers are not instruction sets
-
-The following may need readers, inventory APIs, or provenance models, but they
-do not justify new shared instruction semantics by themselves:
-
-- JAR, WAR, EAR, JMOD, and JIMAGE;
-- APK and Android App Bundles;
-- VDEX, ODEX, and OAT;
-- native libraries reached through JNI.
+Until that consumer exists, Java Card is a documented extension point, not
+planned implementation work.
 
 ## Non-goals
 
@@ -182,7 +150,7 @@ Cafe does not plan to support:
 
 Those source languages already converge on JVM bytecode or DEX for Cafe's
 purposes. Native code and unrelated virtual machines require different operand,
-memory, relocation, calling-convention, and runtime models and should live in
+memory, relocation, calling-convention, and runtime models and belong in
 separate projects.
 
 ## Completion standard for a new frontend
@@ -190,7 +158,7 @@ separate projects.
 A frontend is ready when all of the following are true:
 
 1. Its supported artifact versions and rejection behavior are explicit.
-2. Parsing and assembly cover the same structures and instructions.
+2. Parsing and assembly cover the same editable structures and instructions.
 3. Unchanged fixtures round-trip exactly where the format permits it.
 4. Malformed offsets, indices, lengths, descriptors, and control-flow targets
    fail with contextual errors rather than panics.
@@ -200,5 +168,5 @@ A frontend is ready when all of the following are true:
 8. Archive discovery and traversal are deterministic and retain exact origins.
 9. Public APIs are documented, source files remain below 1,000 lines, and the
    complete repository verification gate passes.
-10. The frontend and its public capabilities are reachable through `cafe`
-    without another direct dependency.
+10. The frontend and its capabilities are reachable through `cafe` without a
+    second direct dependency.

@@ -51,7 +51,13 @@ impl DisassemblySource for DexFile {
     }
 }
 
-fn lower_method(file: &DexFile, declaration: &EncodedMethod) -> Result<Function> {
+/// Lowers one DEX method declaration with its overload-qualified identity.
+///
+/// # Errors
+///
+/// Returns an error when the method identity, instruction references, exception
+/// metadata, or resulting control-flow graph is invalid.
+pub fn lower_method(file: &DexFile, declaration: &EncodedMethod) -> Result<Function> {
     let identity = file.resolve_method(declaration.method)?;
     let body = declaration
         .code

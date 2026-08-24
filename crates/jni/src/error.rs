@@ -44,6 +44,35 @@ pub enum Error {
         /// Exact invalid DEX type descriptor.
         descriptor: Box<JavaText>,
     },
+    /// A caller-supplied C header guard is not a portable identifier.
+    #[error("invalid C identifier `{0}`")]
+    InvalidCIdentifier(String),
+    /// A `RegisterNatives` table repeats a name-and-descriptor key.
+    #[error("duplicate RegisterNatives entry `{name}{descriptor}` for `{owner}`")]
+    DuplicateRegistration {
+        /// Declaring class.
+        owner: Box<JavaText>,
+        /// Exact method name.
+        name: Box<JavaText>,
+        /// Exact method descriptor.
+        descriptor: Box<JavaText>,
+    },
+    /// A `RegisterNatives` entry does not identify a supplied native declaration.
+    #[error("RegisterNatives entry `{name}{descriptor}` was not found in `{owner}`")]
+    RegistrationNotFound {
+        /// Declaring class.
+        owner: Box<JavaText>,
+        /// Exact method name.
+        name: Box<JavaText>,
+        /// Exact method descriptor.
+        descriptor: Box<JavaText>,
+    },
+    /// A symbolic native implementation key is empty or contains NUL.
+    #[error("invalid native implementation key `{0}`")]
+    InvalidImplementationKey(String),
+    /// A module descriptor is missing or contains inconsistent metadata.
+    #[error("invalid Java module metadata: {0}")]
+    InvalidModuleMetadata(String),
 }
 
 impl From<::java::Error> for Error {

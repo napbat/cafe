@@ -126,6 +126,37 @@ pub enum Error {
     #[error("invalid JAR metadata: {0}")]
     InvalidJar(String),
 
+    /// A JMOD header or section path is malformed.
+    #[error("invalid JMOD at byte {offset}: {message}")]
+    InvalidJmod {
+        /// Byte offset at which the problem was detected.
+        offset: usize,
+        /// Human-readable explanation of the violated container contract.
+        message: String,
+    },
+
+    /// A JIMAGE header, index, location, or resource is malformed.
+    #[error("invalid JIMAGE at byte {offset}: {message}")]
+    InvalidJimage {
+        /// Byte offset at which the problem was detected.
+        offset: usize,
+        /// Human-readable explanation of the violated image contract.
+        message: String,
+    },
+
+    /// A compressed JIMAGE resource names an unknown decompressor.
+    #[error("JIMAGE resource `{entry}` uses unsupported decompressor `{decompressor}`")]
+    UnsupportedJimageCompression {
+        /// Fully qualified JIMAGE resource name.
+        entry: String,
+        /// Name stored in the JIMAGE string table.
+        decompressor: String,
+    },
+
+    /// No JIMAGE resource has the requested fully qualified name.
+    #[error("JIMAGE resource `{0}` was not found")]
+    JimageEntryNotFound(String),
+
     /// A JAR entry cannot be rewritten with the configured ZIP codecs.
     #[error("cannot rewrite JAR entry `{entry}`: {message}")]
     UnsupportedJarEntry {
@@ -166,7 +197,9 @@ impl Error {
         Self::InvalidAssembly(message.into())
     }
 
-    pub(crate) fn in_jar_entry(self, entry: impl Into<String>) -> Self {
+    /// Qualifies this error with an exact physical archive entry name.
+    #[must_use]
+    pub fn in_jar_entry(self, entry: impl Into<String>) -> Self {
         Self::JarEntry {
             entry: entry.into(),
             source: Box::new(self),
@@ -193,6 +226,20 @@ impl Error {
     ) -> Self {
         Self::InvalidJarEntryName {
             name: name.into(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_jmod(offset: usize, message: impl Into<String>) -> Self {
+        Self::InvalidJmod {
+            offset,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_jimage(offset: usize, message: impl Into<String>) -> Self {
+        Self::InvalidJimage {
+            offset,
             message: message.into(),
         }
     }
