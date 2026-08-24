@@ -5,6 +5,7 @@
 //! disassembly models. APK support is exposed as archive provenance around one
 //! or more DEX artifacts; an APK is not treated as another instruction set.
 
+pub mod apk;
 pub mod cafe;
 pub mod disassembly;
 mod error;

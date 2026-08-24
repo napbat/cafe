@@ -72,6 +72,49 @@ pub enum Error {
     #[error("cannot assemble DEX data: {0}")]
     InvalidAssembly(String),
 
+    /// An APK or its ZIP container is structurally invalid.
+    #[error("invalid APK: {0}")]
+    InvalidApk(String),
+
+    /// An APK entry name is unsafe or inconsistent with its entry kind.
+    #[error("invalid APK entry name `{name}`: {message}")]
+    InvalidApkEntryName {
+        /// Rejected archive-relative name.
+        name: String,
+        /// Explanation of the violated path rule.
+        message: String,
+    },
+
+    /// No APK entry has the requested name.
+    #[error("APK entry `{0}` was not found")]
+    ApkEntryNotFound(String),
+
+    /// A name-based operation found more than one matching APK entry.
+    #[error("APK entry name `{name}` is ambiguous ({count} entries)")]
+    AmbiguousApkEntry {
+        /// Duplicate entry name.
+        name: String,
+        /// Number of entries with that name.
+        count: usize,
+    },
+
+    /// A stable APK entry identifier is no longer present.
+    #[error("APK entry id {0} was not found")]
+    ApkEntryIdNotFound(u64),
+
+    /// A mutation would introduce a duplicate APK entry name.
+    #[error("APK already contains an entry named `{0}`")]
+    DuplicateApkEntry(String),
+
+    /// An APK entry cannot be rewritten by the configured ZIP codecs.
+    #[error("cannot rewrite APK entry `{entry}`: {message}")]
+    UnsupportedApkEntry {
+        /// Entry that cannot be rewritten.
+        entry: String,
+        /// Unsupported feature or encoding.
+        message: String,
+    },
+
     /// An editable model contains an index outside its identifier table.
     #[error("{table} identifier index {index} is out of bounds")]
     InvalidIndex {
@@ -137,6 +180,20 @@ impl Error {
         Self::InvalidAssembly(message.into())
     }
 
+    pub(crate) fn invalid_apk(message: impl Into<String>) -> Self {
+        Self::InvalidApk(message.into())
+    }
+
+    pub(crate) fn invalid_apk_entry_name(
+        name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvalidApkEntryName {
+            name: name.into(),
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn in_method(
         self,
         class: impl Into<String>,
@@ -147,6 +204,13 @@ impl Error {
             class: class.into(),
             method: method.into(),
             signature: signature.into(),
+            source: Box::new(self),
+        }
+    }
+
+    pub(crate) fn in_apk_entry(self, entry: impl Into<String>) -> Self {
+        Self::ApkEntry {
+            entry: entry.into(),
             source: Box::new(self),
         }
     }
