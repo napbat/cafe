@@ -1,0 +1,18 @@
+[package]
+name = "jni"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Typed JNI declarations, descriptors, symbols, and artifact adapters"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["java", "jvm", "jni", "native", "dex"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
