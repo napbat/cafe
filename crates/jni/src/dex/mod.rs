@@ -1,6 +1,6 @@
 //! Extraction of native declarations from DEX files and APK multidex sets.
 
-use ::dex::apk::ApkFile;
+use ::dex::apk::{ApkFile, DexVisitControl};
 use ::dex::file::{
     AccessFlags, DexFile, DexString, EncodedMethod, PrototypeIndex, StringIndex, TypeIndex,
 };
@@ -45,9 +45,13 @@ pub fn native_methods(file: &DexFile) -> Result<NativeMethods> {
 /// member, invalid native metadata, or a declaration repeated across members.
 pub fn native_methods_in_apk(apk: &ApkFile) -> Result<NativeMethods> {
     let mut methods = NativeMethods::new();
-    for artifact in apk.read_all_dex()? {
-        methods.extend(native_methods(&artifact.file)?)?;
-    }
+    apk.visit_dex(
+        |_| true,
+        |artifact| -> Result<DexVisitControl> {
+            methods.extend(native_methods(&artifact.file)?)?;
+            Ok(DexVisitControl::Continue)
+        },
+    )?;
     Ok(methods)
 }
 
@@ -112,9 +116,10 @@ fn exact_text(value: &DexString) -> JavaText {
 
 #[cfg(test)]
 mod tests {
-    use super::native_methods;
+    use super::{native_methods, native_methods_in_apk};
     use crate::descriptor::NativeType;
     use crate::method::InvocationKind;
+    use ::dex::apk::{ApkFile, DexOrdinal};
     use ::dex::file::{
         AccessFlags, AnnotationDirectory, ClassData, ClassDefinition, DexFile, DexString,
         DexVersion, EncodedMethod, MethodId, PrototypeId, TypeId,
@@ -122,19 +127,55 @@ mod tests {
 
     #[test]
     fn extracts_typed_native_dex_declarations() {
+        let file = native_dex("sample/Native", "read");
+
+        let methods = native_methods(&file).unwrap();
+        let method = &methods.as_slice()[0];
+
+        assert_eq!(method.owner().as_str(), "sample/Native");
+        assert_eq!(method.invocation(), InvocationKind::Static);
+        assert_eq!(method.prototype().return_type(), NativeType::Int);
+        assert_eq!(
+            method.prototype().parameters()[2].native_type(),
+            NativeType::Int
+        );
+    }
+
+    #[test]
+    fn streams_native_declarations_across_multidex_members() {
+        let mut apk = ApkFile::new();
+        apk.put_dex(DexOrdinal::PRIMARY, &native_dex("sample/First", "read"))
+            .unwrap();
+        apk.put_dex(
+            DexOrdinal::new(2).expect("test ordinal is nonzero"),
+            &native_dex("sample/Second", "write"),
+        )
+        .unwrap();
+
+        let methods = native_methods_in_apk(&apk).unwrap();
+
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods.as_slice()[0].owner().as_str(), "sample/First");
+        assert_eq!(methods.as_slice()[1].owner().as_str(), "sample/Second");
+    }
+
+    fn native_dex(owner: &str, method_name: &str) -> DexFile {
         let mut file = DexFile::new(DexVersion::V035);
-        let name = file.push_string(DexString::new("read")).unwrap();
-        let owner_descriptor = file.push_string(DexString::new("Lsample/Native;")).unwrap();
         let int_descriptor = file.push_string(DexString::new("I")).unwrap();
         let shorty = file.push_string(DexString::new("II")).unwrap();
-        let owner = file
-            .push_type(TypeId {
-                descriptor: owner_descriptor,
-            })
+        let owner_descriptor_text = format!("L{owner};");
+        let owner_descriptor = file
+            .push_string(DexString::new(&owner_descriptor_text))
             .unwrap();
+        let name = file.push_string(DexString::new(method_name)).unwrap();
         let int_type = file
             .push_type(TypeId {
                 descriptor: int_descriptor,
+            })
+            .unwrap();
+        let owner = file
+            .push_type(TypeId {
+                descriptor: owner_descriptor,
             })
             .unwrap();
         let prototype = file
@@ -176,16 +217,6 @@ mod tests {
             definition_index: 0,
         })
         .unwrap();
-
-        let methods = native_methods(&file).unwrap();
-        let method = &methods.as_slice()[0];
-
-        assert_eq!(method.owner().as_str(), "sample/Native");
-        assert_eq!(method.invocation(), InvocationKind::Static);
-        assert_eq!(method.prototype().return_type(), NativeType::Int);
-        assert_eq!(
-            method.prototype().parameters()[2].native_type(),
-            NativeType::Int
-        );
+        file
     }
 }
