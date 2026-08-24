@@ -4,15 +4,16 @@ Cafe is Java-specific. Its shared model and disassembly layers exist to bridge
 instruction formats used by the Java ecosystem, not to become a universal
 binary-analysis framework.
 
-The two primary instruction families are:
+Cafe currently needs exactly two primary instruction families:
 
 - JVM bytecode stored in `.class` files;
 - Android DEX bytecode.
 
-CompactDex is an alternate Android encoding of DEX concepts rather than a new
-language target. Java Card CAP bytecode is the only other distinct
-Java-specific instruction set currently worth reserving architectural space
-for, and it should remain demand-driven.
+Both are implemented by the current `java` and `dex` frontends. No additional
+instruction set is needed for the present scope. CompactDex is an alternate
+Android encoding of DEX concepts rather than a new language target. Java Card
+CAP bytecode is the only other distinct Java-specific instruction set worth
+reserving architectural space for, and it remains demand-driven.
 
 ## Development principles
 
@@ -49,26 +50,28 @@ JAR remains the primary archive boundary. JMOD and JIMAGE ingestion can be
 added when Cafe needs to inspect complete JDK distributions; they contain JVM
 class files and therefore do not introduce another instruction set.
 
-## 2. DEX frontend
+## 2. DEX and APK hardening
 
-Add `crates/dex` as the next frontend. It should own:
+The `dex` crate now owns typed DEX files, the complete standard Dalvik
+instruction codec, shared adapters, APK editing, deterministic multidex
+provenance, and explicit signature-material policies. Continue hardening that
+baseline with:
 
-- DEX headers, maps, identifier tables, class definitions, encoded values,
-  annotations, debug information, and code items;
-- complete instruction decoding and encoding, including payload instructions,
-  wide registers, invoke forms, branches, switches, exceptions, and method
-  references;
-- exact parse/assemble round trips for unchanged files;
-- deterministic multidex discovery and artifact identities;
-- lowering into `disassembler`, including typed control-flow and exception
-  edges;
-- lowering into `cafe`, with declarations-only and executable-body loading
-  policies;
-- cross-format resolution tests between equivalent JVM and DEX definitions.
+- representative DEX and APK corpora from multiple Android toolchain releases;
+- differential instruction and file-format tests against Android's published
+  format behavior;
+- cross-format resolution tests between equivalent JVM and DEX definitions;
+- ergonomic builders and interning APIs for creating nontrivial DEX files
+  without manual table-order bookkeeping;
+- a first-class multi-header parser and assembler for DEX version 041
+  containers;
+- stricter APK rewrite reporting for metadata that cannot be reproduced by the
+  configured ZIP encoders;
+- Android App Bundle discovery only when a concrete consumer needs it.
 
-DEX support is complete only when every accepted instruction can be encoded,
-every executable body can be graphed, and representative Android artifacts
-round-trip without semantic or binary drift.
+Keep exact pristine output, matching parse/assemble coverage, contextual
+malformed-input errors, and verified control flow as release gates rather than
+future aspirations.
 
 ## 3. Android runtime encodings and containers
 
@@ -77,8 +80,8 @@ artifacts:
 
 - CompactDex decoding and encoding can extend the DEX frontend while retaining
   an explicit source-format identity.
-- APK and Android App Bundle support is archive discovery and provenance, not
-  another instruction set.
+- APK and future Android App Bundle support are archive discovery and
+  provenance, not additional instruction sets.
 - VDEX, ODEX, and OAT are ART runtime containers or optimized artifacts. Keep
   their parsing and dequickening in a separate `crates/art` boundary rather
   than leaking ART state into the canonical DEX model.

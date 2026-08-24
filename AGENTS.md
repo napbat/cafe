@@ -21,9 +21,10 @@ These rules apply to the entire repository.
   assembly, bytecode decoding and encoding, JAR utilities, and adapters into
   the disassembler and Cafe. Do not add `src/main.rs`, Clap, or tool-specific
   output policy to this crate.
-- Put future Android support in a sibling `crates/dex` package. It should
-  implement the existing disassembler and Cafe boundaries without mixing DEX
-  implementation details into another crate.
+- Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
+  assembly, Dalvik instruction decoding and encoding, APK and multidex
+  provenance, and adapters into the disassembler and Cafe. Do not leak DEX or
+  APK implementation details into another crate.
 - Keep each package name identical to its directory name and declare every
   shared dependency once under `[workspace.dependencies]`.
 
@@ -42,6 +43,9 @@ These rules apply to the entire repository.
 - In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `cafe/`
   independent. Keep descriptors, textual presentation, crate errors, and
   public entry points at the source root.
+- In DEX, keep `file/`, `instruction/`, `apk/`, `disassembly/`, and `cafe/`
+  independent. Treat APK as a container and provenance boundary, not another
+  instruction set.
 - Preserve established public API paths with narrow re-export facades when an
   implementation moves between modules.
 - Document every public contract. Body comments explain constraints and design

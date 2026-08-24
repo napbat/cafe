@@ -68,8 +68,9 @@ impl DexFile {
 
     /// Parses one logical DEX file from memory.
     ///
-    /// Version 041 container members are addressed by the header offset stored
-    /// in their own header; use the container parser for a multi-header buffer.
+    /// This entry point reads a logical file whose header starts at the input
+    /// boundary. Traversal of later version 041 container members is not yet a
+    /// public API.
     ///
     /// # Errors
     ///

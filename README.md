@@ -5,7 +5,7 @@ shared bytecode analysis across Java ecosystem formats. It separates
 format-specific parsing from shared disassembly and from the editable program
 model, so consumers can use only the layer they need.
 
-The workspace contains three library crates:
+The workspace contains four library crates:
 
 - `disassembler` defines instructions and references shared across Java
   bytecode formats, executable bodies, and cfglib-backed control-flow graphs.
@@ -14,19 +14,18 @@ The workspace contains three library crates:
 - `java` parses and assembles JVM class files, decodes and encodes JVM
   bytecode, works with JARs, renders javap-like text, and adapts Java classes
   into the other two crates.
+- `dex` parses, validates, and assembles DEX files, provides a complete
+  standard Dalvik instruction codec, edits APK containers, tracks multidex
+  provenance, and adapts DEX definitions into the shared layers.
 
-All three packages are libraries. Tool-specific command-line behavior belongs
+All four packages are libraries. Tool-specific command-line behavior belongs
 in consuming repositories.
 
 ```text
-JVM .class / JAR
-       │
-       ▼
-      java ───────────► disassembler ───────────► cfglib CFGs
-       │                     │
-       └─────────────────────┴──────────────► cafe
-
-future Java formats ─► format adapters ───────► shared layers
+JVM .class / JAR ─────► java ───┐
+                               ├──► disassembler ───► cfglib CFGs
+Android DEX / APK ────► dex ────┤
+                               └──► cafe
 ```
 
 ## Capabilities
@@ -52,6 +51,20 @@ stack maps, debugging ranges, and code-level type annotations together.
 Cafe definitions retain format-qualified and overload-qualified identities.
 Java adapters can load complete executable bodies or declarations only, which
 keeps metadata-oriented consumers from paying for bytecode decoding.
+
+`dex` retains native identifier tables, indices, code-unit addresses, encoded
+values, annotations, debug programs, exception handlers, hidden-API data, and
+map provenance. It parses DEX versions 035, 037, 038, 039, 040, and 041, and
+assembles editable standalone versions 035 through 040. Every standard Dalvik
+opcode and payload has matching decoding and encoding, and validation covers
+descriptor, index, register-width, invocation, branch, payload, and exception
+constraints.
+
+APK support is a lossless archive boundary around DEX artifacts rather than a
+separate instruction set. It provides stable entry identities, deterministic
+multidex ordering, exact pristine output, typed signature-block IDs, and
+explicit reject, preserve, or strip policies for signature material during
+rewrites.
 
 ## Java and JAR inspection
 
@@ -152,6 +165,41 @@ For metadata-only tools, use
 `java::cafe::lower_class_with_options` with
 `MethodBodyMode::DeclarationsOnly` to skip method-body decoding.
 
+## DEX and APK inspection
+
+APK members retain their exact archive origin when they are parsed, lowered to
+shared disassembly, or converted into Cafe modules:
+
+```rust
+use dex::apk::ApkFile;
+use dex::cafe::CafeOptions;
+
+fn inspect_apk(path: &str) -> Result<(), dex::Error> {
+    let apk = ApkFile::open(path)?;
+
+    for artifact in apk.read_all_dex()? {
+        println!(
+            "{}: DEX {:?}",
+            artifact.origin.entry_name,
+            artifact.file.version()
+        );
+        let disassembly = artifact.disassemble()?;
+        let module = artifact.to_module(CafeOptions::default())?;
+        println!(
+            "{} functions, {} types",
+            disassembly.functions.len(),
+            module.type_count()
+        );
+    }
+
+    Ok(())
+}
+```
+
+Structured DEX edits are assembled through `DexFile::to_bytes`. APK rewrites
+require an explicit signature policy whenever existing v1 or signing-block
+material could be invalidated.
+
 ## Workspace layout
 
 ```text
@@ -163,12 +211,19 @@ crates/
 ├── cafe/                owned definitions, identities, lookup, and resolution
 │   ├── src/
 │   └── tests/
-└── java/                JVM class files, bytecode, JARs, and adapters
-    ├── src/bytecode/
-    ├── src/classfile/
+├── java/                JVM class files, bytecode, JARs, and adapters
+│   ├── src/bytecode/
+│   ├── src/classfile/
+│   ├── src/disassembly/
+│   ├── src/cafe/
+│   ├── src/jar/
+│   └── tests/
+└── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
+    ├── src/file/
+    ├── src/instruction/
     ├── src/disassembly/
     ├── src/cafe/
-    ├── src/jar/
+    ├── src/apk/
     └── tests/
 ```
 
@@ -178,8 +233,8 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for the JVM hardening plan, DEX frontend boundary,
-optional Android runtime and Java Card work, and explicit non-goals.
+See [future.md](future.md) for JVM and DEX hardening, optional Android runtime
+containers and Java Card work, and explicit Java-specific non-goals.
 
 ## Build and verify
 
