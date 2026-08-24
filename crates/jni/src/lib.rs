@@ -6,7 +6,10 @@
 
 mod error;
 
+pub mod binding;
 pub mod descriptor;
+pub mod method;
+pub mod symbol;
 pub mod text;
 
 pub use self::error::{Error, Result};
