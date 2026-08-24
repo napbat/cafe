@@ -132,11 +132,32 @@ impl Program {
     }
 }
 
-fn resolve<T>(matches: impl Iterator<Item = T>) -> Resolution<T> {
-    let values = matches.collect::<Vec<_>>();
-    match values.len() {
-        0 => Resolution::Missing,
-        1 => Resolution::Unique(values.into_iter().next().expect("length checked")),
-        count => Resolution::Ambiguous { matches: count },
+fn resolve<T>(mut matches: impl Iterator<Item = T>) -> Resolution<T> {
+    let Some(first) = matches.next() else {
+        return Resolution::Missing;
+    };
+    let additional = matches.count();
+    if additional == 0 {
+        Resolution::Unique(first)
+    } else {
+        Resolution::Ambiguous {
+            matches: additional + 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+    use crate::Resolution;
+
+    #[test]
+    fn resolves_without_collecting_matches() {
+        assert_eq!(resolve(std::iter::empty::<u8>()), Resolution::Missing);
+        assert_eq!(resolve([7].into_iter()), Resolution::Unique(7));
+        assert_eq!(
+            resolve([7, 8, 9].into_iter()),
+            Resolution::Ambiguous { matches: 3 }
+        );
     }
 }
