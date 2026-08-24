@@ -188,7 +188,7 @@ fn patch_header(
     data_size: u32,
     data_offset: u32,
 ) -> Result<()> {
-    let mut magic = [0u8; MAGIC_SIZE];
+    let mut magic = [MAGIC_TERMINATOR; MAGIC_SIZE];
     magic[..VERSION_START].copy_from_slice(MAGIC_PREFIX);
     magic[VERSION_START..VERSION_END].copy_from_slice(&file.header.version.digits());
     magic[MAGIC_TERMINATOR_INDEX] = MAGIC_TERMINATOR;

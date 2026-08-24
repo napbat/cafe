@@ -193,7 +193,7 @@ fn write_type_lists(
     writer.align(Alignment::Word)?;
     let start = writer.position()?;
     let mut known = BTreeMap::<Vec<TypeIndex>, u32>::new();
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut prototype_offsets = Vec::with_capacity(prototypes.len());
     for prototype in prototypes {
         prototype_offsets.push(type_list(
@@ -255,7 +255,7 @@ fn write_arrays(
     classes: &[ClassDefinition],
 ) -> Result<(Vec<u32>, Vec<u32>, Option<MapItem>)> {
     let start = writer.position()?;
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut call_site_offsets = Vec::with_capacity(call_sites.len());
     for call_site in call_sites {
         call_site_offsets.push(writer.position()?);

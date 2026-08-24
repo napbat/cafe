@@ -24,6 +24,7 @@ const SINGLE_BYTE_SEQUENCE_LENGTH: usize = 1;
 const TWO_BYTE_SEQUENCE_LENGTH: usize = 2;
 const THREE_BYTE_SEQUENCE_LENGTH: usize = 3;
 const MODIFIED_NUL: [u8; TWO_BYTE_SEQUENCE_LENGTH] = [TWO_BYTE_LEAD_PREFIX, CONTINUATION_PREFIX];
+const START_POSITION: usize = 0;
 
 #[derive(Debug)]
 pub(crate) struct Decoded {
@@ -33,7 +34,7 @@ pub(crate) struct Decoded {
 
 pub(crate) fn decode(bytes: &[u8], source_offset: usize) -> Result<Decoded> {
     let mut units = Vec::with_capacity(bytes.len());
-    let mut position = 0;
+    let mut position = START_POSITION;
 
     while position < bytes.len() {
         let first = bytes[position];

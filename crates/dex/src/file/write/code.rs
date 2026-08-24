@@ -45,7 +45,7 @@ fn write_debug_info(
 ) -> Result<(BTreeMap<MethodIndex, u32>, Option<MapItem>)> {
     let start = writer.position()?;
     let mut offsets = BTreeMap::new();
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     for method in methods(classes) {
         let Some(debug) = method
             .code
@@ -185,7 +185,7 @@ fn write_code_items(
     writer.align(Alignment::Word)?;
     let start = writer.position()?;
     let mut offsets = BTreeMap::new();
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     for method in methods(classes) {
         let Some(code) = &method.code else {
             continue;
@@ -321,7 +321,7 @@ fn write_class_data(
 ) -> Result<(Vec<u32>, Option<MapItem>)> {
     let start = writer.position()?;
     let mut offsets = Vec::with_capacity(classes.len());
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     for class in classes {
         let Some(data) = &class.class_data else {
             offsets.push(ABSENT_OFFSET);

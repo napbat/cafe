@@ -60,7 +60,7 @@ fn write_items(
     classes: &[ClassDefinition],
 ) -> Result<(Vec<PendingDirectory>, Option<MapItem>)> {
     let start = writer.position()?;
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut pending = Vec::with_capacity(classes.len());
     for class in classes {
         let directory = &class.annotations;
@@ -130,7 +130,7 @@ fn write_sets(
 ) -> Result<(Vec<SetDirectory>, Option<MapItem>)> {
     writer.align(Alignment::Word)?;
     let start = writer.position()?;
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut directories = Vec::with_capacity(pending.len());
     for directory in pending {
         directories.push(SetDirectory {
@@ -191,7 +191,7 @@ fn write_parameter_references(
 ) -> Result<(Vec<Vec<u32>>, Option<MapItem>)> {
     writer.align(Alignment::Word)?;
     let start = writer.position()?;
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut directories = Vec::with_capacity(sets.len());
     for directory in sets {
         let mut offsets = Vec::with_capacity(directory.parameters.len());
@@ -223,7 +223,7 @@ fn write_directories(
 ) -> Result<(Vec<u32>, Option<MapItem>)> {
     writer.align(Alignment::Word)?;
     let start = writer.position()?;
-    let mut count = 0u32;
+    let mut count = EMPTY_ITEM_COUNT;
     let mut offsets = Vec::with_capacity(sets.len());
     for (directory, references) in sets.iter().zip(parameter_references) {
         if directory.class_annotations == ABSENT_OFFSET
