@@ -1,10 +1,10 @@
 //! Integration coverage for the public disassembly and graph API.
 
-use disassembler::cfglib::{DominatorTree, verify};
+use disassembler::cfglib::{DominatorTree, verify, verify_edge_view};
 use disassembler::{
-    AddressRange, AddressUnit, BinaryFormat, CodeAddress, CodeSize, Diagnostic, DiagnosticLevel,
-    DiagnosticLocation, Diagnostics, FunctionBody, FunctionCoordinate, FunctionSymbol, Instruction,
-    InstructionFlow, SourceMap,
+    AddressRange, AddressUnit, BinaryFormat, CodeAddress, CodeSize, ControlFlowEdgeRole,
+    Diagnostic, DiagnosticLevel, DiagnosticLocation, Diagnostics, FunctionBody, FunctionCoordinate,
+    FunctionSymbol, Instruction, InstructionFlow, SourceMap,
 };
 
 const INSTRUCTION_SIZE: CodeSize = CodeSize::new(1);
@@ -88,11 +88,18 @@ fn downstream_consumers_can_use_cfglib_algorithms_on_shared_ir() {
 
     let graph = body.control_flow_graph().unwrap();
     assert!(verify(graph.cfg()).is_ok());
+    assert!(verify_edge_view(&graph.normal_view()).is_ok());
 
     let target = graph
         .block_for_instruction(CodeAddress::from(2_u32))
         .unwrap();
     let dominators = DominatorTree::compute(graph.cfg());
     assert!(dominators.dominates(graph.cfg().entry(), target));
+    assert!(
+        graph
+            .cfg()
+            .edges()
+            .any(|edge| edge.payload().role() == &ControlFlowEdgeRole::ConditionalTaken)
+    );
     assert!(graph.to_dot().contains("green4"));
 }

@@ -14,6 +14,14 @@ archive, provenance, and shared-adapter infrastructure needed by downstream
 tools. The only planned cross-family capability not implemented here is the
 explicit DEX-to-JVM transformation boundary described below.
 
+The shared CFG boundary now retains stable parallel edge identities and typed
+caller payloads for switch arms, ordered handlers, exact instruction throw
+sites, and legacy continuation call sites. Borrowed edge-filtered
+views, edge-sensitive pre/post-state dataflow, semantic validation hooks, and
+explicit rewrite identity maps are supplied by cfglib and exercised through
+Cafe. These are infrastructure for analysis and later transformations; they do
+not implement the deferred DEX-to-JVM translation itself.
+
 ## Development principles
 
 - Keep `cafe` as the only consumer dependency. Re-export every focused crate

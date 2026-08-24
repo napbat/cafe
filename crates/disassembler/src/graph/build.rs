@@ -2,10 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cfglib::{BlockId, Cfg, EdgeKind, verify};
+use cfglib::{BlockId, Cfg, EdgeKind, verify_with};
 
-use super::{ControlFlowGraph, GraphError};
-use crate::{CodeAddress, FunctionBody, InstructionFlow};
+use super::validate::ControlFlowValidator;
+use super::{
+    ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph, ExceptionHandlerIndex, GraphError,
+};
+use crate::{CodeAddress, FunctionBody, Instruction, InstructionFlow};
+
+type SharedCfg = Cfg<Instruction, ControlFlowEdge>;
 
 /// Builds a verified cfglib control-flow graph from a function body.
 ///
@@ -32,12 +37,14 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
     add_normal_edges(&mut cfg, &instruction_blocks);
     add_exception_edges(body, &mut cfg, &instruction_blocks);
 
-    let verification = verify(&cfg);
+    let verification = verify_with(&cfg, &ControlFlowValidator::new(body));
     if !verification.is_ok() {
         let details = verification
+            .structural
             .errors
             .iter()
             .map(ToString::to_string)
+            .chain(verification.semantic_errors.iter().map(ToString::to_string))
             .collect::<Vec<_>>()
             .join("; ");
         return Err(GraphError::InvalidGraph { details });
@@ -161,6 +168,11 @@ fn validate_exception_handlers(
             });
         }
         leaders.insert(handler.protected.start);
+        for instruction in &body.instructions {
+            if handler.protected.contains(instruction.address) {
+                leaders.insert(instruction.address);
+            }
+        }
         if handler.protected.end != code_end {
             leaders.insert(handler.protected.end);
         }
@@ -172,8 +184,8 @@ fn validate_exception_handlers(
 fn populate_blocks(
     body: &FunctionBody,
     leaders: &BTreeSet<CodeAddress>,
-) -> (Cfg<crate::Instruction>, BTreeMap<CodeAddress, BlockId>) {
-    let mut cfg = Cfg::new();
+) -> (SharedCfg, BTreeMap<CodeAddress, BlockId>) {
+    let mut cfg = SharedCfg::new_with_edge_payload();
     let mut current = cfg.entry();
     let mut instruction_blocks = BTreeMap::new();
 
@@ -191,10 +203,7 @@ fn populate_blocks(
     (cfg, instruction_blocks)
 }
 
-fn add_normal_edges(
-    cfg: &mut Cfg<crate::Instruction>,
-    instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
-) {
+fn add_normal_edges(cfg: &mut SharedCfg, instruction_blocks: &BTreeMap<CodeAddress, BlockId>) {
     let blocks = cfg
         .blocks()
         .iter()
@@ -203,17 +212,23 @@ fn add_normal_edges(
         .collect::<Vec<_>>();
 
     for (position, &block) in blocks.iter().enumerate() {
-        let flow = cfg
+        let terminator = cfg
             .block(block)
             .instructions()
             .last()
-            .expect("filtered to non-empty blocks")
-            .flow
-            .clone();
+            .expect("filtered to non-empty blocks");
+        let source_address = terminator.address;
+        let flow = terminator.flow.clone();
         let next = blocks.get(position + 1).copied();
         match flow {
             InstructionFlow::FallThrough => {
-                add_optional_edge(cfg, block, next, EdgeKind::Fallthrough);
+                add_optional_edge(
+                    cfg,
+                    block,
+                    next,
+                    EdgeKind::Fallthrough,
+                    ControlFlowEdgeRole::Sequential,
+                );
             }
             InstructionFlow::ConditionalBranch { target } => {
                 add_target_edge(
@@ -221,12 +236,26 @@ fn add_normal_edges(
                     block,
                     target,
                     EdgeKind::ConditionalTrue,
+                    ControlFlowEdgeRole::ConditionalTaken,
                     instruction_blocks,
                 );
-                add_optional_edge(cfg, block, next, EdgeKind::ConditionalFalse);
+                add_optional_edge(
+                    cfg,
+                    block,
+                    next,
+                    EdgeKind::ConditionalFalse,
+                    ControlFlowEdgeRole::ConditionalFallThrough,
+                );
             }
             InstructionFlow::UnconditionalBranch { target } => {
-                add_target_edge(cfg, block, target, EdgeKind::Jump, instruction_blocks);
+                add_target_edge(
+                    cfg,
+                    block,
+                    target,
+                    EdgeKind::Jump,
+                    ControlFlowEdgeRole::DirectBranch,
+                    instruction_blocks,
+                );
             }
             InstructionFlow::Switch { default, cases } => {
                 add_target_edge(
@@ -234,6 +263,7 @@ fn add_normal_edges(
                     block,
                     default,
                     EdgeKind::SwitchCase,
+                    ControlFlowEdgeRole::SwitchDefault,
                     instruction_blocks,
                 );
                 for case in cases {
@@ -242,13 +272,29 @@ fn add_normal_edges(
                         block,
                         case.target,
                         EdgeKind::SwitchCase,
+                        ControlFlowEdgeRole::SwitchCase { key: case.key },
                         instruction_blocks,
                     );
                 }
             }
             InstructionFlow::SubroutineCall { target } => {
-                add_target_edge(cfg, block, target, EdgeKind::Call, instruction_blocks);
-                add_optional_edge(cfg, block, next, EdgeKind::CallReturn);
+                add_target_edge(
+                    cfg,
+                    block,
+                    target,
+                    EdgeKind::Call,
+                    ControlFlowEdgeRole::SubroutineCall,
+                    instruction_blocks,
+                );
+                add_optional_edge(
+                    cfg,
+                    block,
+                    next,
+                    EdgeKind::CallReturn,
+                    ControlFlowEdgeRole::SubroutineContinuation {
+                        call_site: source_address,
+                    },
+                );
             }
             InstructionFlow::Return | InstructionFlow::Throw | InstructionFlow::IndirectBranch => {}
         }
@@ -256,29 +302,58 @@ fn add_normal_edges(
 }
 
 fn add_optional_edge(
-    cfg: &mut Cfg<crate::Instruction>,
+    cfg: &mut SharedCfg,
     source: BlockId,
     target: Option<BlockId>,
     kind: EdgeKind,
+    role: ControlFlowEdgeRole,
 ) {
     if let Some(target) = target {
-        cfg.add_edge(source, target, kind);
+        add_flow_edge(cfg, source, target, kind, role);
     }
 }
 
 fn add_target_edge(
-    cfg: &mut Cfg<crate::Instruction>,
+    cfg: &mut SharedCfg,
     source: BlockId,
     target: CodeAddress,
     kind: EdgeKind,
+    role: ControlFlowEdgeRole,
     instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
 ) {
-    cfg.add_edge(source, instruction_blocks[&target], kind);
+    add_flow_edge(cfg, source, instruction_blocks[&target], kind, role);
+}
+
+fn add_flow_edge(
+    cfg: &mut SharedCfg,
+    source: BlockId,
+    target: BlockId,
+    kind: EdgeKind,
+    role: ControlFlowEdgeRole,
+) {
+    let source_address = cfg
+        .block(source)
+        .instructions()
+        .last()
+        .expect("normal edges leave non-empty blocks")
+        .address;
+    let target_address = cfg
+        .block(target)
+        .instructions()
+        .first()
+        .expect("normal edges enter non-empty blocks")
+        .address;
+    cfg.add_edge_with_payload(
+        source,
+        target,
+        kind,
+        ControlFlowEdge::new(source_address, target_address, role),
+    );
 }
 
 fn add_exception_edges(
     body: &FunctionBody,
-    cfg: &mut Cfg<crate::Instruction>,
+    cfg: &mut SharedCfg,
     instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
 ) {
     let block_starts = cfg
@@ -292,11 +367,24 @@ fn add_exception_edges(
         })
         .collect::<Vec<_>>();
 
-    for handler in &body.exception_handlers {
+    for (index, handler) in body.exception_handlers.iter().enumerate() {
         let target = instruction_blocks[&handler.handler];
         for &(source, address) in &block_starts {
             if handler.protected.contains(address) {
-                cfg.add_edge(source, target, EdgeKind::ExceptionUnwind);
+                cfg.add_edge_with_payload(
+                    source,
+                    target,
+                    EdgeKind::ExceptionUnwind,
+                    ControlFlowEdge::new(
+                        address,
+                        handler.handler,
+                        ControlFlowEdgeRole::Exception {
+                            handler: ExceptionHandlerIndex::from_index(index),
+                            protected: handler.protected,
+                            catch: handler.catch.clone(),
+                        },
+                    ),
+                );
             }
         }
     }
@@ -304,12 +392,16 @@ fn add_exception_edges(
 
 #[cfg(test)]
 mod tests {
-    use cfglib::EdgeKind;
+    use cfglib::{
+        BlockId, Cfg, Direction, DominatorTree, Edge, EdgeKind, EdgeProblem, EdgeRef,
+        solve_edge_problem, verify_edge_view,
+    };
 
     use super::build_control_flow_graph;
     use crate::{
-        AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ExceptionHandler,
-        FunctionBody, Instruction, InstructionFlow,
+        AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ControlFlowEdge,
+        ControlFlowEdgeRole, ExceptionHandler, ExceptionHandlerIndex, FunctionBody, Instruction,
+        InstructionFlow, SwitchCase,
     };
 
     const ONE_UNIT: CodeSize = CodeSize::new(1);
@@ -378,12 +470,190 @@ mod tests {
         );
 
         let graph = build_control_flow_graph(&body).unwrap();
-        assert!(
-            graph
-                .cfg()
-                .edges()
-                .any(|edge| edge.kind() == EdgeKind::ExceptionUnwind)
+        let exceptional = graph
+            .cfg()
+            .edges()
+            .filter(|edge| edge.kind() == EdgeKind::ExceptionUnwind)
+            .collect::<Vec<_>>();
+        assert_eq!(exceptional.len(), 2);
+        assert_eq!(exceptional[0].payload().source(), CodeAddress::from(0_u32));
+        assert_eq!(exceptional[1].payload().source(), CodeAddress::from(1_u32));
+        for edge in &exceptional {
+            assert_eq!(graph.cfg().block(edge.source()).instructions().len(), 1);
+            assert!(matches!(
+                edge.payload().role(),
+                ControlFlowEdgeRole::Exception { handler, catch, .. }
+                    if *handler == ExceptionHandlerIndex::from_index(0)
+                        && catch == &CatchType::Any
+            ));
+        }
+
+        let handler = graph
+            .block_for_instruction(CodeAddress::from(2_u32))
+            .unwrap();
+        assert!(DominatorTree::compute(graph.cfg()).is_reachable(handler));
+        assert!(verify_edge_view(&graph.normal_view()).is_ok());
+        assert!(!DominatorTree::compute(&graph.normal_view()).is_reachable(handler));
+    }
+
+    #[test]
+    fn preserves_parallel_switch_arms_and_subroutine_call_sites() {
+        let switch_body = FunctionBody::new(
+            AddressUnit::Byte,
+            vec![
+                instruction(
+                    0,
+                    InstructionFlow::Switch {
+                        default: CodeAddress::from(2_u32),
+                        cases: vec![SwitchCase {
+                            key: 7,
+                            target: CodeAddress::from(2_u32),
+                        }],
+                    },
+                ),
+                instruction(1, InstructionFlow::Return),
+                instruction(2, InstructionFlow::Return),
+            ],
+            Vec::new(),
         );
+        let switch_graph = build_control_flow_graph(&switch_body).unwrap();
+        let entry_edges = switch_graph
+            .cfg()
+            .successor_edges(switch_graph.cfg().entry());
+        assert_eq!(entry_edges.len(), 2);
+        assert_ne!(entry_edges[0], entry_edges[1]);
+        assert_eq!(
+            switch_graph.cfg().edge(entry_edges[0]).target(),
+            switch_graph.cfg().edge(entry_edges[1]).target()
+        );
+        assert_eq!(
+            switch_graph.cfg().edge(entry_edges[0]).payload().role(),
+            &ControlFlowEdgeRole::SwitchDefault
+        );
+        assert_eq!(
+            switch_graph.cfg().edge(entry_edges[1]).payload().role(),
+            &ControlFlowEdgeRole::SwitchCase { key: 7 }
+        );
+
+        let subroutine_body = FunctionBody::new(
+            AddressUnit::Byte,
+            vec![
+                instruction(
+                    0,
+                    InstructionFlow::SubroutineCall {
+                        target: CodeAddress::from(2_u32),
+                    },
+                ),
+                instruction(1, InstructionFlow::Return),
+                instruction(2, InstructionFlow::Return),
+            ],
+            Vec::new(),
+        );
+        let subroutine_graph = build_control_flow_graph(&subroutine_body).unwrap();
+        let continuation = subroutine_graph
+            .cfg()
+            .edges()
+            .find(|edge| {
+                matches!(
+                    edge.payload().role(),
+                    ControlFlowEdgeRole::SubroutineContinuation { .. }
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            continuation.payload().role(),
+            &ControlFlowEdgeRole::SubroutineContinuation {
+                call_site: CodeAddress::from(0_u32),
+            }
+        );
+    }
+
+    struct PrePostState {
+        entry: BlockId,
+    }
+
+    impl EdgeProblem<Cfg<Instruction, ControlFlowEdge>> for PrePostState {
+        type Fact = u8;
+
+        fn direction(&self) -> Direction {
+            Direction::Forward
+        }
+
+        fn bottom(&self, _graph: &Cfg<Instruction, ControlFlowEdge>) -> Self::Fact {
+            0
+        }
+
+        fn boundary(
+            &self,
+            _graph: &Cfg<Instruction, ControlFlowEdge>,
+            node: BlockId,
+        ) -> Option<Self::Fact> {
+            (node == self.entry).then_some(1)
+        }
+
+        fn meet(&self, left: &Self::Fact, right: &Self::Fact) -> Self::Fact {
+            left | right
+        }
+
+        fn transfer_node(
+            &self,
+            _graph: &Cfg<Instruction, ControlFlowEdge>,
+            node: BlockId,
+            input: &Self::Fact,
+        ) -> Self::Fact {
+            if node == self.entry {
+                input | 2
+            } else {
+                *input
+            }
+        }
+
+        fn transfer_edge(
+            &self,
+            _graph: &Cfg<Instruction, ControlFlowEdge>,
+            edge: EdgeRef<'_, BlockId, cfglib::EdgeId, Edge<ControlFlowEdge>>,
+            node_input: &Self::Fact,
+            node_output: &Self::Fact,
+        ) -> Self::Fact {
+            if edge.data().payload().is_exceptional() {
+                *node_input
+            } else {
+                *node_output
+            }
+        }
+    }
+
+    #[test]
+    fn edge_dataflow_uses_pre_state_for_exception_and_post_state_for_normal_flow() {
+        let body = FunctionBody::new(
+            AddressUnit::Byte,
+            vec![
+                instruction(0, InstructionFlow::FallThrough),
+                instruction(1, InstructionFlow::Return),
+                instruction(2, InstructionFlow::Return),
+            ],
+            vec![ExceptionHandler {
+                protected: AddressRange::new(CodeAddress::from(0_u32), CodeAddress::from(1_u32)),
+                handler: CodeAddress::from(2_u32),
+                catch: CatchType::Any,
+            }],
+        );
+        let graph = build_control_flow_graph(&body).unwrap();
+        let entry = graph.cfg().entry();
+        let facts = solve_edge_problem(graph.cfg(), &PrePostState { entry }).unwrap();
+        let mut normal_fact = None;
+        let mut exception_fact = None;
+        for &edge in graph.cfg().successor_edges(entry) {
+            if graph.cfg().edge(edge).payload().is_exceptional() {
+                exception_fact = facts.fact_on(edge).copied();
+            } else {
+                normal_fact = facts.fact_on(edge).copied();
+            }
+        }
+        assert_eq!(facts.fact_in(entry), &1);
+        assert_eq!(facts.fact_out(entry), &3);
+        assert_eq!(normal_fact, Some(3));
+        assert_eq!(exception_fact, Some(1));
     }
 
     #[test]

@@ -226,6 +226,16 @@ The default save policy refuses to rewrite a signed JAR. Callers must choose
 to preserve potentially stale signature entries or strip the signature files
 and manifest digests explicitly.
 
+Shared executable graphs use caller-payload-aware cfglib CFGs. Every edge keeps
+its stable identity, exact source and target address, and detailed role:
+conditional arm, switch default or signed case key, legacy subroutine call or
+call-site continuation, or ordered exception handler with its protected range
+and catch type. Protected instructions are isolated before exception edges are
+added, so edge-sensitive analyses can use instruction pre-state for exceptional
+flow and post-state for ordinary flow. `ControlFlowGraph::normal_view()` filters
+exception edges without rebuilding or renumbering the graph; the full CFG and
+normal-only view can be passed directly to cfglib algorithms.
+
 Class-file assembly and bytecode encoding operate on public structured models:
 
 ```rust

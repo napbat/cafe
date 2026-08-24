@@ -1,27 +1,34 @@
 //! Control-flow graph construction over shared disassembly IR.
 
 mod build;
+mod edge;
 mod error;
+mod validate;
 
 use std::collections::BTreeMap;
 
-use cfglib::{BlockId, Cfg};
+use cfglib::{BlockId, Cfg, Edge, EdgeId, FilteredEdges};
 
 use crate::{CodeAddress, FunctionBody, Instruction};
 
 pub use self::build::build_control_flow_graph;
+pub use self::edge::{
+    ControlFlowEdge, ControlFlowEdgeRole, ExceptionHandlerIndex, NormalControlFlow,
+};
 pub use self::error::GraphError;
+
+use self::edge::is_normal_edge;
 
 /// A verified cfglib CFG with source-address-to-block lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowGraph {
-    cfg: Cfg<Instruction>,
+    cfg: Cfg<Instruction, ControlFlowEdge>,
     instruction_blocks: BTreeMap<CodeAddress, BlockId>,
 }
 
 impl ControlFlowGraph {
     pub(crate) const fn new(
-        cfg: Cfg<Instruction>,
+        cfg: Cfg<Instruction, ControlFlowEdge>,
         instruction_blocks: BTreeMap<CodeAddress, BlockId>,
     ) -> Self {
         Self {
@@ -32,14 +39,24 @@ impl ControlFlowGraph {
 
     /// Returns the underlying graph for cfglib algorithms.
     #[must_use]
-    pub const fn cfg(&self) -> &Cfg<Instruction> {
+    pub const fn cfg(&self) -> &Cfg<Instruction, ControlFlowEdge> {
         &self.cfg
     }
 
     /// Consumes this wrapper and returns the underlying cfglib graph.
     #[must_use]
-    pub fn into_cfg(self) -> Cfg<Instruction> {
+    pub fn into_cfg(self) -> Cfg<Instruction, ControlFlowEdge> {
         self.cfg
+    }
+
+    /// Returns a zero-copy graph view that excludes exceptional edges while
+    /// retaining every block and stable ordinary edge identity.
+    #[must_use]
+    pub fn normal_view(&self) -> NormalControlFlow<'_> {
+        FilteredEdges::new(
+            &self.cfg,
+            is_normal_edge as fn(EdgeId, &Edge<ControlFlowEdge>) -> bool,
+        )
     }
 
     /// Returns the basic block containing an instruction start address.
@@ -55,8 +72,8 @@ impl ControlFlowGraph {
     }
 }
 
-impl AsRef<Cfg<Instruction>> for ControlFlowGraph {
-    fn as_ref(&self) -> &Cfg<Instruction> {
+impl AsRef<Cfg<Instruction, ControlFlowEdge>> for ControlFlowGraph {
+    fn as_ref(&self) -> &Cfg<Instruction, ControlFlowEdge> {
         self.cfg()
     }
 }

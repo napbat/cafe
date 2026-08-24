@@ -4,7 +4,9 @@
 //! [`Disassembly`] model by implementing [`DisassemblySource`]. The shared
 //! instruction model deliberately retains native opcodes, mnemonics,
 //! references, addresses, and signatures while presenting one stable boundary
-//! to graphing and downstream analysis tools.
+//! to graphing and downstream analysis tools. Shared CFG edges retain exact
+//! switch, handler, throw-site, and continuation provenance in caller-owned
+//! cfglib payloads and expose zero-copy normal-only views.
 
 mod diagnostic;
 pub mod graph;
@@ -17,7 +19,10 @@ pub use cfglib;
 pub use diagnostic::{
     Diagnostic, DiagnosticLevel, DiagnosticLocation, DiagnosticNote, Diagnostics,
 };
-pub use graph::{ControlFlowGraph, GraphError, build_control_flow_graph};
+pub use graph::{
+    ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph, ExceptionHandlerIndex, GraphError,
+    NormalControlFlow, build_control_flow_graph,
+};
 pub use model::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, CodeSize, Disassembly,
     ExceptionHandler, Function, FunctionBody, FunctionSymbol, Immediate, Instruction,

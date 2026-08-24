@@ -117,8 +117,11 @@ These rules apply to the entire repository.
   references, and resolved display names needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
   control-flow edges through cfglib for every lowered executable body.
-- Preserve normal-versus-exceptional edge meaning and native switch/catch
-  provenance outside cfglib until its graph model can carry typed edge data.
+- Carry normal-versus-exceptional meaning, native switch keys, ordered catch
+  metadata, exact throw sites, and legacy continuation call sites in cfglib
+  edge payloads. Offer zero-copy normal-only views over the same stable edge
+  identities, and isolate protected instructions when exceptional pre-state
+  precision requires instruction-granular blocks.
 - Keep source mappings format-qualified and capable of representing expansion
   and fusion. Diagnostics must retain overload-qualified native locations.
 - Keep Program definition identity format-qualified and overload-qualified.
