@@ -706,7 +706,10 @@ fn utf8_prefix(value: &str, limit: usize) -> &str {
 }
 
 fn is_digest_attribute(name: &str) -> bool {
-    name.to_ascii_lowercase().contains(DIGEST_ATTRIBUTE_MARKER)
+    let marker = DIGEST_ATTRIBUTE_MARKER.as_bytes();
+    name.as_bytes()
+        .windows(marker.len())
+        .any(|candidate| candidate.eq_ignore_ascii_case(marker))
 }
 
 fn invalid_manifest(line: usize, message: impl std::fmt::Display) -> Error {

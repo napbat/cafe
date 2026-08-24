@@ -37,6 +37,7 @@ impl JarFile {
     /// provider configuration entries.
     pub fn service_configurations(&self) -> Result<Vec<ServiceConfiguration>> {
         let mut configurations = Vec::new();
+        let mut services = HashSet::new();
         let mut reader = EntryReader::new(self);
         for entry in &self.entries {
             if entry.kind != EntryKind::File || !is_service_entry(&entry.name) {
@@ -47,10 +48,7 @@ impl JarFile {
                 .strip_prefix(SERVICE_PREFIX)
                 .ok_or_else(|| Error::InvalidJar("invalid service entry prefix".to_owned()))?;
             validate_binary_name(service, "service")?;
-            if configurations
-                .iter()
-                .any(|configuration: &ServiceConfiguration| configuration.service == service)
-            {
+            if !services.insert(service) {
                 return Err(Error::AmbiguousJarEntry {
                     name: entry.name.clone(),
                     count: 2,
