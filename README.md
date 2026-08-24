@@ -105,6 +105,36 @@ fn inspect(installation: &str) -> Result<(), java::Error> {
 }
 ```
 
+For large archives, `visit_classes` keeps one ZIP reader alive across the
+selected entries. Selection happens before decompression and class parsing,
+and the visitor can stop without touching later entries:
+
+```rust
+use cafe::java;
+use cafe::java::jar::{ClassVisitControl, JarFile};
+
+fn inspect_until(path: &str, stop_after: &str) -> Result<(), java::Error> {
+    let jar = JarFile::open(path)?;
+    jar.visit_classes(
+        |entry| {
+            entry.name != "module-info.class"
+                && !entry.name.ends_with("/package-info.class")
+        },
+        |entry, class| -> Result<ClassVisitControl, java::Error> {
+            println!("{}: {} methods", entry.name, class.methods.len());
+            Ok(if entry.name == stop_after {
+                ClassVisitControl::Stop
+            } else {
+                ClassVisitControl::Continue
+            })
+        },
+    )
+}
+```
+
+The callback may use any consumer error type implementing `From<java::Error>`.
+Archive and parser failures retain the exact physical entry name.
+
 JARs are also fully editable. Entry IDs remain stable across renames and
 reordering, unchanged archives serialize byte-for-byte, and rewrites retain
 entry metadata, archive order, comments, manifests, service configurations,

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::{Error, Result};
 
+use super::reader::EntryReader;
 use super::{EntryId, EntryKind, JarFile};
 
 /// Archive prefix containing `ServiceLoader` provider configurations.
@@ -36,6 +37,7 @@ impl JarFile {
     /// provider configuration entries.
     pub fn service_configurations(&self) -> Result<Vec<ServiceConfiguration>> {
         let mut configurations = Vec::new();
+        let mut reader = EntryReader::new(self);
         for entry in &self.entries {
             if entry.kind != EntryKind::File || !is_service_entry(&entry.name) {
                 continue;
@@ -57,7 +59,12 @@ impl JarFile {
             configurations.push(ServiceConfiguration {
                 entry_id: entry.id,
                 service: service.to_owned(),
-                providers: parse_providers(&self.read_entry_by_id(entry.id)?, &entry.name)?,
+                providers: parse_providers(
+                    &reader
+                        .read(entry)
+                        .map_err(|error| error.in_jar_entry(entry.name.clone()))?,
+                    &entry.name,
+                )?,
             });
         }
         Ok(configurations)

@@ -12,6 +12,7 @@ use crate::{Error, Result};
 
 use super::entry::{EntryData, JarEntry, validate_entry_name};
 use super::layout::ZIP_U16_MAXIMUM;
+use super::reader::EntryReader;
 use super::{EntryId, EntryKind, EntryMetadata, JarFile, normalize_class_entry};
 
 /// Policy used when a rewrite encounters JAR signature artifacts.
@@ -433,9 +434,13 @@ impl JarFile {
     /// entry is removed unless every payload is read successfully.
     pub fn remove_entries_named(&mut self, name: &str) -> Result<Vec<Vec<u8>>> {
         let ids = self.entry_ids_named(name);
+        let mut reader = EntryReader::new(self);
         let payloads: Vec<_> = ids
             .iter()
-            .map(|id| self.read_entry_by_id(*id))
+            .map(|id| {
+                let entry = self.entry_record(*id)?;
+                reader.read(entry)
+            })
             .collect::<Result<_>>()?;
         if !ids.is_empty() {
             let ids: HashSet<_> = ids.into_iter().collect();
@@ -670,10 +675,13 @@ impl JarFile {
         self.validate_rewrite_entries()?;
         let cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(cursor);
+        let mut reader = EntryReader::new(self);
         writer.set_raw_comment(self.comment.clone().into_boxed_slice())?;
         for entry in &self.entries {
             let options = entry.metadata.write_options(&entry.name)?;
-            let data = self.read_entry_by_id(entry.id)?;
+            let data = reader
+                .read(entry)
+                .map_err(|error| error.in_jar_entry(entry.name.clone()))?;
             match entry.kind {
                 EntryKind::File => {
                     writer.start_file(&entry.name, options)?;

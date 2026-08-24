@@ -23,9 +23,22 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let native_methods = jni::java::native_methods(&class)?;
     let bindings = native_methods.bindings()?;
     let empty_dex = dex::DexFile::new(dex::DexVersion::V040);
+    let mut jar = java::jar::JarFile::new();
+    jar.add_class(&class)?;
+    let mut visited_class = false;
+    jar.visit_classes(
+        |entry| entry.name == "sample/Native.class",
+        |entry, parsed| -> java::Result<java::jar::ClassVisitControl> {
+            assert_eq!(entry.name, "sample/Native.class");
+            assert_eq!(parsed.class_name()?, "sample/Native");
+            visited_class = true;
+            Ok(java::jar::ClassVisitControl::Stop)
+        },
+    )?;
 
     assert_eq!(program.module_count(), 1);
     assert_eq!(bindings.len(), 1);
+    assert!(visited_class);
     assert_eq!(
         bindings[0].symbol().as_str(),
         "Java_sample_Native_transform"

@@ -9,6 +9,7 @@ use crate::descriptor;
 use crate::{Error, Result};
 
 use super::entry::validate_entry_name;
+use super::reader::EntryReader;
 use super::{
     EntryKind, JarFile, SERVICE_PREFIX, is_class_entry, is_service_entry, parse_versioned_entry,
 };
@@ -79,6 +80,7 @@ impl JarFile {
             ..ArchiveValidationReport::default()
         };
         let mut names = HashSet::with_capacity(self.entries.len());
+        let mut reader = EntryReader::new(self);
         for entry in &self.entries {
             validate_entry_name(&entry.name, entry.kind)?;
             if !names.insert(&entry.name) {
@@ -90,8 +92,8 @@ impl JarFile {
                     message: "encrypted members are not valid portable JAR entries".to_owned(),
                 });
             }
-            let bytes = self
-                .read_entry_by_id(entry.id)
+            let bytes = reader
+                .read(entry)
                 .map_err(|error| error.in_jar_entry(entry.name.clone()))?;
             report.uncompressed_bytes =
                 report
@@ -153,13 +155,16 @@ impl JarFile {
     pub fn validate_all(&self) -> Result<ValidationReport> {
         self.validate_archive()?;
         let mut report = ValidationReport::default();
+        let mut reader = EntryReader::new(self);
         for entry in &self.entries {
             if entry.kind != EntryKind::File || !is_class_entry(&entry.name) {
                 continue;
             }
             let name = entry.name.clone();
-            let bytes = self.read_entry_by_id(entry.id)?;
-            let size = bytes.len() as u64;
+            let bytes = reader
+                .read(entry)
+                .map_err(|error| error.in_jar_entry(name.clone()))?;
+            let size = entry.uncompressed_size();
 
             let class = validate_class_round_trip(&bytes, &name)?;
             record_class(&mut report, &class, size);

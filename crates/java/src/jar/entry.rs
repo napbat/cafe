@@ -308,3 +308,15 @@ pub(crate) struct JarEntry {
     pub(crate) original_stats: Option<OriginalEntryStats>,
     pub(crate) encrypted: bool,
 }
+
+impl JarEntry {
+    pub(crate) fn uncompressed_size(&self) -> u64 {
+        match (&self.data, self.original_stats) {
+            (EntryData::Original(_), Some(stats)) => stats.size,
+            (EntryData::Owned(bytes), _) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            (EntryData::Original(_), None) => {
+                unreachable!("original JAR entries retain their source statistics")
+            }
+        }
+    }
+}

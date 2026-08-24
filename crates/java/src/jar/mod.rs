@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use zip::ZipArchive;
 
-use crate::classfile::ClassFile;
 use crate::{Error, Result};
 
+mod classes;
 mod discovery;
 mod edit;
 mod entry;
@@ -17,14 +17,16 @@ mod inventory;
 mod layout;
 mod manifest;
 mod multi_release;
+mod reader;
 mod services;
 mod signature;
 mod validation;
 
+pub use self::classes::{ClassEntry, ClassSummary, ClassVisitControl};
 pub use self::discovery::{Traversal, discover_jars, is_jar_path};
 pub use self::edit::SignaturePolicy;
 pub use self::entry::{EntryId, EntryKind, EntryMetadata, ExtraField, ExtraFieldPlacement};
-pub use self::inventory::{ClassSummary, EntryInfo};
+pub use self::inventory::EntryInfo;
 pub use self::manifest::{
     DEFAULT_MANIFEST_VERSION, MANIFEST_VERSION_HEADER, Manifest, ManifestAttribute,
     ManifestSection, NAME_HEADER, NamedManifestSection,
@@ -36,6 +38,7 @@ pub use self::validation::{ArchiveValidationReport, ValidationReport};
 pub use zip::{CompressionMethod, DateTime, System};
 
 use self::entry::{EntryData, JarEntry, OriginalEntryStats};
+use self::reader::EntryReader;
 
 /// Conventional path of a JAR manifest.
 pub const MANIFEST_ENTRY: &str = "META-INF/MANIFEST.MF";
@@ -52,8 +55,6 @@ pub const MULTI_RELEASE_HEADER: &str = "Multi-Release";
 pub const MULTI_RELEASE_ENABLED_VALUE: &str = "true";
 /// Archive prefix containing version-specific multi-release entries.
 pub const MULTI_RELEASE_ENTRY_PREFIX: &str = "META-INF/versions/";
-
-type SourceReader = Cursor<Arc<[u8]>>;
 
 /// An in-memory, editable JAR with stable entry identities.
 ///
@@ -188,30 +189,7 @@ impl JarFile {
     /// decompressed.
     pub fn read_entry_by_id(&self, id: EntryId) -> Result<Vec<u8>> {
         let entry = self.entry_record(id)?;
-        match &entry.data {
-            EntryData::Owned(bytes) => Ok(bytes.clone()),
-            EntryData::Original(index) => {
-                let mut archive = self.source_archive()?;
-                let mut file = archive.by_index(*index)?;
-                read_zip_file(&mut file)
-            }
-        }
-    }
-
-    /// Resolves a dotted, internal, or `.class` name and parses that class.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the class is absent, ambiguous, cannot be
-    /// decompressed, or is an invalid class file.
-    pub fn read_class(&self, class_name: &str) -> Result<ClassFile> {
-        let entry_name = normalize_class_entry(class_name);
-        let bytes = match self.read_entry(&entry_name) {
-            Ok(bytes) => bytes,
-            Err(Error::JarEntryNotFound(_)) => return Err(Error::ClassNotFound(entry_name)),
-            Err(error) => return Err(error),
-        };
-        ClassFile::parse(&bytes).map_err(|error| error.in_jar_entry(entry_name))
+        EntryReader::new(self).read(entry)
     }
 
     /// Returns stable IDs for every exact entry-name match in archive order.
@@ -251,14 +229,6 @@ impl JarFile {
             .iter_mut()
             .find(|entry| entry.id == id)
             .ok_or(Error::JarEntryIdNotFound(id.0))
-    }
-
-    pub(crate) fn source_archive(&self) -> Result<ZipArchive<SourceReader>> {
-        let original = self
-            .original
-            .as_ref()
-            .ok_or_else(|| Error::InvalidJar("entry has no original archive backing".to_owned()))?;
-        Ok(ZipArchive::new(Cursor::new(Arc::clone(original)))?)
     }
 }
 
