@@ -3,7 +3,8 @@
 use crate::file::header::ABSENT_OFFSET;
 use crate::file::io::Writer;
 use crate::file::layout::{
-    Alignment, AnnotationAssociationField, AnnotationDirectoryField, EMPTY_ITEM_COUNT, ItemWidth,
+    Alignment, AnnotationAssociationField, AnnotationDirectoryField, EMPTY_ITEM_COUNT,
+    ITEM_COUNT_INCREMENT, ItemWidth,
 };
 use crate::file::model::{
     AnnotationItem, ClassDefinition, FieldIndex, MapItem, MapItemType, MethodIndex,
@@ -116,7 +117,7 @@ fn item_set(
             writer.u8(annotation.visibility.byte());
             super::value::annotation(writer, &annotation.annotation, ROOT_ENCODED_VALUE_DEPTH)?;
             *count = count
-                .checked_add(1)
+                .checked_add(ITEM_COUNT_INCREMENT)
                 .ok_or_else(|| Error::invalid_assembly("annotation item count overflowed"))?;
             Ok(offset)
         })
@@ -179,7 +180,7 @@ fn annotation_set(writer: &mut Writer, offsets: &[u32], count: &mut u32) -> Resu
         writer.u32(*item);
     }
     *count = count
-        .checked_add(1)
+        .checked_add(ITEM_COUNT_INCREMENT)
         .ok_or_else(|| Error::invalid_assembly("annotation set count overflowed"))?;
     Ok(offset)
 }
@@ -202,7 +203,7 @@ fn write_parameter_references(
             for parameter in parameters {
                 writer.u32(*parameter);
             }
-            count = count.checked_add(1).ok_or_else(|| {
+            count = count.checked_add(ITEM_COUNT_INCREMENT).ok_or_else(|| {
                 Error::invalid_assembly("annotation-set reference count overflowed")
             })?;
             offsets.push(offset);
@@ -267,7 +268,7 @@ fn write_directories(
             writer.u32(*reference);
         }
         count = count
-            .checked_add(1)
+            .checked_add(ITEM_COUNT_INCREMENT)
             .ok_or_else(|| Error::invalid_assembly("annotation directory count overflowed"))?;
         offsets.push(offset);
     }

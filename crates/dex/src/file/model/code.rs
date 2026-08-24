@@ -43,6 +43,38 @@ pub struct CatchHandler {
     pub address: u32,
 }
 
+/// Signed handler-count encoding used by an encoded catch-handler list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EncodedCatchHandlerCount(i32);
+
+impl EncodedCatchHandlerCount {
+    pub(crate) const fn from_raw(raw: i32) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn from_parts(typed_count: i32, has_catch_all: bool) -> Self {
+        if has_catch_all {
+            Self(-typed_count)
+        } else {
+            Self(typed_count)
+        }
+    }
+
+    pub(crate) const fn has_catch_all(self) -> bool {
+        self.0 <= 0
+    }
+
+    pub(crate) fn typed_count(self) -> Option<u32> {
+        self.0
+            .checked_abs()
+            .and_then(|count| u32::try_from(count).ok())
+    }
+
+    pub(crate) const fn raw(self) -> i32 {
+        self.0
+    }
+}
+
 /// One field declaration encoded in class data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EncodedField {

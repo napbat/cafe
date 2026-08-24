@@ -4,7 +4,10 @@ use crate::{Error, Result};
 
 use super::Context;
 use crate::file::header::ABSENT_OFFSET;
-use crate::file::layout::{Alignment, HiddenApiField, ItemWidth, SINGLE_ITEM_COUNT};
+use crate::file::layout::{
+    Alignment, EMPTY_ITEM_COUNT_USIZE, HiddenApiField, ItemWidth, SINGLE_ITEM_COUNT,
+    UNREPRESENTABLE_FILE_OFFSET,
+};
 use crate::file::model::{ClassDefinition, HiddenApiClassData, MapItemType};
 
 pub(super) fn data(
@@ -16,7 +19,7 @@ pub(super) fn data(
     };
     if item.size != SINGLE_ITEM_COUNT {
         return Err(Error::invalid_dex(
-            usize::try_from(item.offset).unwrap_or(usize::MAX),
+            usize::try_from(item.offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
             "hidden-API map entry must describe one section",
         ));
     }
@@ -55,12 +58,15 @@ pub(super) fn data(
                 "hidden-API flags offset is outside the flag data",
             ));
         }
-        let member_count = class.class_data.as_ref().map_or(0, |data| {
-            data.static_fields.len()
-                + data.instance_fields.len()
-                + data.direct_methods.len()
-                + data.virtual_methods.len()
-        });
+        let member_count = class
+            .class_data
+            .as_ref()
+            .map_or(EMPTY_ITEM_COUNT_USIZE, |data| {
+                data.static_fields.len()
+                    + data.instance_fields.len()
+                    + data.direct_methods.len()
+                    + data.virtual_methods.len()
+            });
         let mut cursor = context.reader.cursor(offset + relative)?;
         let mut class_flags = Vec::with_capacity(member_count);
         for _ in 0..member_count {

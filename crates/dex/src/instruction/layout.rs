@@ -59,6 +59,7 @@ pub(super) const SPARSE_SWITCH_HEADER_CODE_UNITS_U32: u32 = 2;
 pub(super) const SPARSE_SWITCH_ENTRY_CODE_UNITS_U32: u32 = 4;
 pub(super) const ARRAY_DATA_HEADER_CODE_UNITS_U32: u32 = 4;
 pub(super) const ALIGNMENT_ROUNDING_BIAS_U32: u32 = BYTES_PER_CODE_UNIT_U32 - 1;
+pub(super) const ALIGNMENT_ROUNDING_BIAS: usize = BYTES_PER_CODE_UNIT - 1;
 
 /// Identifying pseudo-opcode stored at the start of a payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

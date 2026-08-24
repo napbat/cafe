@@ -25,7 +25,7 @@ pub(crate) const MAGIC_TERMINATOR: u8 = 0;
 /// Width between a section's size field and its offset field.
 pub(crate) const SECTION_OFFSET_DELTA: usize = size_of::<u32>();
 /// Width between section fields for writer offsets represented as `u32`.
-pub(crate) const SECTION_OFFSET_DELTA_U32: u32 = 4;
+pub(crate) const SECTION_OFFSET_DELTA_U32: u32 = u32::BITS / u8::BITS;
 /// Canonical value for an absent optional offset or empty section coordinate.
 pub(crate) const ABSENT_OFFSET: u32 = 0;
 /// Physical header position used by versions 035 through 040.
@@ -181,12 +181,12 @@ impl DexHeader {
         let empty = Section::default();
         Self {
             version,
-            checksum: 0,
-            signature: [0; SIGNATURE_SIZE],
-            file_size: 0,
+            checksum: u32::default(),
+            signature: [u8::default(); SIGNATURE_SIZE],
+            file_size: u32::default(),
             header_size: version.header_size(),
             endian: Endian::Little,
-            link_size: 0,
+            link_size: u32::default(),
             link_off: ABSENT_OFFSET,
             map_off: ABSENT_OFFSET,
             string_ids: empty,
@@ -196,7 +196,7 @@ impl DexHeader {
             method_ids: empty,
             class_defs: empty,
             data: empty,
-            container_size: 0,
+            container_size: u32::default(),
             header_offset: ABSENT_OFFSET,
         }
     }

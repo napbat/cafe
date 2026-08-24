@@ -12,11 +12,13 @@ mod validation;
 mod write;
 
 pub use self::header::{DexHeader, DexVersion, Endian, Section};
+pub use self::layout::ItemWidth;
 pub use self::model::*;
 pub use self::resolve::{
     ResolvedField, ResolvedMethod, ResolvedMethodHandle, ResolvedMethodHandleTarget,
 };
 
+use self::header::LEGACY_HEADER_OFFSET;
 use crate::{Error, Result};
 
 /// Parsed and editable logical DEX file.
@@ -74,7 +76,7 @@ impl DexFile {
     /// Returns an error for malformed magic, integrity fields, offsets, tables,
     /// variable-length data, instructions, or cross references.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        parse::parse(bytes, 0)
+        parse::parse(bytes, LEGACY_HEADER_OFFSET)
     }
 
     /// Returns the parsed header and exact original section coordinates.

@@ -15,7 +15,9 @@ use crate::{Error, Result};
 use super::DexFile;
 use super::header::{ABSENT_OFFSET, DexHeader, DexVersion, HeaderField, Section};
 use super::io::Reader;
-use super::layout::{Alignment, ItemWidth};
+use super::layout::{
+    Alignment, EMPTY_ITEM_COUNT, ItemWidth, UNLOCATED_ERROR_OFFSET, UNREPRESENTABLE_FILE_OFFSET,
+};
 use super::model::{MapItem, MapItemType};
 
 pub(super) fn parse(bytes: &[u8], header_offset: usize) -> Result<DexFile> {
@@ -70,7 +72,7 @@ pub(super) fn parse(bytes: &[u8], header_offset: usize) -> Result<DexFile> {
 }
 
 fn parse_link_data(context: &Context<'_>) -> Result<Vec<u8>> {
-    if context.header.link_size == 0 {
+    if context.header.link_size == EMPTY_ITEM_COUNT {
         if context.header.link_off != ABSENT_OFFSET {
             return Err(Error::invalid_dex(
                 HeaderField::LinkOffset.offset(),
@@ -94,10 +96,17 @@ pub(super) struct Context<'a> {
 
 impl Context<'_> {
     pub(super) fn offset(self, value: u32, alignment: Alignment, what: &str) -> Result<usize> {
-        let offset = usize::try_from(value)
-            .map_err(|_| Error::invalid_dex(0, format!("{what} offset does not fit platform")))?;
+        let offset = usize::try_from(value).map_err(|_| {
+            Error::invalid_dex(
+                UNLOCATED_ERROR_OFFSET,
+                format!("{what} offset does not fit platform"),
+            )
+        })?;
         if value == ABSENT_OFFSET {
-            return Err(Error::invalid_dex(0, format!("{what} offset is zero")));
+            return Err(Error::invalid_dex(
+                UNLOCATED_ERROR_OFFSET,
+                format!("{what} offset is zero"),
+            ));
         }
         if !value.is_multiple_of(alignment.bytes_u32()) {
             return Err(Error::invalid_dex(
@@ -126,10 +135,10 @@ impl Context<'_> {
         item_width: ItemWidth,
         what: &str,
     ) -> Result<Option<(usize, usize)>> {
-        if section.size == 0 {
+        if section.size == EMPTY_ITEM_COUNT {
             if section.offset != ABSENT_OFFSET {
                 return Err(Error::invalid_dex(
-                    usize::try_from(section.offset).unwrap_or(usize::MAX),
+                    usize::try_from(section.offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                     format!("{what} offset is nonzero for an empty section"),
                 ));
             }

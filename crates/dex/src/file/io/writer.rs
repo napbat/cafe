@@ -3,8 +3,14 @@
 use crate::{Error, Result};
 
 use crate::file::Endian;
-use crate::file::io::leb128::{CONTINUATION_BIT, GROUP_BITS, P1_BIAS, PAYLOAD_MASK, SIGN_BIT};
+use crate::file::io::leb128::{
+    CONTINUATION_BIT, GROUP_BITS, NEGATIVE_SIGNED_TERMINATOR, P1_BIAS, PAYLOAD_MASK,
+    POSITIVE_SIGNED_TERMINATOR, SIGN_BIT, ULEB128P1_NONE, UNSIGNED_TERMINATOR,
+};
 use crate::file::layout::Alignment;
+
+const DEX_PADDING_BYTE: u8 = 0;
+const LOW_BYTE_INDEX: usize = 0;
 
 /// Growable DEX output with checked 32-bit positions.
 #[derive(Debug)]
@@ -41,14 +47,14 @@ impl Writer {
             .len()
             .checked_add(length)
             .ok_or_else(|| Error::invalid_assembly("DEX output length overflowed"))?;
-        self.bytes.resize(new_length, 0);
+        self.bytes.resize(new_length, DEX_PADDING_BYTE);
         Ok(offset)
     }
 
     pub(crate) fn align(&mut self, alignment: Alignment) -> Result<()> {
         let alignment = alignment.bytes_u32();
         while !self.position()?.is_multiple_of(alignment) {
-            self.u8(0);
+            self.u8(DEX_PADDING_BYTE);
         }
         Ok(())
     }
@@ -109,20 +115,20 @@ impl Writer {
 
     pub(crate) fn uleb128(&mut self, mut value: u32) {
         loop {
-            let mut byte = value.to_le_bytes()[0] & PAYLOAD_MASK;
+            let mut byte = value.to_le_bytes()[LOW_BYTE_INDEX] & PAYLOAD_MASK;
             value >>= GROUP_BITS;
-            if value != 0 {
+            if value != UNSIGNED_TERMINATOR {
                 byte |= CONTINUATION_BIT;
             }
             self.u8(byte);
-            if value == 0 {
+            if value == UNSIGNED_TERMINATOR {
                 break;
             }
         }
     }
 
     pub(crate) fn uleb128p1(&mut self, value: Option<u32>) -> Result<()> {
-        let encoded = value.map_or(Ok(0), |value| {
+        let encoded = value.map_or(Ok(ULEB128P1_NONE), |value| {
             value
                 .checked_add(P1_BIAS)
                 .ok_or_else(|| Error::invalid_assembly("uleb128p1 value overflowed"))
@@ -133,10 +139,11 @@ impl Writer {
 
     pub(crate) fn sleb128(&mut self, mut value: i32) {
         loop {
-            let byte = value.to_le_bytes()[0] & PAYLOAD_MASK;
+            let byte = value.to_le_bytes()[LOW_BYTE_INDEX] & PAYLOAD_MASK;
             let sign = byte & SIGN_BIT != 0;
             value >>= GROUP_BITS;
-            let done = (value == 0 && !sign) || (value == -1 && sign);
+            let done = (value == POSITIVE_SIGNED_TERMINATOR && !sign)
+                || (value == NEGATIVE_SIGNED_TERMINATOR && sign);
             self.u8(if done { byte } else { byte | CONTINUATION_BIT });
             if done {
                 break;

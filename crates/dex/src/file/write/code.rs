@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use crate::file::header::ABSENT_OFFSET;
 use crate::file::io::Writer;
-use crate::file::layout::{Alignment, EMPTY_ITEM_COUNT, ItemWidth, TryField};
+use crate::file::layout::{Alignment, EMPTY_ITEM_COUNT, ITEM_COUNT_INCREMENT, ItemWidth, TryField};
 use crate::file::model::{
     CatchHandler, ClassDefinition, DEBUG_LINE_BASE, DEBUG_LINE_RANGE, DebugEvent, DebugInfo,
-    DebugOpcode, EncodedMethod, FIRST_SPECIAL_DEBUG_OPCODE, MapItem, MapItemType, MethodIndex,
-    StringIndex, TypeIndex,
+    DebugOpcode, EncodedCatchHandlerCount, EncodedMethod, FIRST_SPECIAL_DEBUG_OPCODE, MapItem,
+    MapItemType, MethodIndex, StringIndex, TypeIndex,
 };
 use crate::instruction::encode;
 use crate::{Error, Result};
@@ -62,7 +62,7 @@ fn write_debug_info(
             ));
         }
         count = count
-            .checked_add(1)
+            .checked_add(ITEM_COUNT_INCREMENT)
             .ok_or_else(|| Error::invalid_assembly("debug item count overflowed"))?;
     }
     Ok((offsets, section(MapItemType::DebugInfo, count, start)))
@@ -76,18 +76,26 @@ fn write_debug_program(writer: &mut Writer, debug: &DebugInfo) -> Result<()> {
     for name in &debug.parameter_names {
         writer.uleb128p1(name.map(StringIndex::get))?;
     }
-    for (index, event) in debug.events.iter().enumerate() {
-        if matches!(event, DebugEvent::EndSequence) && index + 1 != debug.events.len() {
-            return Err(Error::invalid_assembly(
-                "debug end-sequence event is not last",
-            ));
-        }
-        write_debug_event(writer, event)?;
-    }
-    if !matches!(debug.events.last(), Some(DebugEvent::EndSequence)) {
+    let Some((last, preceding)) = debug.events.split_last() else {
         return Err(Error::invalid_assembly(
             "debug program has no final end-sequence event",
         ));
+    };
+    if !matches!(last, DebugEvent::EndSequence) {
+        return Err(Error::invalid_assembly(
+            "debug program has no final end-sequence event",
+        ));
+    }
+    if preceding
+        .iter()
+        .any(|event| matches!(event, DebugEvent::EndSequence))
+    {
+        return Err(Error::invalid_assembly(
+            "debug end-sequence event is not last",
+        ));
+    }
+    for event in &debug.events {
+        write_debug_event(writer, event)?;
     }
     Ok(())
 }
@@ -185,8 +193,9 @@ fn write_code_items(
         writer.align(Alignment::Word)?;
         let offset = writer.position()?;
         let words = encode(&code.instructions)?;
-        let tries_size = u16::try_from(code.tries.len())
-            .map_err(|_| Error::invalid_assembly("code item has more than 65535 try blocks"))?;
+        let tries_size = u16::try_from(code.tries.len()).map_err(|_| {
+            Error::invalid_assembly(format!("code item has more than {} try blocks", u16::MAX))
+        })?;
         writer.u16(code.registers_size);
         writer.u16(code.ins_size);
         writer.u16(code.outs_size);
@@ -226,7 +235,7 @@ fn write_code_items(
             ));
         }
         count = count
-            .checked_add(1)
+            .checked_add(ITEM_COUNT_INCREMENT)
             .ok_or_else(|| Error::invalid_assembly("code item count overflowed"))?;
     }
     Ok((offsets, section(MapItemType::Code, count, start)))
@@ -275,23 +284,23 @@ fn write_catches(writer: &mut Writer, handlers: &[CatchHandler]) -> Result<()> {
     let catch_all = handlers
         .iter()
         .position(|handler| handler.exception_type.is_none());
-    if catch_all.is_some_and(|position| position + 1 != handlers.len()) {
+    if catch_all.is_some()
+        && handlers
+            .last()
+            .is_none_or(|handler| handler.exception_type.is_some())
+    {
         return Err(Error::invalid_assembly(
             "catch-all handler is not last in its handler list",
         ));
     }
     let typed_count = handlers.len() - usize::from(catch_all.is_some());
-    if typed_count == 0 && catch_all.is_none() {
+    if handlers.is_empty() {
         return Err(Error::invalid_assembly("exception handler list is empty"));
     }
     let typed_count_usize = typed_count;
     let typed_count = i32::try_from(typed_count_usize)
         .map_err(|_| Error::invalid_assembly("typed exception handler count exceeds 32 bits"))?;
-    writer.sleb128(if catch_all.is_some() {
-        -typed_count
-    } else {
-        typed_count
-    });
+    writer.sleb128(EncodedCatchHandlerCount::from_parts(typed_count, catch_all.is_some()).raw());
     for handler in handlers.iter().take(typed_count_usize) {
         let exception_type = handler.exception_type.ok_or_else(|| {
             Error::invalid_assembly("typed exception handler has no exception type")
@@ -329,24 +338,28 @@ fn write_class_data(
         write_methods(writer, &data.virtual_methods, code_offsets)?;
         offsets.push(offset);
         count = count
-            .checked_add(1)
+            .checked_add(ITEM_COUNT_INCREMENT)
             .ok_or_else(|| Error::invalid_assembly("class data item count overflowed"))?;
     }
     Ok((offsets, section(MapItemType::ClassData, count, start)))
 }
 
 fn write_fields(writer: &mut Writer, fields: &[crate::file::EncodedField]) -> Result<()> {
-    let mut previous = 0u32;
-    for (index, field) in fields.iter().enumerate() {
-        let difference = field.field.get().checked_sub(previous).ok_or_else(|| {
-            Error::invalid_assembly("encoded fields are not in increasing index order")
-        })?;
-        if index != 0 && difference == 0 {
-            return Err(Error::invalid_assembly("encoded field index is duplicated"));
-        }
+    let mut previous = None;
+    for field in fields {
+        let current = field.field.get();
+        let difference = match previous {
+            None => current,
+            Some(previous) if current == previous => {
+                return Err(Error::invalid_assembly("encoded field index is duplicated"));
+            }
+            Some(previous) => current.checked_sub(previous).ok_or_else(|| {
+                Error::invalid_assembly("encoded fields are not in increasing index order")
+            })?,
+        };
         writer.uleb128(difference);
         writer.uleb128(field.access_flags.bits());
-        previous = field.field.get();
+        previous = Some(current);
     }
     Ok(())
 }
@@ -356,16 +369,20 @@ fn write_methods(
     methods: &[EncodedMethod],
     code_offsets: &BTreeMap<MethodIndex, u32>,
 ) -> Result<()> {
-    let mut previous = 0u32;
-    for (index, method) in methods.iter().enumerate() {
-        let difference = method.method.get().checked_sub(previous).ok_or_else(|| {
-            Error::invalid_assembly("encoded methods are not in increasing index order")
-        })?;
-        if index != 0 && difference == 0 {
-            return Err(Error::invalid_assembly(
-                "encoded method index is duplicated",
-            ));
-        }
+    let mut previous = None;
+    for method in methods {
+        let current = method.method.get();
+        let difference = match previous {
+            None => current,
+            Some(previous) if current == previous => {
+                return Err(Error::invalid_assembly(
+                    "encoded method index is duplicated",
+                ));
+            }
+            Some(previous) => current.checked_sub(previous).ok_or_else(|| {
+                Error::invalid_assembly("encoded methods are not in increasing index order")
+            })?,
+        };
         writer.uleb128(difference);
         writer.uleb128(method.access_flags.bits());
         writer.uleb128(
@@ -374,7 +391,7 @@ fn write_methods(
                 .copied()
                 .unwrap_or(ABSENT_OFFSET),
         );
-        previous = method.method.get();
+        previous = Some(current);
     }
     Ok(())
 }

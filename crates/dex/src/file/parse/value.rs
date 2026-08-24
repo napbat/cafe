@@ -6,15 +6,16 @@ use super::Context;
 use crate::file::io::Cursor;
 use crate::file::layout::{Alignment, ItemWidth};
 use crate::file::model::{
-    AnnotationElement, ENCODED_VALUE_ARGUMENT_SHIFT, ENCODED_VALUE_TAG_MASK,
-    ENCODED_VALUE_WIDTH_BIAS, EncodedAnnotation, EncodedValue, EncodedValueTag, FieldIndex,
-    MAX_ENCODED_VALUE_DEPTH, MethodHandleIndex, MethodIndex, PrototypeIndex, StringIndex,
+    AnnotationElement, ENCODED_VALUE_NESTING_INCREMENT, ENCODED_VALUE_TAG_MASK, EncodedAnnotation,
+    EncodedValue, EncodedValueArgument, EncodedValueTag, FieldIndex, MAX_ENCODED_VALUE_DEPTH,
+    MethodHandleIndex, MethodIndex, PrototypeIndex, ROOT_ENCODED_VALUE_DEPTH, StringIndex,
     TypeIndex,
 };
 
 const BYTE_WIDTH_BITS: usize = u8::BITS as usize;
 const FLOAT_WIDTH_BYTES: usize = size_of::<u32>();
 const DOUBLE_WIDTH_BYTES: usize = size_of::<u64>();
+const SIGN_BIT_POSITION_ADJUSTMENT: usize = 1;
 
 pub(super) fn array_at(
     context: &Context<'_>,
@@ -23,7 +24,7 @@ pub(super) fn array_at(
 ) -> Result<Vec<EncodedValue>> {
     let offset = context.offset(encoded_offset, Alignment::Byte, what)?;
     let mut cursor = context.reader.cursor(offset)?;
-    array(context, &mut cursor, 0)
+    array(context, &mut cursor, ROOT_ENCODED_VALUE_DEPTH)
 }
 
 pub(super) fn array(
@@ -37,7 +38,11 @@ pub(super) fn array(
     let count = context.count(count, ItemWidth::BYTE, cursor.position(), "encoded array")?;
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
-        values.push(encoded(context, cursor, depth + 1)?);
+        values.push(encoded(
+            context,
+            cursor,
+            depth + ENCODED_VALUE_NESTING_INCREMENT,
+        )?);
     }
     if cursor.position() < count_offset {
         return Err(Error::invalid_dex(
@@ -89,7 +94,7 @@ pub(super) fn annotation(
         previous_name = Some(name);
         elements.push(AnnotationElement {
             name: StringIndex(name),
-            value: encoded(context, cursor, depth + 1)?,
+            value: encoded(context, cursor, depth + ENCODED_VALUE_NESTING_INCREMENT)?,
         });
     }
     Ok(EncodedAnnotation {
@@ -107,8 +112,8 @@ fn encoded(context: &Context<'_>, cursor: &mut Cursor<'_>, depth: usize) -> Resu
     let tag = EncodedValueTag::from_byte(raw_tag).ok_or_else(|| {
         Error::invalid_dex(start, format!("unknown encoded-value type 0x{raw_tag:02x}"))
     })?;
-    let argument = header >> ENCODED_VALUE_ARGUMENT_SHIFT;
-    let length = usize::from(argument + ENCODED_VALUE_WIDTH_BIAS);
+    let argument = EncodedValueArgument::from_header(header);
+    let length = argument.payload_width();
     let value =
         match tag {
             EncodedValueTag::Byte => {
@@ -168,7 +173,7 @@ fn encoded(context: &Context<'_>, cursor: &mut Cursor<'_>, depth: usize) -> Resu
                 argument,
                 context
                     .map_item(crate::file::MapItemType::MethodHandle)
-                    .map_or(0, |item| item.size),
+                    .map_or(crate::file::layout::EMPTY_ITEM_COUNT, |item| item.size),
                 "method-handle",
             )?)),
             EncodedValueTag::String => EncodedValue::String(StringIndex(index(
@@ -218,11 +223,19 @@ fn encoded(context: &Context<'_>, cursor: &mut Cursor<'_>, depth: usize) -> Resu
             )?)),
             EncodedValueTag::Array => {
                 require_argument(start, tag, argument)?;
-                EncodedValue::Array(array(context, cursor, depth + 1)?)
+                EncodedValue::Array(array(
+                    context,
+                    cursor,
+                    depth + ENCODED_VALUE_NESTING_INCREMENT,
+                )?)
             }
             EncodedValueTag::Annotation => {
                 require_argument(start, tag, argument)?;
-                EncodedValue::Annotation(annotation(context, cursor, depth + 1)?)
+                EncodedValue::Annotation(annotation(
+                    context,
+                    cursor,
+                    depth + ENCODED_VALUE_NESTING_INCREMENT,
+                )?)
             }
             EncodedValueTag::Null => {
                 require_argument(start, tag, argument)?;
@@ -241,19 +254,21 @@ fn index(
     cursor: &mut Cursor<'_>,
     start: usize,
     tag: EncodedValueTag,
-    argument: u8,
+    argument: EncodedValueArgument,
     limit: u32,
     what: &str,
 ) -> Result<u32> {
     require_argument(start, tag, argument)?;
-    let value = u32::try_from(unsigned(
-        cursor.bytes(usize::from(argument + ENCODED_VALUE_WIDTH_BIAS))?,
-    ))
-    .map_err(|_| Error::invalid_dex(start, format!("encoded {what} index exceeds 32 bits")))?;
+    let value = u32::try_from(unsigned(cursor.bytes(argument.payload_width())?))
+        .map_err(|_| Error::invalid_dex(start, format!("encoded {what} index exceeds 32 bits")))?;
     context.index(value, limit, start, what)
 }
 
-fn require_argument(offset: usize, tag: EncodedValueTag, actual: u8) -> Result<()> {
+fn require_argument(
+    offset: usize,
+    tag: EncodedValueTag,
+    actual: EncodedValueArgument,
+) -> Result<()> {
     let maximum = tag.maximum_argument();
     if actual <= maximum {
         Ok(())
@@ -261,8 +276,10 @@ fn require_argument(offset: usize, tag: EncodedValueTag, actual: u8) -> Result<(
         Err(Error::invalid_dex(
             offset,
             format!(
-                "encoded-value type 0x{:02x} argument {actual} exceeds {maximum}",
-                tag.byte()
+                "encoded-value type 0x{:02x} argument {} exceeds {}",
+                tag.byte(),
+                actual.get(),
+                maximum.get()
             ),
         ))
     }
@@ -288,7 +305,9 @@ fn unsigned(bytes: &[u8]) -> u64 {
 fn signed(bytes: &[u8]) -> i64 {
     let unsigned = unsigned(bytes);
     let bits = bytes.len() * BYTE_WIDTH_BITS;
-    let extended = if bits < u64::BITS as usize && unsigned & (1_u64 << (bits - 1)) != 0 {
+    let extended = if bits < u64::BITS as usize
+        && unsigned & (1_u64 << (bits - SIGN_BIT_POSITION_ADJUSTMENT)) != 0
+    {
         unsigned | (u64::MAX << bits)
     } else {
         unsigned

@@ -1,5 +1,8 @@
 //! DEX map-list entries and extensible item-type codes.
 
+use crate::file::header::DexVersion;
+use crate::file::layout::ItemWidth;
+
 /// Type of a section listed in a DEX map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapItemType {
@@ -108,15 +111,20 @@ impl MapItemType {
         }
     }
 
-    /// Returns the fixed item width when the type is not variable-length.
+    /// Returns the fixed item width for a format version when the type is not
+    /// variable-length.
     #[must_use]
-    pub const fn fixed_width(self) -> Option<u32> {
+    pub const fn fixed_width(self, version: DexVersion) -> Option<ItemWidth> {
         match self {
-            Self::Header => Some(crate::file::header::LEGACY_HEADER_SIZE),
-            Self::StringId | Self::TypeId | Self::CallSiteId => Some(4),
-            Self::PrototypeId => Some(12),
-            Self::FieldId | Self::MethodId | Self::MethodHandle => Some(8),
-            Self::ClassDefinition => Some(32),
+            Self::Header => Some(ItemWidth::from_u32(version.header_size())),
+            Self::StringId => Some(ItemWidth::STRING_ID),
+            Self::TypeId => Some(ItemWidth::TYPE_ID),
+            Self::PrototypeId => Some(ItemWidth::PROTOTYPE_ID),
+            Self::FieldId => Some(ItemWidth::FIELD_ID),
+            Self::MethodId => Some(ItemWidth::METHOD_ID),
+            Self::ClassDefinition => Some(ItemWidth::CLASS_DEFINITION),
+            Self::CallSiteId => Some(ItemWidth::CALL_SITE_ID),
+            Self::MethodHandle => Some(ItemWidth::METHOD_HANDLE),
             Self::MapList
             | Self::TypeList
             | Self::AnnotationSetRefList

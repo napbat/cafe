@@ -1,12 +1,17 @@
 //! Method declarations and statically checkable Dalvik constraints.
 
-use crate::file::validation::descriptor::DescriptorKind;
+use crate::file::layout::{UNLOCATED_ERROR_OFFSET, UNREPRESENTABLE_FILE_OFFSET};
+use crate::file::validation::descriptor::{DescriptorKind, RegisterWidth};
 use crate::file::{
     AccessFlags, CallSite, DexString, DexVersion, EncodedMethod, FieldId, MethodHandle, MethodId,
     PrototypeId, TypeId,
 };
 use crate::instruction::{IndexKind, Instruction, InstructionData, Opcode, Operands};
 use crate::{Error, Result};
+
+const METHOD_ENTRY_INSTRUCTION_OFFSET: u32 = 0;
+const WIDE_REGISTER_LAST_DELTA: u16 = 1;
+const NEXT_REGISTER_LIST_POSITION: usize = 1;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn method(
@@ -65,9 +70,12 @@ fn validate_method_body(
         || declaration.access_flags.contains(AccessFlags::NATIVE);
     if lacks_code == declaration.code.is_some() {
         return Err(Error::invalid_dex(
-            declaration.code.as_ref().map_or(0, |code| {
-                usize::try_from(code.data_offset).unwrap_or(usize::MAX)
-            }),
+            declaration
+                .code
+                .as_ref()
+                .map_or(UNLOCATED_ERROR_OFFSET, |code| {
+                    usize::try_from(code.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET)
+                }),
             "abstract/native code presence does not match method access flags",
         ));
     }
@@ -76,7 +84,7 @@ fn validate_method_body(
     };
     if code.instructions.is_empty() {
         return Err(Error::invalid_dex(
-            usize::try_from(code.data_offset).unwrap_or(usize::MAX),
+            usize::try_from(code.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
             "method instruction stream is empty",
         ));
     }
@@ -84,10 +92,11 @@ fn validate_method_body(
         descriptors,
         prototype,
         !declaration.access_flags.contains(AccessFlags::STATIC),
+        METHOD_ENTRY_INSTRUCTION_OFFSET,
     )?;
     if u32::from(code.ins_size) != expected_incoming {
         return Err(Error::invalid_dex(
-            usize::try_from(code.data_offset).unwrap_or(usize::MAX),
+            usize::try_from(code.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
             format!(
                 "method declares {} incoming words but its prototype needs {expected_incoming}",
                 code.ins_size
@@ -100,9 +109,11 @@ fn validate_method_body(
         .is_some_and(|debug| debug.parameter_names.len() != prototype.parameters.len())
     {
         return Err(Error::invalid_dex(
-            code.debug_info.as_ref().map_or(0, |debug| {
-                usize::try_from(debug.data_offset).unwrap_or(usize::MAX)
-            }),
+            code.debug_info
+                .as_ref()
+                .map_or(UNLOCATED_ERROR_OFFSET, |debug| {
+                    usize::try_from(debug.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET)
+                }),
             "debug parameter-name count does not match the method prototype",
         ));
     }
@@ -286,7 +297,7 @@ fn validate_wide_registers(instruction: &Instruction, register_count: u16) -> Re
     };
     for register in wide_bases(*opcode, operands) {
         if register
-            .checked_add(1)
+            .checked_add(WIDE_REGISTER_LAST_DELTA)
             .is_none_or(|last| last >= register_count)
         {
             return Err(Error::invalid_instruction(
@@ -294,7 +305,7 @@ fn validate_wide_registers(instruction: &Instruction, register_count: u16) -> Re
                 format!(
                     "{} wide operand v{register}..v{} exceeds the register frame",
                     opcode.mnemonic(),
-                    register.saturating_add(1)
+                    register.saturating_add(WIDE_REGISTER_LAST_DELTA)
                 ),
             ));
         }
@@ -384,11 +395,14 @@ fn validate_return(opcode: Opcode, return_kind: DescriptorKind, offset: u32) -> 
     }
     let valid = match opcode {
         Opcode::ReturnVoid => return_kind.is_void(),
-        Opcode::ReturnWide => return_kind.words() == 2,
+        Opcode::ReturnWide => return_kind.register_width() == Some(RegisterWidth::Double),
         Opcode::ReturnObject => {
             matches!(return_kind, DescriptorKind::Class | DescriptorKind::Array)
         }
-        Opcode::Return => matches!(return_kind, DescriptorKind::Primitive { words: 1, .. }),
+        Opcode::Return => {
+            matches!(return_kind, DescriptorKind::Primitive { .. })
+                && return_kind.register_width() == Some(RegisterWidth::Single)
+        }
         _ => true,
     };
     if valid {
@@ -416,11 +430,11 @@ fn validate_invocation(
     offset: u32,
 ) -> Result<()> {
     let Some((prototype, receiver)) =
-        invocation_prototype(opcode, operands, prototypes, methods, call_sites)?
+        invocation_prototype(opcode, operands, prototypes, methods, call_sites, offset)?
     else {
         return Ok(());
     };
-    let expected = incoming_words(descriptors, prototype, receiver)?;
+    let expected = incoming_words(descriptors, prototype, receiver, offset)?;
     let actual = invocation_count(operands).ok_or_else(|| {
         Error::invalid_instruction(
             offset,
@@ -445,6 +459,7 @@ fn invocation_prototype<'a>(
     prototypes: &'a [PrototypeId],
     methods: &[MethodId],
     call_sites: &[CallSite],
+    offset: u32,
 ) -> Result<Option<(&'a PrototypeId, bool)>> {
     let (primary, secondary) = match operands {
         Operands::RegisterListIndex {
@@ -485,7 +500,7 @@ fn invocation_prototype<'a>(
             get(
                 prototypes,
                 secondary.ok_or_else(|| {
-                    Error::invalid_instruction(0, "missing polymorphic prototype")
+                    Error::invalid_instruction(offset, "missing polymorphic prototype")
                 })?,
                 "polymorphic prototype",
             )?,
@@ -493,15 +508,18 @@ fn invocation_prototype<'a>(
         )),
         Opcode::InvokeCustom | Opcode::InvokeCustomRange => {
             let call_site = get(call_sites, primary, "invoked call site")?;
-            let Some(crate::file::EncodedValue::MethodType(prototype)) = call_site.values.get(2)
-            else {
+            let Some(components) = call_site.components() else {
                 return Err(Error::invalid_instruction(
-                    0,
+                    offset,
                     "call-site method type is missing",
                 ));
             };
             Some((
-                get(prototypes, prototype.get(), "call-site prototype")?,
+                get(
+                    prototypes,
+                    components.method_type.get(),
+                    "call-site prototype",
+                )?,
                 false,
             ))
         }
@@ -523,20 +541,22 @@ fn validate_explicit_wide_arguments(
     let mut cursor = usize::from(receiver);
     for parameter in &prototype.parameters {
         let kind = *get(descriptors, parameter.get(), "invocation parameter")?;
-        if kind.words() == 2 {
+        let width = kind.register_width().ok_or_else(|| {
+            Error::invalid_instruction(offset, "invocation parameter cannot have void type")
+        })?;
+        if width == RegisterWidth::Double {
             let first = registers.get(cursor).copied();
-            let second = registers.get(cursor + 1).copied();
-            if first
-                .zip(second)
-                .is_none_or(|(first, second)| first.checked_add(1) != Some(second))
-            {
+            let second = registers.get(cursor + NEXT_REGISTER_LIST_POSITION).copied();
+            if first.zip(second).is_none_or(|(first, second)| {
+                first.checked_add(WIDE_REGISTER_LAST_DELTA) != Some(second)
+            }) {
                 return Err(Error::invalid_instruction(
                     offset,
                     "wide invocation argument does not use adjacent registers",
                 ));
             }
         }
-        cursor += usize::from(kind.words());
+        cursor += usize::from(width.words());
     }
     Ok(())
 }
@@ -545,15 +565,23 @@ fn incoming_words(
     descriptors: &[DescriptorKind],
     prototype: &PrototypeId,
     receiver: bool,
+    offset: u32,
 ) -> Result<u32> {
     prototype
         .parameters
         .iter()
         .try_fold(u32::from(receiver), |total, parameter| {
-            let words = u32::from(get(descriptors, parameter.get(), "parameter type")?.words());
-            total
-                .checked_add(words)
-                .ok_or_else(|| Error::invalid_dex(0, "prototype register width overflowed"))
+            let kind = get(descriptors, parameter.get(), "parameter type")?;
+            let words = u32::from(
+                kind.register_width()
+                    .ok_or_else(|| {
+                        Error::invalid_instruction(offset, "parameter cannot have void type")
+                    })?
+                    .words(),
+            );
+            total.checked_add(words).ok_or_else(|| {
+                Error::invalid_instruction(offset, "prototype register width overflowed")
+            })
         })
 }
 
@@ -602,7 +630,12 @@ fn get<'a, T>(values: &'a [T], index: u32, what: &str) -> Result<&'a T> {
     usize::try_from(index)
         .ok()
         .and_then(|index| values.get(index))
-        .ok_or_else(|| Error::invalid_dex(0, format!("{what} index {index} is out of bounds")))
+        .ok_or_else(|| {
+            Error::invalid_dex(
+                UNLOCATED_ERROR_OFFSET,
+                format!("{what} index {index} is out of bounds"),
+            )
+        })
 }
 
 fn type_name(strings: &[DexString], types: &[TypeId], index: u32) -> Option<String> {

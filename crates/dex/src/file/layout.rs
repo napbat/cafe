@@ -27,8 +27,8 @@ impl Alignment {
 }
 
 /// Width of one fixed or minimally encoded DEX item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ItemWidth(usize);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ItemWidth(usize);
 
 impl ItemWidth {
     pub(crate) const BYTE: Self = Self(1);
@@ -53,7 +53,13 @@ impl ItemWidth {
     pub(crate) const CODE_HEADER: Self = Self(16);
     pub(crate) const ANNOTATION_DIRECTORY_HEADER: Self = Self(16);
 
-    pub(crate) const fn bytes(self) -> usize {
+    pub(crate) const fn from_u32(bytes: u32) -> Self {
+        Self(bytes as usize)
+    }
+
+    /// Returns the item width in bytes.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
         self.0
     }
 }
@@ -165,7 +171,25 @@ writer_fields!(HiddenApiField, {
 pub(crate) const UNUSED_FIELD_VALUE: u16 = 0;
 /// Count used for singleton header, map, and hidden-API sections.
 pub(crate) const SINGLE_ITEM_COUNT: u32 = 1;
+/// Step used when adding one serialized item to a section count.
+pub(crate) const ITEM_COUNT_INCREMENT: u32 = 1;
 /// Count used by an empty section.
 pub(crate) const EMPTY_ITEM_COUNT: u32 = 0;
 /// Platform-sized count used by an empty in-memory section.
 pub(crate) const EMPTY_ITEM_COUNT_USIZE: usize = 0;
+/// Encoded delta which would repeat the preceding identifier.
+pub(crate) const DUPLICATE_INDEX_DELTA: u32 = 0;
+/// Code-unit count of an empty protected range.
+pub(crate) const EMPTY_CODE_UNIT_COUNT: u16 = 0;
+/// Number of try items when a code item has no protected regions.
+pub(crate) const EMPTY_TRY_COUNT: u16 = 0;
+/// Register count of an empty range-form operand.
+pub(crate) const EMPTY_REGISTER_RANGE_COUNT: u8 = 0;
+/// Delta from a non-empty range's exclusive count to its final register.
+pub(crate) const NON_EMPTY_RANGE_LAST_REGISTER_DELTA: u16 = 1;
+/// Error offset used when validating an in-memory model without source provenance.
+pub(crate) const UNLOCATED_ERROR_OFFSET: usize = 0;
+/// Largest identifier-table count stored in a 16-bit instruction operand.
+pub(crate) const MAXIMUM_SMALL_ID_COUNT: u32 = u16::MAX as u32;
+/// Fallback offset used when a DEX offset cannot fit the host platform.
+pub(crate) const UNREPRESENTABLE_FILE_OFFSET: usize = usize::MAX;

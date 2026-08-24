@@ -5,13 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{Error, Result};
 
 use super::layout::{
-    ARRAY_DATA_HEADER_CODE_UNITS, ARRAY_PADDING_VALUE, BYTES_PER_CODE_UNIT, CODE_UNIT_BITS,
-    CODE_UNITS_PER_WORD, DOUBLE_CODE_UNIT_BITS, FIRST_OPERAND_WORD, FOURTH_OPERAND_WORD,
-    HIGH_BYTE_INDEX, INVALID_ARRAY_ELEMENT_WIDTH, LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT,
-    NIBBLE_BITS, NIBBLE_MASK, PACKED_SWITCH_HEADER_CODE_UNITS, PACKED_SWITCH_TARGET_CODE_UNITS,
-    PayloadKind, REGISTER_LIST_SLOTS, RESERVED_BYTE_VALUE, SECOND_OPERAND_WORD,
-    SPARSE_SWITCH_ENTRY_CODE_UNITS, SPARSE_SWITCH_HEADER_CODE_UNITS, THIRD_OPERAND_WORD,
-    TRIPLE_CODE_UNIT_BITS,
+    ALIGNMENT_ROUNDING_BIAS, ARRAY_DATA_HEADER_CODE_UNITS, ARRAY_PADDING_VALUE,
+    BYTES_PER_CODE_UNIT, CODE_UNIT_BITS, CODE_UNITS_PER_WORD, DOUBLE_CODE_UNIT_BITS,
+    FIRST_OPERAND_WORD, FOURTH_OPERAND_WORD, HIGH_BYTE_INDEX, INVALID_ARRAY_ELEMENT_WIDTH,
+    LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT, NIBBLE_BITS, NIBBLE_MASK,
+    PACKED_SWITCH_HEADER_CODE_UNITS, PACKED_SWITCH_TARGET_CODE_UNITS, PayloadKind,
+    REGISTER_LIST_SLOTS, RESERVED_BYTE_VALUE, SECOND_OPERAND_WORD, SPARSE_SWITCH_ENTRY_CODE_UNITS,
+    SPARSE_SWITCH_HEADER_CODE_UNITS, THIRD_OPERAND_WORD, TRIPLE_CODE_UNIT_BITS,
 };
 use super::{
     ArrayDataPayload, Instruction, InstructionData, InstructionFormat, Opcode, Operands,
@@ -328,7 +328,7 @@ fn decode_array_data(code: &[u16], cursor: usize, offset: u32) -> Result<Instruc
         })?)
         .ok_or_else(|| Error::invalid_instruction(offset, "array-data size overflowed"))?;
     let data_words = byte_count
-        .checked_add(BYTES_PER_CODE_UNIT - 1)
+        .checked_add(ALIGNMENT_ROUNDING_BIAS)
         .ok_or_else(|| {
             Error::invalid_instruction(offset, "array-data padding calculation overflowed")
         })?
@@ -341,7 +341,7 @@ fn decode_array_data(code: &[u16], cursor: usize, offset: u32) -> Result<Instruc
     for word in &words[ARRAY_DATA_HEADER_CODE_UNITS..] {
         data.extend_from_slice(&word.to_le_bytes());
     }
-    if byte_count % BYTES_PER_CODE_UNIT == BYTES_PER_CODE_UNIT - 1
+    if byte_count % BYTES_PER_CODE_UNIT == ALIGNMENT_ROUNDING_BIAS
         && data.get(byte_count).copied() != Some(ARRAY_PADDING_VALUE)
     {
         return Err(Error::invalid_instruction(

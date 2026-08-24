@@ -8,7 +8,7 @@ use crate::file::header::{ABSENT_OFFSET, DexHeader, HeaderField};
 use crate::file::io::Reader;
 use crate::file::layout::{
     Alignment, EMPTY_ITEM_COUNT, ItemWidth, ListField, MapField, SINGLE_ITEM_COUNT,
-    UNUSED_FIELD_VALUE,
+    UNREPRESENTABLE_FILE_OFFSET, UNUSED_FIELD_VALUE,
 };
 use crate::file::model::{MapItem, MapItemType};
 
@@ -117,7 +117,7 @@ fn require(items: &[MapItem], item_type: MapItemType, size: u32, offset: u32) ->
         Ok(())
     } else {
         Err(Error::invalid_dex(
-            usize::try_from(offset).unwrap_or(usize::MAX),
+            usize::try_from(offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
             format!("map entry for {item_type:?} does not match the header"),
         ))
     }
@@ -131,7 +131,7 @@ fn require_section(
     if section.size == EMPTY_ITEM_COUNT {
         if items.iter().any(|item| item.item_type == item_type) {
             return Err(Error::invalid_dex(
-                usize::try_from(section.offset).unwrap_or(usize::MAX),
+                usize::try_from(section.offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 format!("empty header section has a {item_type:?} map entry"),
             ));
         }

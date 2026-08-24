@@ -4,7 +4,10 @@ use crate::{Error, Result};
 
 use super::{Context, annotations, code, tables, value};
 use crate::file::header::{ABSENT_OFFSET, NO_INDEX};
-use crate::file::layout::{Alignment, ClassField, ItemWidth};
+use crate::file::layout::{
+    Alignment, ClassField, DUPLICATE_INDEX_DELTA, EMPTY_ITEM_COUNT_USIZE, ItemWidth,
+    UNREPRESENTABLE_FILE_OFFSET,
+};
 use crate::file::model::{
     AccessFlags, ClassData, ClassDefinition, EncodedField, EncodedMethod, FieldId, FieldIndex,
     MethodId, MethodIndex, StringIndex, TypeIndex,
@@ -92,7 +95,7 @@ pub(super) fn classes(
         if static_values.len()
             > class_data
                 .as_ref()
-                .map_or(0, |data| data.static_fields.len())
+                .map_or(EMPTY_ITEM_COUNT_USIZE, |data| data.static_fields.len())
         {
             return Err(Error::invalid_dex(
                 item_offset + ClassField::StaticValuesOffset.offset(),
@@ -185,22 +188,24 @@ fn encoded_fields(
         what,
     )?;
     let mut output = Vec::with_capacity(count);
-    let mut previous = 0u32;
-    for index in 0..count {
+    let mut previous = None;
+    for _ in 0..count {
         let item_offset = cursor.position();
         let difference = cursor.uleb128()?;
-        if index != 0 && difference == 0 {
+        if previous.is_some() && difference == DUPLICATE_INDEX_DELTA {
             return Err(Error::invalid_dex(
                 item_offset,
                 format!("{what} contains a duplicate index"),
             ));
         }
         let field = previous
-            .checked_add(difference)
+            .map_or(Some(difference), |previous: u32| {
+                previous.checked_add(difference)
+            })
             .ok_or_else(|| Error::invalid_dex(item_offset, format!("{what} index overflowed")))?;
         context.index(field, context.header.field_ids.size, item_offset, what)?;
         if fields
-            .get(usize::try_from(field).unwrap_or(usize::MAX))
+            .get(usize::try_from(field).unwrap_or(UNREPRESENTABLE_FILE_OFFSET))
             .is_none_or(|entry| entry.class != defining_class)
         {
             return Err(Error::invalid_dex(
@@ -212,7 +217,7 @@ fn encoded_fields(
             field: FieldIndex(field),
             access_flags: AccessFlags::from_bits_retain(cursor.uleb128()?),
         });
-        previous = field;
+        previous = Some(field);
     }
     Ok(output)
 }
@@ -232,22 +237,24 @@ fn encoded_methods(
         what,
     )?;
     let mut output = Vec::with_capacity(count);
-    let mut previous = 0u32;
-    for index in 0..count {
+    let mut previous = None;
+    for _ in 0..count {
         let item_offset = cursor.position();
         let difference = cursor.uleb128()?;
-        if index != 0 && difference == 0 {
+        if previous.is_some() && difference == DUPLICATE_INDEX_DELTA {
             return Err(Error::invalid_dex(
                 item_offset,
                 format!("{what} contains a duplicate index"),
             ));
         }
         let method = previous
-            .checked_add(difference)
+            .map_or(Some(difference), |previous: u32| {
+                previous.checked_add(difference)
+            })
             .ok_or_else(|| Error::invalid_dex(item_offset, format!("{what} index overflowed")))?;
         context.index(method, context.header.method_ids.size, item_offset, what)?;
         if methods
-            .get(usize::try_from(method).unwrap_or(usize::MAX))
+            .get(usize::try_from(method).unwrap_or(UNREPRESENTABLE_FILE_OFFSET))
             .is_none_or(|entry| entry.class != defining_class)
         {
             return Err(Error::invalid_dex(
@@ -267,7 +274,7 @@ fn encoded_methods(
             access_flags,
             code,
         });
-        previous = method;
+        previous = Some(method);
     }
     Ok(output)
 }

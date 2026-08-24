@@ -12,6 +12,49 @@ pub(crate) const ENCODED_VALUE_TAG_MASK: u8 = 0x1f;
 pub(crate) const ENCODED_VALUE_ARGUMENT_SHIFT: u32 = 5;
 /// Bias converting a zero-based value argument to a byte width.
 pub(crate) const ENCODED_VALUE_WIDTH_BIAS: u8 = 1;
+/// Increase in nesting depth when entering an encoded array or annotation.
+pub(crate) const ENCODED_VALUE_NESTING_INCREMENT: usize = 1;
+
+/// Typed value-argument field from an encoded-value header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EncodedValueArgument(u8);
+
+impl EncodedValueArgument {
+    pub(crate) const ZERO: Self = Self(0);
+    const BOOLEAN_TRUE: Self = Self(1);
+    const U16_MAXIMUM: Self = Self(1);
+    const U32_MAXIMUM: Self = Self(3);
+    const U64_MAXIMUM: Self = Self(7);
+
+    pub(crate) const fn from_header(header: u8) -> Self {
+        Self(header >> ENCODED_VALUE_ARGUMENT_SHIFT)
+    }
+
+    pub(crate) const fn from_boolean(value: bool) -> Self {
+        if value {
+            Self::BOOLEAN_TRUE
+        } else {
+            Self::ZERO
+        }
+    }
+
+    pub(crate) fn from_payload_width(width: usize) -> Option<Self> {
+        let width = u8::try_from(width).ok()?;
+        width.checked_sub(ENCODED_VALUE_WIDTH_BIAS).map(Self)
+    }
+
+    pub(crate) const fn payload_width(self) -> usize {
+        (self.0 + ENCODED_VALUE_WIDTH_BIAS) as usize
+    }
+
+    pub(crate) const fn header_bits(self) -> u8 {
+        self.0 << ENCODED_VALUE_ARGUMENT_SHIFT
+    }
+
+    pub(crate) const fn get(self) -> u8 {
+        self.0
+    }
+}
 
 /// Format-defined tag stored in an encoded-value header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +109,11 @@ impl EncodedValueTag {
         self as u8
     }
 
-    pub(crate) const fn maximum_argument(self) -> u8 {
+    pub(crate) const fn maximum_argument(self) -> EncodedValueArgument {
         match self {
-            Self::Byte | Self::Array | Self::Annotation | Self::Null => 0,
-            Self::Short | Self::Char | Self::Boolean => 1,
+            Self::Byte | Self::Array | Self::Annotation | Self::Null => EncodedValueArgument::ZERO,
+            Self::Short | Self::Char => EncodedValueArgument::U16_MAXIMUM,
+            Self::Boolean => EncodedValueArgument::BOOLEAN_TRUE,
             Self::Int
             | Self::Float
             | Self::MethodType
@@ -78,8 +122,8 @@ impl EncodedValueTag {
             | Self::Type
             | Self::Field
             | Self::Method
-            | Self::Enum => 3,
-            Self::Long | Self::Double => 7,
+            | Self::Enum => EncodedValueArgument::U32_MAXIMUM,
+            Self::Long | Self::Double => EncodedValueArgument::U64_MAXIMUM,
         }
     }
 }
@@ -150,4 +194,42 @@ pub struct CallSite {
     pub values: Vec<EncodedValue>,
     /// Original absolute encoded-array offset.
     pub data_offset: u32,
+}
+
+/// Required leading components and optional arguments of a valid DEX call site.
+#[derive(Debug, Clone, Copy)]
+pub struct CallSiteComponents<'a> {
+    /// Bootstrap method-handle index.
+    pub bootstrap_method: MethodHandleIndex,
+    /// String index naming the dynamically invoked method.
+    pub method_name: StringIndex,
+    /// Prototype index describing the dynamically invoked method type.
+    pub method_type: PrototypeIndex,
+    /// Additional bootstrap arguments in encoded order.
+    pub arguments: &'a [EncodedValue],
+}
+
+impl CallSite {
+    /// Resolves the required typed prefix of this encoded call-site array.
+    ///
+    /// Returns `None` when the array does not begin with a method handle,
+    /// method-name string, and method-type prototype in that order.
+    #[must_use]
+    pub fn components(&self) -> Option<CallSiteComponents<'_>> {
+        let [
+            EncodedValue::MethodHandle(bootstrap_method),
+            EncodedValue::String(method_name),
+            EncodedValue::MethodType(method_type),
+            arguments @ ..,
+        ] = self.values.as_slice()
+        else {
+            return None;
+        };
+        Some(CallSiteComponents {
+            bootstrap_method: *bootstrap_method,
+            method_name: *method_name,
+            method_type: *method_type,
+            arguments,
+        })
+    }
 }

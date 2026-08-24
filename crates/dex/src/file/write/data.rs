@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use crate::file::header::ABSENT_OFFSET;
 use crate::file::io::Writer;
 use crate::file::layout::{
-    Alignment, EMPTY_ITEM_COUNT, HiddenApiField, ItemWidth, SINGLE_ITEM_COUNT,
+    Alignment, EMPTY_ITEM_COUNT, EMPTY_ITEM_COUNT_USIZE, HiddenApiField, ITEM_COUNT_INCREMENT,
+    ItemWidth, SINGLE_ITEM_COUNT,
 };
 use crate::file::model::{
     ClassDefinition, DexString, HiddenApiClassData, MapItem, MapItemType, PrototypeId,
@@ -98,12 +99,15 @@ pub(super) fn write_hidden_api(
         if flags.is_empty() {
             continue;
         }
-        let expected = class.class_data.as_ref().map_or(0, |data| {
-            data.static_fields.len()
-                + data.instance_fields.len()
-                + data.direct_methods.len()
-                + data.virtual_methods.len()
-        });
+        let expected = class
+            .class_data
+            .as_ref()
+            .map_or(EMPTY_ITEM_COUNT_USIZE, |data| {
+                data.static_fields.len()
+                    + data.instance_fields.len()
+                    + data.direct_methods.len()
+                    + data.virtual_methods.len()
+            });
         if flags.len() != expected {
             return Err(Error::invalid_assembly(format!(
                 "hidden-API class {index} has {} flags but needs {expected}",
@@ -239,7 +243,7 @@ fn type_list(
         })?);
     }
     *count = count
-        .checked_add(1)
+        .checked_add(ITEM_COUNT_INCREMENT)
         .ok_or_else(|| Error::invalid_assembly("type-list item count overflowed"))?;
     known.insert(types.to_vec(), offset);
     Ok(offset)
@@ -257,7 +261,7 @@ fn write_arrays(
         call_site_offsets.push(writer.position()?);
         super::value::array(writer, &call_site.values, ROOT_ENCODED_VALUE_DEPTH)?;
         count = count
-            .checked_add(1)
+            .checked_add(ITEM_COUNT_INCREMENT)
             .ok_or_else(|| Error::invalid_assembly("encoded-array item count overflowed"))?;
     }
     let mut static_offsets = Vec::with_capacity(classes.len());
@@ -268,7 +272,7 @@ fn write_arrays(
             static_offsets.push(writer.position()?);
             super::value::array(writer, &class.static_values, ROOT_ENCODED_VALUE_DEPTH)?;
             count = count
-                .checked_add(1)
+                .checked_add(ITEM_COUNT_INCREMENT)
                 .ok_or_else(|| Error::invalid_assembly("encoded-array item count overflowed"))?;
         }
     }

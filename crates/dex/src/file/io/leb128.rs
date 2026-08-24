@@ -9,6 +9,11 @@ pub(super) const CONTINUATION_BIT: u8 = 0x80;
 pub(super) const SIGN_BIT: u8 = 0x40;
 pub(super) const GROUP_BITS: usize = 7;
 pub(super) const P1_BIAS: u32 = 1;
+pub(super) const ULEB128P1_NONE: u32 = 0;
+pub(super) const GROUP_COUNT_BIAS: usize = 1;
+pub(super) const UNSIGNED_TERMINATOR: u32 = 0;
+pub(super) const POSITIVE_SIGNED_TERMINATOR: i32 = 0;
+pub(super) const NEGATIVE_SIGNED_TERMINATOR: i32 = -1;
 const MAX_ENCODED_BYTES: usize = 5;
 const FINAL_BYTE_INDEX: usize = MAX_ENCODED_BYTES - 1;
 const MAX_UNSIGNED_FINAL_PAYLOAD: u32 = 0x0f;
@@ -50,7 +55,7 @@ pub(super) fn read_signed(cursor: &mut Cursor<'_>) -> Result<i32> {
         }
         result |= payload << (index * GROUP_BITS);
         if byte & CONTINUATION_BIT == 0 {
-            let used_bits = (index + 1) * GROUP_BITS;
+            let used_bits = (index + GROUP_COUNT_BIAS) * GROUP_BITS;
             if used_bits < TARGET_WIDTH_BITS && byte & SIGN_BIT != 0 {
                 result |= u32::MAX << used_bits;
             }

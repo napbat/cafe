@@ -6,11 +6,14 @@ use crate::instruction::{Instruction, InstructionData, decode};
 use crate::{Error, Result};
 
 use super::{Context, debug};
-use crate::file::layout::{Alignment, CodeField, ItemWidth, TryField};
-use crate::file::model::{CatchHandler, CodeItem, TryBlock, TypeIndex};
+use crate::file::layout::{
+    Alignment, CodeField, EMPTY_CODE_UNIT_COUNT, EMPTY_REGISTER_RANGE_COUNT, EMPTY_TRY_COUNT,
+    ItemWidth, NON_EMPTY_RANGE_LAST_REGISTER_DELTA, TryField,
+};
+use crate::file::model::{CatchHandler, CodeItem, EncodedCatchHandlerCount, TryBlock, TypeIndex};
 
 const CODE_ITEM_PADDING_VALUE: u16 = 0;
-const CODE_UNITS_PER_WORD: u32 = 2;
+const CODE_UNITS_PER_WORD: u32 = Alignment::Word.bytes_u32() / Alignment::CodeUnit.bytes_u32();
 
 pub(super) fn item(context: &Context<'_>, encoded_offset: u32) -> Result<CodeItem> {
     let offset = context.offset(encoded_offset, Alignment::Word, "code item")?;
@@ -55,7 +58,7 @@ pub(super) fn item(context: &Context<'_>, encoded_offset: u32) -> Result<CodeIte
         registers_size,
         instruction_count,
     )?;
-    let tries = if tries_size == 0 {
+    let tries = if tries_size == EMPTY_TRY_COUNT {
         Vec::new()
     } else {
         parse_tries(
@@ -110,7 +113,7 @@ fn parse_tries(
     let handlers = parse_handlers(context, handlers_offset, instruction_count, instructions)?;
     let boundaries = operation_boundaries(instructions, instruction_count);
     let mut tries = Vec::with_capacity(tries_count);
-    let mut previous_end = 0u32;
+    let mut previous_end = None;
     for index in 0..tries_count {
         let item_offset = tries_offset + index * ItemWidth::TRY_ITEM.bytes();
         let start_address = context
@@ -127,7 +130,7 @@ fn parse_tries(
         let end = start_address.checked_add(u32::from(count)).ok_or_else(|| {
             Error::invalid_dex(item_offset, "protected instruction range overflowed")
         })?;
-        if count == 0 || end > instruction_count {
+        if count == EMPTY_CODE_UNIT_COUNT || end > instruction_count {
             return Err(Error::invalid_dex(
                 item_offset,
                 "protected instruction range is empty or outside the method",
@@ -139,10 +142,10 @@ fn parse_tries(
                 "protected range does not use instruction boundaries",
             ));
         }
-        if index != 0 && start_address < previous_end {
+        if previous_end.is_some_and(|previous_end| start_address < previous_end) {
             return Err(Error::invalid_dex(item_offset, "protected ranges overlap"));
         }
-        previous_end = end;
+        previous_end = Some(end);
         let catches = handlers.get(&handler_offset).cloned().ok_or_else(|| {
             Error::invalid_dex(
                 item_offset + TryField::HandlerOffset.offset(),
@@ -186,19 +189,17 @@ fn parse_handlers(
                     "exception handler offset exceeds 32 bits",
                 )
             })?;
-        let encoded_count = cursor.sleb128()?;
-        let typed_count = encoded_count.checked_abs().ok_or_else(|| {
-            Error::invalid_dex(cursor.position(), "exception handler count overflowed")
-        })?;
+        let encoded_count = EncodedCatchHandlerCount::from_raw(cursor.sleb128()?);
         let typed_count = context.count(
-            u32::try_from(typed_count).map_err(|_| {
-                Error::invalid_dex(cursor.position(), "exception handler count is negative")
+            encoded_count.typed_count().ok_or_else(|| {
+                Error::invalid_dex(cursor.position(), "exception handler count overflowed")
             })?,
             ItemWidth::TYPED_CATCH_MINIMUM,
             cursor.position(),
             "typed exception handlers",
         )?;
-        let mut catches = Vec::with_capacity(typed_count + usize::from(encoded_count <= 0));
+        let mut catches =
+            Vec::with_capacity(typed_count + usize::from(encoded_count.has_catch_all()));
         let mut seen_types = BTreeSet::new();
         for _ in 0..typed_count {
             let entry_offset = cursor.position();
@@ -222,7 +223,7 @@ fn parse_handlers(
                 address,
             });
         }
-        if encoded_count <= 0 {
+        if encoded_count.has_catch_all() {
             let entry_offset = cursor.position();
             let address = cursor.uleb128()?;
             require_handler_target(address, instruction_count, &operation_offsets, entry_offset)?;
@@ -306,10 +307,13 @@ fn registers(operands: &crate::instruction::Operands) -> Vec<u16> {
         } => vec![*first, *second, *third],
         Operands::RegisterListIndex { registers, .. } => registers.clone(),
         Operands::RegisterRangeIndex { start, count, .. } => {
-            if *count == 0 {
+            if *count == EMPTY_REGISTER_RANGE_COUNT {
                 Vec::new()
             } else {
-                vec![*start, start.saturating_add(u16::from(*count) - 1)]
+                vec![
+                    *start,
+                    start.saturating_add(u16::from(*count) - NON_EMPTY_RANGE_LAST_REGISTER_DELTA),
+                ]
             }
         }
     }

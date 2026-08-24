@@ -2,12 +2,17 @@
 
 use crate::file::io::Writer;
 use crate::file::model::{
-    ENCODED_VALUE_ARGUMENT_SHIFT, ENCODED_VALUE_TAG_MASK, ENCODED_VALUE_WIDTH_BIAS,
-    EncodedAnnotation, EncodedValue, EncodedValueTag, MAX_ENCODED_VALUE_DEPTH,
+    ENCODED_VALUE_NESTING_INCREMENT, ENCODED_VALUE_TAG_MASK, EncodedAnnotation, EncodedValue,
+    EncodedValueArgument, EncodedValueTag, MAX_ENCODED_VALUE_DEPTH,
 };
 use crate::{Error, Result};
 
 const SIGN_BIT_MASK: u8 = 0x80;
+const FIRST_VALUE_BYTE_INDEX: usize = 0;
+const MINIMUM_ENCODED_PAYLOAD_WIDTH: usize = size_of::<u8>();
+const LAST_BYTE_DISTANCE: usize = 1;
+const PENULTIMATE_BYTE_DISTANCE: usize = 2;
+const POSITION_TO_LENGTH_BIAS: usize = 1;
 
 pub(super) fn array(writer: &mut Writer, values: &[EncodedValue], depth: usize) -> Result<()> {
     require_depth(depth)?;
@@ -15,7 +20,7 @@ pub(super) fn array(writer: &mut Writer, values: &[EncodedValue], depth: usize) 
         Error::invalid_assembly("encoded-array element count exceeds 32-bit address space")
     })?);
     for value in values {
-        encoded(writer, value, depth + 1)?;
+        encoded(writer, value, depth + ENCODED_VALUE_NESTING_INCREMENT)?;
     }
     Ok(())
 }
@@ -39,7 +44,11 @@ pub(super) fn annotation(
         }
         previous = Some(element.name.get());
         writer.uleb128(element.name.get());
-        encoded(writer, &element.value, depth + 1)?;
+        encoded(
+            writer,
+            &element.value,
+            depth + ENCODED_VALUE_NESTING_INCREMENT,
+        )?;
     }
     Ok(())
 }
@@ -48,8 +57,8 @@ fn encoded(writer: &mut Writer, value: &EncodedValue, depth: usize) -> Result<()
     require_depth(depth)?;
     match value {
         EncodedValue::Byte(value) => {
-            header(writer, EncodedValueTag::Byte, 1)?;
-            writer.u8(value.to_ne_bytes()[0]);
+            header(writer, EncodedValueTag::Byte, EncodedValueArgument::ZERO);
+            writer.u8(value.to_ne_bytes()[FIRST_VALUE_BYTE_INDEX]);
         }
         EncodedValue::Short(value) => {
             signed_value(writer, EncodedValueTag::Short, i64::from(*value))?;
@@ -93,17 +102,24 @@ fn encoded(writer: &mut Writer, value: &EncodedValue, depth: usize) -> Result<()
             unsigned_value(writer, EncodedValueTag::Enum, u64::from(index.get()))?;
         }
         EncodedValue::Array(values) => {
-            header(writer, EncodedValueTag::Array, 1)?;
-            array(writer, values, depth + 1)?;
+            header(writer, EncodedValueTag::Array, EncodedValueArgument::ZERO);
+            array(writer, values, depth + ENCODED_VALUE_NESTING_INCREMENT)?;
         }
         EncodedValue::Annotation(annotation) => {
-            header(writer, EncodedValueTag::Annotation, 1)?;
-            self::annotation(writer, annotation, depth + 1)?;
+            header(
+                writer,
+                EncodedValueTag::Annotation,
+                EncodedValueArgument::ZERO,
+            );
+            self::annotation(writer, annotation, depth + ENCODED_VALUE_NESTING_INCREMENT)?;
         }
-        EncodedValue::Null => header(writer, EncodedValueTag::Null, 1)?,
+        EncodedValue::Null => header(writer, EncodedValueTag::Null, EncodedValueArgument::ZERO),
         EncodedValue::Boolean(value) => {
-            let argument = u8::from(*value) << ENCODED_VALUE_ARGUMENT_SHIFT;
-            writer.u8(EncodedValueTag::Boolean.byte() | argument);
+            header(
+                writer,
+                EncodedValueTag::Boolean,
+                EncodedValueArgument::from_boolean(*value),
+            );
         }
     }
     Ok(())
@@ -112,11 +128,11 @@ fn encoded(writer: &mut Writer, value: &EncodedValue, depth: usize) -> Result<()
 fn signed_value(writer: &mut Writer, tag: EncodedValueTag, value: i64) -> Result<()> {
     let bytes = value.to_le_bytes();
     let mut length = bytes.len();
-    while length > 1 {
-        let high = bytes[length - 1];
-        let next_sign = bytes[length - 2] & SIGN_BIT_MASK != 0;
+    while length > MINIMUM_ENCODED_PAYLOAD_WIDTH {
+        let high = bytes[length - LAST_BYTE_DISTANCE];
+        let next_sign = bytes[length - PENULTIMATE_BYTE_DISTANCE] & SIGN_BIT_MASK != 0;
         if (high == u8::MIN && !next_sign) || (high == u8::MAX && next_sign) {
-            length -= 1;
+            length -= LAST_BYTE_DISTANCE;
         } else {
             break;
         }
@@ -129,7 +145,9 @@ fn unsigned_value(writer: &mut Writer, tag: EncodedValueTag, value: u64) -> Resu
     let length = bytes
         .iter()
         .rposition(|byte| *byte != u8::MIN)
-        .map_or(1, |position| position + 1);
+        .map_or(MINIMUM_ENCODED_PAYLOAD_WIDTH, |position| {
+            position + POSITION_TO_LENGTH_BIAS
+        });
     write_bytes(writer, tag, &bytes[..length])
 }
 
@@ -137,33 +155,30 @@ fn right_extended(writer: &mut Writer, tag: EncodedValueTag, bytes: &[u8]) -> Re
     let first = bytes
         .iter()
         .position(|byte| *byte != u8::MIN)
-        .unwrap_or(bytes.len() - 1);
+        .unwrap_or(bytes.len() - LAST_BYTE_DISTANCE);
     write_bytes(writer, tag, &bytes[first..])
 }
 
 fn write_bytes(writer: &mut Writer, tag: EncodedValueTag, bytes: &[u8]) -> Result<()> {
-    let length = encoded_width(tag, bytes.len())?;
-    let argument = (length - ENCODED_VALUE_WIDTH_BIAS) << ENCODED_VALUE_ARGUMENT_SHIFT;
-    writer.u8((tag.byte() & ENCODED_VALUE_TAG_MASK) | argument);
+    let argument = encoded_argument(tag, bytes.len())?;
+    header(writer, tag, argument);
     writer.bytes(bytes);
     Ok(())
 }
 
-fn header(writer: &mut Writer, tag: EncodedValueTag, length: usize) -> Result<()> {
-    let length = encoded_width(tag, length)?;
-    writer.u8(tag.byte() | ((length - ENCODED_VALUE_WIDTH_BIAS) << ENCODED_VALUE_ARGUMENT_SHIFT));
-    Ok(())
+fn header(writer: &mut Writer, tag: EncodedValueTag, argument: EncodedValueArgument) {
+    writer.u8((tag.byte() & ENCODED_VALUE_TAG_MASK) | argument.header_bits());
 }
 
-fn encoded_width(tag: EncodedValueTag, length: usize) -> Result<u8> {
-    let maximum = tag.maximum_argument() + ENCODED_VALUE_WIDTH_BIAS;
-    u8::try_from(length)
-        .ok()
-        .filter(|length| (ENCODED_VALUE_WIDTH_BIAS..=maximum).contains(length))
+fn encoded_argument(tag: EncodedValueTag, length: usize) -> Result<EncodedValueArgument> {
+    let maximum = tag.maximum_argument();
+    EncodedValueArgument::from_payload_width(length)
+        .filter(|argument| *argument <= maximum)
         .ok_or_else(|| {
             Error::invalid_assembly(format!(
-                "encoded-value type 0x{:02x} width exceeds its typed maximum {maximum}",
-                tag.byte()
+                "encoded-value type 0x{:02x} width exceeds its typed maximum {}",
+                tag.byte(),
+                maximum.payload_width()
             ))
         })
 }

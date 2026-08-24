@@ -10,10 +10,11 @@ use crate::{Error, Result};
 
 use self::descriptor::{DescriptorKind, descriptor, member_name, shorty};
 use super::header::{DexHeader, DexVersion};
-use super::layout::ItemWidth;
+use super::layout::{
+    ItemWidth, MAXIMUM_SMALL_ID_COUNT, UNLOCATED_ERROR_OFFSET, UNREPRESENTABLE_FILE_OFFSET,
+};
 use super::model::{
-    CallSite, ClassDefinition, DexString, EncodedValue, FieldId, MethodHandle, MethodId,
-    PrototypeId, TypeId,
+    CallSite, ClassDefinition, DexString, FieldId, MethodHandle, MethodId, PrototypeId, TypeId,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -56,10 +57,10 @@ fn validate_table_sizes(header: &DexHeader) -> Result<()> {
         ("field", header.field_ids),
         ("method", header.method_ids),
     ] {
-        if section.size > u32::from(u16::MAX) {
+        if section.size > MAXIMUM_SMALL_ID_COUNT {
             return Err(Error::invalid_dex(
-                usize::try_from(section.offset).unwrap_or(usize::MAX),
-                format!("{name} identifier table exceeds {} entries", u16::MAX),
+                usize::try_from(section.offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
+                format!("{name} identifier table exceeds {MAXIMUM_SMALL_ID_COUNT} entries"),
             ));
         }
     }
@@ -264,7 +265,7 @@ fn validate_dynamic_data(
 ) -> Result<()> {
     if version < DexVersion::V038 && (!call_sites.is_empty() || !method_handles.is_empty()) {
         return Err(Error::invalid_dex(
-            0,
+            UNLOCATED_ERROR_OFFSET,
             "call sites and method handles require DEX version 038 or newer",
         ));
     }
@@ -272,19 +273,14 @@ fn validate_dynamic_data(
     for call_site in call_sites {
         if previous.is_some_and(|previous| call_site.data_offset <= previous) {
             return Err(Error::invalid_dex(
-                usize::try_from(call_site.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(call_site.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "call-site identifiers are not ordered by data offset",
             ));
         }
         previous = Some(call_site.data_offset);
-        if !matches!(
-            call_site.values.first(),
-            Some(EncodedValue::MethodHandle(_))
-        ) || !matches!(call_site.values.get(1), Some(EncodedValue::String(_)))
-            || !matches!(call_site.values.get(2), Some(EncodedValue::MethodType(_)))
-        {
+        if call_site.components().is_none() {
             return Err(Error::invalid_dex(
-                usize::try_from(call_site.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(call_site.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "call site does not begin with method-handle, string, and method-type values",
             ));
         }
@@ -312,7 +308,7 @@ fn validate_classes(
         .collect();
     if definitions.len() != classes.len() {
         return Err(Error::invalid_dex(
-            usize::try_from(header.class_defs.offset).unwrap_or(usize::MAX),
+            usize::try_from(header.class_defs.offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
             "a class type is defined more than once",
         ));
     }
@@ -339,7 +335,7 @@ fn validate_classes(
                 .any(|method| direct.contains(&method.method))
             {
                 return Err(Error::invalid_dex(
-                    usize::try_from(data.data_offset).unwrap_or(usize::MAX),
+                    usize::try_from(data.data_offset).unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                     "a method appears in both direct and virtual lists",
                 ));
             }
@@ -411,7 +407,8 @@ fn validate_class_annotations(
     for association in &class.annotations.fields {
         if get(fields, association.field.get(), "annotated field")?.class != class.class {
             return Err(Error::invalid_dex(
-                usize::try_from(class.annotations.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(class.annotations.data_offset)
+                    .unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "field annotation belongs to another class",
             ));
         }
@@ -419,7 +416,8 @@ fn validate_class_annotations(
     for association in &class.annotations.methods {
         if get(methods, association.method.get(), "annotated method")?.class != class.class {
             return Err(Error::invalid_dex(
-                usize::try_from(class.annotations.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(class.annotations.data_offset)
+                    .unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "method annotation belongs to another class",
             ));
         }
@@ -432,14 +430,16 @@ fn validate_class_annotations(
         )?;
         if method.class != class.class {
             return Err(Error::invalid_dex(
-                usize::try_from(class.annotations.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(class.annotations.data_offset)
+                    .unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "parameter annotation belongs to another class",
             ));
         }
         let prototype = get(prototypes, method.prototype.get(), "annotated prototype")?;
         if association.parameters.len() != prototype.parameters.len() {
             return Err(Error::invalid_dex(
-                usize::try_from(class.annotations.data_offset).unwrap_or(usize::MAX),
+                usize::try_from(class.annotations.data_offset)
+                    .unwrap_or(UNREPRESENTABLE_FILE_OFFSET),
                 "parameter annotation count does not match the method prototype",
             ));
         }
@@ -458,7 +458,12 @@ fn get<'a, T>(values: &'a [T], index: u32, what: &str) -> Result<&'a T> {
     usize::try_from(index)
         .ok()
         .and_then(|index| values.get(index))
-        .ok_or_else(|| Error::invalid_dex(0, format!("{what} index {index} is out of bounds")))
+        .ok_or_else(|| {
+            Error::invalid_dex(
+                UNLOCATED_ERROR_OFFSET,
+                format!("{what} index {index} is out of bounds"),
+            )
+        })
 }
 
 fn table_error(base: u32, index: usize, width: ItemWidth, message: &str) -> Error {
@@ -469,6 +474,6 @@ fn table_error(base: u32, index: usize, width: ItemWidth, message: &str) -> Erro
                 .checked_mul(width.bytes())
                 .and_then(|delta| base.checked_add(delta))
         })
-        .unwrap_or(usize::MAX);
+        .unwrap_or(UNREPRESENTABLE_FILE_OFFSET);
     Error::invalid_dex(offset, message)
 }
