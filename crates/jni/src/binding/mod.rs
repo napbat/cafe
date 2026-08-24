@@ -1,6 +1,6 @@
 //! Native declaration collections and overload-aware export plans.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::method::{NativeMethod, NativeMethodId};
 use crate::symbol::{NativeSymbol, SymbolStyle};
@@ -38,6 +38,7 @@ impl<'a> NativeBinding<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeMethods {
     methods: Vec<NativeMethod>,
+    identities: BTreeSet<NativeMethodId>,
 }
 
 impl NativeMethods {
@@ -46,6 +47,7 @@ impl NativeMethods {
     pub const fn new() -> Self {
         Self {
             methods: Vec::new(),
+            identities: BTreeSet::new(),
         }
     }
 
@@ -90,9 +92,9 @@ impl NativeMethods {
     ///
     /// Returns an error if the declaration is already present.
     pub fn insert(&mut self, method: NativeMethod) -> Result<()> {
-        if self.methods.iter().any(|value| value.id() == method.id()) {
+        if let Some(duplicate) = self.identities.replace(method.id().clone()) {
             return Err(Error::DuplicateNativeMethod {
-                method: Box::new(method.id().clone()),
+                method: Box::new(duplicate),
             });
         }
         self.methods.push(method);
@@ -125,8 +127,17 @@ impl NativeMethods {
     pub fn bindings(&self) -> Result<Vec<NativeBinding<'_>>> {
         let mut bindings = Vec::with_capacity(self.methods.len());
         let mut symbols = HashMap::<NativeSymbol, NativeMethodId>::new();
+        let mut native_names = HashMap::new();
         for method in &self.methods {
-            let style = if self.is_native_name_overloaded(method) {
+            *native_names
+                .entry((method.owner(), method.name()))
+                .or_insert(0_usize) += 1;
+        }
+        for method in &self.methods {
+            let style = if native_names
+                .get(&(method.owner(), method.name()))
+                .is_some_and(|count| *count > 1)
+            {
                 SymbolStyle::Long
             } else {
                 SymbolStyle::Short
@@ -146,14 +157,6 @@ impl NativeMethods {
             });
         }
         Ok(bindings)
-    }
-
-    fn is_native_name_overloaded(&self, method: &NativeMethod) -> bool {
-        let mut matches = self.methods.iter().filter(|candidate| {
-            candidate.owner() == method.owner() && candidate.name() == method.name()
-        });
-        matches.next();
-        matches.next().is_some()
     }
 }
 
