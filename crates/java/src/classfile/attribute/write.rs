@@ -10,11 +10,13 @@ use super::super::{
 };
 use super::{
     Annotation, AnnotationConstantKind, ElementValue, KnownAttribute, LocalVariableTarget,
-    ModuleAttribute, StackMapFrame, TypeAnnotation, TypeAnnotationTarget, TypePathEntry,
+    ModuleAttribute, StackMapFrame, StackMapFrameTag, TypeAnnotation, TypeAnnotationTarget,
     VerificationType,
 };
 
 const MAX_ANNOTATION_DEPTH: usize = 128;
+const ROOT_ANNOTATION_DEPTH: usize = 0;
+const ANNOTATION_NESTING_INCREMENT: usize = 1;
 
 pub(crate) fn write_attributes(
     output: &mut Writer,
@@ -202,7 +204,7 @@ fn write_known_payload(
             }
         }
         KnownAttribute::AnnotationDefault(attribute) => {
-            write_element_value(output, &attribute.value, pool, 0)?;
+            write_element_value(output, &attribute.value, pool, ROOT_ANNOTATION_DEPTH)?;
         }
         KnownAttribute::BootstrapMethods(attribute) => {
             output.write_u16(count_u16(attribute.methods.len(), "bootstrap methods")?);
@@ -263,40 +265,60 @@ fn write_stack_map_frame(
     pool: &ConstantPool,
 ) -> Result<()> {
     match frame {
-        StackMapFrame::Same { offset_delta } if *offset_delta <= 63 => {
-            output.write_u8(*offset_delta);
+        StackMapFrame::Same { offset_delta } => {
+            let tag = StackMapFrameTag::same(*offset_delta).ok_or_else(|| {
+                Error::invalid_assembly(
+                    "same stack-map frame offset is outside its compact encoded range",
+                )
+            })?;
+            output.write_u8(tag.byte());
         }
         StackMapFrame::SameLocalsOneStack {
             offset_delta,
             stack,
-        } if *offset_delta <= 63 => {
-            output.write_u8(64 + *offset_delta);
+        } => {
+            let tag = StackMapFrameTag::same_locals_one_stack(*offset_delta).ok_or_else(|| {
+                Error::invalid_assembly(
+                    "same-locals stack-map frame offset is outside its compact encoded range",
+                )
+            })?;
+            output.write_u8(tag.byte());
             write_verification_type(output, *stack, pool)?;
         }
         StackMapFrame::SameLocalsOneStackExtended {
             offset_delta,
             stack,
         } => {
-            output.write_u8(247);
+            output.write_u8(StackMapFrameTag::SameLocalsOneStackExtended.byte());
             output.write_u16(*offset_delta);
             write_verification_type(output, *stack, pool)?;
         }
         StackMapFrame::Chop {
             offset_delta,
-            absent_locals: absent @ 1..=3,
+            absent_locals,
         } => {
-            output.write_u8(251 - *absent);
+            let tag = StackMapFrameTag::chop(*absent_locals).ok_or_else(|| {
+                Error::invalid_assembly(
+                    "chop stack-map frame local count is outside its encoded range",
+                )
+            })?;
+            output.write_u8(tag.byte());
             output.write_u16(*offset_delta);
         }
         StackMapFrame::SameExtended { offset_delta } => {
-            output.write_u8(251);
+            output.write_u8(StackMapFrameTag::SameExtended.byte());
             output.write_u16(*offset_delta);
         }
         StackMapFrame::Append {
             offset_delta,
             locals,
-        } if (1..=3).contains(&locals.len()) => {
-            output.write_u8(251 + count_u8(locals.len(), "appended locals")?);
+        } => {
+            let tag = StackMapFrameTag::append(locals.len()).ok_or_else(|| {
+                Error::invalid_assembly(
+                    "append stack-map frame local count is outside its encoded range",
+                )
+            })?;
+            output.write_u8(tag.byte());
             output.write_u16(*offset_delta);
             for &local in locals {
                 write_verification_type(output, local, pool)?;
@@ -307,18 +329,10 @@ fn write_stack_map_frame(
             locals,
             stack,
         } => {
-            output.write_u8(255);
+            output.write_u8(StackMapFrameTag::Full.byte());
             output.write_u16(*offset_delta);
             write_verification_types(output, locals, pool, "full-frame locals")?;
             write_verification_types(output, stack, pool, "full-frame stack")?;
-        }
-        StackMapFrame::Same { .. }
-        | StackMapFrame::SameLocalsOneStack { .. }
-        | StackMapFrame::Chop { .. }
-        | StackMapFrame::Append { .. } => {
-            return Err(Error::invalid_assembly(
-                "stack-map compact frame fields are outside their encoded range",
-            ));
         }
     }
     Ok(())
@@ -342,23 +356,21 @@ fn write_verification_type(
     value: VerificationType,
     pool: &ConstantPool,
 ) -> Result<()> {
+    if let VerificationType::Object(index) = value {
+        expect_class(pool, index)?;
+    }
+    output.write_u8(value.kind().tag());
     match value {
-        VerificationType::Top => output.write_u8(0),
-        VerificationType::Integer => output.write_u8(1),
-        VerificationType::Float => output.write_u8(2),
-        VerificationType::Double => output.write_u8(3),
-        VerificationType::Long => output.write_u8(4),
-        VerificationType::Null => output.write_u8(5),
-        VerificationType::UninitializedThis => output.write_u8(6),
-        VerificationType::Object(index) => {
-            expect_class(pool, index)?;
-            output.write_u8(7);
+        VerificationType::Object(index) | VerificationType::Uninitialized(index) => {
             output.write_u16(index);
         }
-        VerificationType::Uninitialized(offset) => {
-            output.write_u8(8);
-            output.write_u16(offset);
-        }
+        VerificationType::Top
+        | VerificationType::Integer
+        | VerificationType::Float
+        | VerificationType::Double
+        | VerificationType::Long
+        | VerificationType::Null
+        | VerificationType::UninitializedThis => {}
     }
     Ok(())
 }
@@ -389,7 +401,12 @@ fn write_annotation(
     for element in &annotation.elements {
         expect_utf8(pool, element.name_index)?;
         output.write_u16(element.name_index);
-        write_element_value(output, &element.value, pool, depth + 1)?;
+        write_element_value(
+            output,
+            &element.value,
+            pool,
+            depth + ANNOTATION_NESTING_INCREMENT,
+        )?;
     }
     Ok(())
 }
@@ -401,13 +418,14 @@ fn write_element_value(
     depth: usize,
 ) -> Result<()> {
     ensure_annotation_depth(depth)?;
+    let tag = value.kind().tag();
     match value {
         ElementValue::Constant {
             kind,
             constant_index,
         } => {
             expect_annotation_constant(pool, *constant_index, *kind)?;
-            output.write_u8(kind.tag());
+            output.write_u8(tag);
             output.write_u16(*constant_index);
         }
         ElementValue::Enum {
@@ -416,24 +434,29 @@ fn write_element_value(
         } => {
             expect_utf8(pool, *type_name_index)?;
             expect_utf8(pool, *constant_name_index)?;
-            output.write_u8(b'e');
+            output.write_u8(tag);
             output.write_u16(*type_name_index);
             output.write_u16(*constant_name_index);
         }
         ElementValue::Class(index) => {
             expect_utf8(pool, *index)?;
-            output.write_u8(b'c');
+            output.write_u8(tag);
             output.write_u16(*index);
         }
         ElementValue::Annotation(annotation) => {
-            output.write_u8(b'@');
-            write_annotation(output, annotation, pool, depth + 1)?;
+            output.write_u8(tag);
+            write_annotation(
+                output,
+                annotation,
+                pool,
+                depth + ANNOTATION_NESTING_INCREMENT,
+            )?;
         }
         ElementValue::Array(values) => {
-            output.write_u8(b'[');
+            output.write_u8(tag);
             output.write_u16(count_u16(values.len(), "annotation array values")?);
             for value in values {
-                write_element_value(output, value, pool, depth + 1)?;
+                write_element_value(output, value, pool, depth + ANNOTATION_NESTING_INCREMENT)?;
             }
         }
     }
@@ -448,114 +471,88 @@ fn write_type_annotation(
     write_type_target(output, &annotation.target)?;
     output.write_u8(count_u8(annotation.path.len(), "type path")?);
     for entry in &annotation.path {
-        match entry {
-            TypePathEntry::Array => {
-                output.write_u8(0);
-                output.write_u8(0);
-            }
-            TypePathEntry::Nested => {
-                output.write_u8(1);
-                output.write_u8(0);
-            }
-            TypePathEntry::WildcardBound => {
-                output.write_u8(2);
-                output.write_u8(0);
-            }
-            TypePathEntry::TypeArgument(index) => {
-                output.write_u8(3);
-                output.write_u8(*index);
-            }
-        }
+        let (kind, argument) = entry.encoded();
+        output.write_u8(kind.tag());
+        output.write_u8(argument);
     }
-    write_annotation(output, &annotation.annotation, pool, 0)
+    write_annotation(output, &annotation.annotation, pool, ROOT_ANNOTATION_DEPTH)
 }
 
 #[allow(clippy::too_many_lines)]
 fn write_type_target(output: &mut Writer, target: &TypeAnnotationTarget) -> Result<()> {
+    output.write_u8(target.kind().tag());
     match target {
-        TypeAnnotationTarget::ClassTypeParameter(index) => write_u8_target(output, 0x00, *index),
-        TypeAnnotationTarget::MethodTypeParameter(index) => write_u8_target(output, 0x01, *index),
-        TypeAnnotationTarget::ClassExtends(index) => write_u16_target(output, 0x10, *index),
+        TypeAnnotationTarget::ClassTypeParameter(index)
+        | TypeAnnotationTarget::MethodTypeParameter(index)
+        | TypeAnnotationTarget::MethodFormalParameter(index) => write_u8_target(output, *index),
+        TypeAnnotationTarget::ClassExtends(index)
+        | TypeAnnotationTarget::Throws(index)
+        | TypeAnnotationTarget::ExceptionParameter(index)
+        | TypeAnnotationTarget::InstanceOf(index)
+        | TypeAnnotationTarget::New(index)
+        | TypeAnnotationTarget::ConstructorReference(index)
+        | TypeAnnotationTarget::MethodReference(index) => write_u16_target(output, *index),
         TypeAnnotationTarget::ClassTypeParameterBound {
             parameter_index,
             bound_index,
-        } => write_bound_target(output, 0x11, *parameter_index, *bound_index),
-        TypeAnnotationTarget::MethodTypeParameterBound {
+        }
+        | TypeAnnotationTarget::MethodTypeParameterBound {
             parameter_index,
             bound_index,
-        } => write_bound_target(output, 0x12, *parameter_index, *bound_index),
-        TypeAnnotationTarget::Field => output.write_u8(0x13),
-        TypeAnnotationTarget::MethodReturn => output.write_u8(0x14),
-        TypeAnnotationTarget::MethodReceiver => output.write_u8(0x15),
-        TypeAnnotationTarget::MethodFormalParameter(index) => {
-            write_u8_target(output, 0x16, *index);
+        } => write_bound_target(output, *parameter_index, *bound_index),
+        TypeAnnotationTarget::Field
+        | TypeAnnotationTarget::MethodReturn
+        | TypeAnnotationTarget::MethodReceiver => {}
+        TypeAnnotationTarget::LocalVariable(targets)
+        | TypeAnnotationTarget::ResourceVariable(targets) => {
+            write_local_variable_targets(output, targets)?;
         }
-        TypeAnnotationTarget::Throws(index) => write_u16_target(output, 0x17, *index),
-        TypeAnnotationTarget::LocalVariable(targets) => {
-            write_local_variable_targets(output, 0x40, targets)?;
-        }
-        TypeAnnotationTarget::ResourceVariable(targets) => {
-            write_local_variable_targets(output, 0x41, targets)?;
-        }
-        TypeAnnotationTarget::ExceptionParameter(index) => write_u16_target(output, 0x42, *index),
-        TypeAnnotationTarget::InstanceOf(offset) => write_u16_target(output, 0x43, *offset),
-        TypeAnnotationTarget::New(offset) => write_u16_target(output, 0x44, *offset),
-        TypeAnnotationTarget::ConstructorReference(offset) => {
-            write_u16_target(output, 0x45, *offset);
-        }
-        TypeAnnotationTarget::MethodReference(offset) => write_u16_target(output, 0x46, *offset),
         TypeAnnotationTarget::Cast {
             offset,
             type_argument_index,
-        } => write_type_argument_target(output, 0x47, *offset, *type_argument_index),
-        TypeAnnotationTarget::ConstructorInvocationTypeArgument {
+        }
+        | TypeAnnotationTarget::ConstructorInvocationTypeArgument {
             offset,
             type_argument_index,
-        } => write_type_argument_target(output, 0x48, *offset, *type_argument_index),
-        TypeAnnotationTarget::MethodInvocationTypeArgument {
+        }
+        | TypeAnnotationTarget::MethodInvocationTypeArgument {
             offset,
             type_argument_index,
-        } => write_type_argument_target(output, 0x49, *offset, *type_argument_index),
-        TypeAnnotationTarget::ConstructorReferenceTypeArgument {
+        }
+        | TypeAnnotationTarget::ConstructorReferenceTypeArgument {
             offset,
             type_argument_index,
-        } => write_type_argument_target(output, 0x4a, *offset, *type_argument_index),
-        TypeAnnotationTarget::MethodReferenceTypeArgument {
+        }
+        | TypeAnnotationTarget::MethodReferenceTypeArgument {
             offset,
             type_argument_index,
-        } => write_type_argument_target(output, 0x4b, *offset, *type_argument_index),
+        } => write_type_argument_target(output, *offset, *type_argument_index),
     }
     Ok(())
 }
 
-fn write_u8_target(output: &mut Writer, tag: u8, index: u8) {
-    output.write_u8(tag);
+fn write_u8_target(output: &mut Writer, index: u8) {
     output.write_u8(index);
 }
 
-fn write_u16_target(output: &mut Writer, tag: u8, index: u16) {
-    output.write_u8(tag);
+fn write_u16_target(output: &mut Writer, index: u16) {
     output.write_u16(index);
 }
 
-fn write_bound_target(output: &mut Writer, tag: u8, parameter: u8, bound: u8) {
-    output.write_u8(tag);
+fn write_bound_target(output: &mut Writer, parameter: u8, bound: u8) {
     output.write_u8(parameter);
     output.write_u8(bound);
 }
 
-fn write_type_argument_target(output: &mut Writer, tag: u8, offset: u16, argument: u8) {
-    output.write_u8(tag);
+fn write_type_argument_target(output: &mut Writer, offset: u16, argument: u8) {
     output.write_u16(offset);
     output.write_u8(argument);
 }
 
 fn write_local_variable_targets(
     output: &mut Writer,
-    tag: u8,
     targets: &[LocalVariableTarget],
 ) -> Result<()> {
-    output.write_u8(tag);
     output.write_u16(count_u16(targets.len(), "local-variable targets")?);
     for target in targets {
         output.write_u16(target.start_pc);

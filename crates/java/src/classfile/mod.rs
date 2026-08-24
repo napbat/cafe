@@ -21,14 +21,14 @@ pub use self::assemble::assemble_class;
 pub use self::attribute::{
     Annotation, AnnotationConstantKind, AnnotationDefaultAttribute, AnnotationElement,
     AnnotationsAttribute, BootstrapMethod, BootstrapMethodsAttribute, BytesAttribute, ElementValue,
-    EnclosingMethodAttribute, IndexAttribute, IndexListAttribute, InnerClass,
+    ElementValueKind, EnclosingMethodAttribute, IndexAttribute, IndexListAttribute, InnerClass,
     InnerClassesAttribute, KnownAttribute, KnownAttributeKind, LineNumber,
     LineNumberTableAttribute, LocalVariable, LocalVariableTableAttribute, LocalVariableTarget,
     LocalVariableType, LocalVariableTypeTableAttribute, MarkerAttribute, MethodParameter,
     MethodParametersAttribute, ModuleAttribute, ModuleExport, ModuleOpen, ModuleProvide,
     ModuleRequire, ParameterAnnotationsAttribute, RecordAttribute, RecordComponent, StackMapFrame,
-    StackMapTableAttribute, TypeAnnotation, TypeAnnotationTarget, TypeAnnotationsAttribute,
-    TypePathEntry, VerificationType,
+    StackMapTableAttribute, TypeAnnotation, TypeAnnotationTarget, TypeAnnotationTargetKind,
+    TypeAnnotationsAttribute, TypePathEntry, TypePathKind, VerificationType, VerificationTypeKind,
 };
 pub use self::code::BytecodeOffsetMap;
 pub use self::constant_pool::{

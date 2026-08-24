@@ -11,8 +11,9 @@ mod write;
 
 pub use self::annotations::{
     Annotation, AnnotationConstantKind, AnnotationDefaultAttribute, AnnotationElement,
-    AnnotationsAttribute, ElementValue, LocalVariableTarget, ParameterAnnotationsAttribute,
-    TypeAnnotation, TypeAnnotationTarget, TypeAnnotationsAttribute, TypePathEntry,
+    AnnotationsAttribute, ElementValue, ElementValueKind, LocalVariableTarget,
+    ParameterAnnotationsAttribute, TypeAnnotation, TypeAnnotationTarget, TypeAnnotationTargetKind,
+    TypeAnnotationsAttribute, TypePathEntry, TypePathKind,
 };
 pub use self::kinds::KnownAttributeKind;
 pub use self::models::{
@@ -23,7 +24,11 @@ pub use self::models::{
     RecordAttribute, RecordComponent,
 };
 pub use self::module::{ModuleAttribute, ModuleExport, ModuleOpen, ModuleProvide, ModuleRequire};
-pub use self::stack_map::{StackMapFrame, StackMapTableAttribute, VerificationType};
+pub use self::stack_map::{
+    StackMapFrame, StackMapTableAttribute, VerificationType, VerificationTypeKind,
+};
+
+pub(crate) use self::stack_map::StackMapFrameTag;
 
 pub(crate) use self::parse::parse_attributes;
 pub(crate) use self::write::{validate_known_model, write_attributes};

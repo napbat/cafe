@@ -14,16 +14,19 @@ use super::super::{
 use super::{
     Annotation, AnnotationConstantKind, AnnotationDefaultAttribute, AnnotationElement,
     AnnotationsAttribute, BootstrapMethod, BootstrapMethodsAttribute, BytesAttribute, ElementValue,
-    EnclosingMethodAttribute, IndexAttribute, IndexListAttribute, InnerClass,
+    ElementValueKind, EnclosingMethodAttribute, IndexAttribute, IndexListAttribute, InnerClass,
     InnerClassesAttribute, KnownAttribute, KnownAttributeKind as StandardKind, LineNumber,
     LineNumberTableAttribute, LocalVariable, LocalVariableTableAttribute, LocalVariableTarget,
     LocalVariableType, LocalVariableTypeTableAttribute, MarkerAttribute, MethodParameter,
     MethodParametersAttribute, ParameterAnnotationsAttribute, RecordAttribute, RecordComponent,
-    StackMapFrame, StackMapTableAttribute, TypeAnnotation, TypeAnnotationTarget,
-    TypeAnnotationsAttribute, TypePathEntry, VerificationType,
+    StackMapFrame, StackMapFrameTag, StackMapTableAttribute, TypeAnnotation, TypeAnnotationTarget,
+    TypeAnnotationTargetKind, TypeAnnotationsAttribute, TypePathEntry, VerificationType,
+    VerificationTypeKind,
 };
 
 const MAX_ANNOTATION_DEPTH: usize = 128;
+const ROOT_ANNOTATION_DEPTH: usize = 0;
+const ANNOTATION_NESTING_INCREMENT: usize = 1;
 
 pub(crate) fn parse_attributes(
     reader: &mut Reader<'_>,
@@ -162,13 +165,13 @@ fn parse_known(
         StandardKind::RuntimeVisibleAnnotations => {
             KnownAttribute::RuntimeVisibleAnnotations(AnnotationsAttribute {
                 name_index,
-                annotations: parse_annotations(reader, pool, 0)?,
+                annotations: parse_annotations(reader, pool, ROOT_ANNOTATION_DEPTH)?,
             })
         }
         StandardKind::RuntimeInvisibleAnnotations => {
             KnownAttribute::RuntimeInvisibleAnnotations(AnnotationsAttribute {
                 name_index,
-                annotations: parse_annotations(reader, pool, 0)?,
+                annotations: parse_annotations(reader, pool, ROOT_ANNOTATION_DEPTH)?,
             })
         }
         StandardKind::RuntimeVisibleParameterAnnotations => {
@@ -194,7 +197,7 @@ fn parse_known(
         StandardKind::AnnotationDefault => {
             KnownAttribute::AnnotationDefault(AnnotationDefaultAttribute {
                 name_index,
-                value: parse_element_value(reader, pool, 0)?,
+                value: parse_element_value(reader, pool, ROOT_ANNOTATION_DEPTH)?,
             })
         }
         StandardKind::BootstrapMethods => {
@@ -298,45 +301,49 @@ fn parse_stack_map_table(
     let count = usize::from(reader.read_u16()?);
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
-        let frame_type = reader.read_u8()?;
+        let frame_type_byte = reader.read_u8()?;
+        let Some(frame_type) = StackMapFrameTag::from_byte(frame_type_byte) else {
+            return Err(Error::invalid_class(
+                reader
+                    .absolute_position()
+                    .saturating_sub(std::mem::size_of::<u8>()),
+                format!("reserved stack-map frame type {frame_type_byte}"),
+            ));
+        };
         let frame = match frame_type {
-            0..=63 => StackMapFrame::Same {
-                offset_delta: frame_type,
-            },
-            64..=127 => StackMapFrame::SameLocalsOneStack {
-                offset_delta: frame_type - 64,
-                stack: parse_verification_type(reader, pool)?,
-            },
-            247 => StackMapFrame::SameLocalsOneStackExtended {
+            StackMapFrameTag::Same(offset_delta) => StackMapFrame::Same { offset_delta },
+            StackMapFrameTag::SameLocalsOneStack(offset_delta) => {
+                StackMapFrame::SameLocalsOneStack {
+                    offset_delta,
+                    stack: parse_verification_type(reader, pool)?,
+                }
+            }
+            StackMapFrameTag::SameLocalsOneStackExtended => {
+                StackMapFrame::SameLocalsOneStackExtended {
+                    offset_delta: reader.read_u16()?,
+                    stack: parse_verification_type(reader, pool)?,
+                }
+            }
+            StackMapFrameTag::Chop(absent_locals) => StackMapFrame::Chop {
                 offset_delta: reader.read_u16()?,
-                stack: parse_verification_type(reader, pool)?,
+                absent_locals,
             },
-            248..=250 => StackMapFrame::Chop {
-                offset_delta: reader.read_u16()?,
-                absent_locals: 251 - frame_type,
-            },
-            251 => StackMapFrame::SameExtended {
+            StackMapFrameTag::SameExtended => StackMapFrame::SameExtended {
                 offset_delta: reader.read_u16()?,
             },
-            252..=254 => {
+            StackMapFrameTag::Append(local_count) => {
                 let offset_delta = reader.read_u16()?;
-                let locals = parse_verification_types(reader, pool, usize::from(frame_type - 251))?;
+                let locals = parse_verification_types(reader, pool, usize::from(local_count))?;
                 StackMapFrame::Append {
                     offset_delta,
                     locals,
                 }
             }
-            255 => StackMapFrame::Full {
+            StackMapFrameTag::Full => StackMapFrame::Full {
                 offset_delta: reader.read_u16()?,
                 locals: parse_counted_verification_types(reader, pool)?,
                 stack: parse_counted_verification_types(reader, pool)?,
             },
-            _ => {
-                return Err(Error::invalid_class(
-                    reader.absolute_position().saturating_sub(1),
-                    format!("reserved stack-map frame type {frame_type}"),
-                ));
-            }
         };
         frames.push(frame);
     }
@@ -366,26 +373,27 @@ fn parse_verification_type(
     pool: &ConstantPool,
 ) -> Result<VerificationType> {
     let offset = reader.absolute_position();
-    Ok(match reader.read_u8()? {
-        0 => VerificationType::Top,
-        1 => VerificationType::Integer,
-        2 => VerificationType::Float,
-        3 => VerificationType::Double,
-        4 => VerificationType::Long,
-        5 => VerificationType::Null,
-        6 => VerificationType::UninitializedThis,
-        7 => {
+    let tag = reader.read_u8()?;
+    let Some(kind) = VerificationTypeKind::from_tag(tag) else {
+        return Err(Error::invalid_class(
+            offset,
+            format!("invalid verification-type tag {tag}"),
+        ));
+    };
+    Ok(match kind {
+        VerificationTypeKind::Top => VerificationType::Top,
+        VerificationTypeKind::Integer => VerificationType::Integer,
+        VerificationTypeKind::Float => VerificationType::Float,
+        VerificationTypeKind::Double => VerificationType::Double,
+        VerificationTypeKind::Long => VerificationType::Long,
+        VerificationTypeKind::Null => VerificationType::Null,
+        VerificationTypeKind::UninitializedThis => VerificationType::UninitializedThis,
+        VerificationTypeKind::Object => {
             let index = reader.read_u16()?;
             expect_class(pool, index)?;
             VerificationType::Object(index)
         }
-        8 => VerificationType::Uninitialized(reader.read_u16()?),
-        tag => {
-            return Err(Error::invalid_class(
-                offset,
-                format!("invalid verification-type tag {tag}"),
-            ));
-        }
+        VerificationTypeKind::Uninitialized => VerificationType::Uninitialized(reader.read_u16()?),
     })
 }
 
@@ -511,7 +519,7 @@ fn parse_annotation(
         expect_utf8(pool, name_index)?;
         elements.push(AnnotationElement {
             name_index,
-            value: parse_element_value(reader, pool, depth + 1)?,
+            value: parse_element_value(reader, pool, depth + ANNOTATION_NESTING_INCREMENT)?,
         });
     }
     Ok(Annotation {
@@ -528,16 +536,22 @@ fn parse_element_value(
     ensure_annotation_depth(reader, depth)?;
     let offset = reader.absolute_position();
     let tag = reader.read_u8()?;
-    if let Some(kind) = AnnotationConstantKind::from_tag(tag) {
-        let constant_index = reader.read_u16()?;
-        expect_annotation_constant(pool, constant_index, kind)?;
-        return Ok(ElementValue::Constant {
-            kind,
-            constant_index,
-        });
-    }
-    Ok(match tag {
-        b'e' => {
+    let Some(kind) = ElementValueKind::from_tag(tag) else {
+        return Err(Error::invalid_class(
+            offset,
+            format!("invalid annotation element tag 0x{tag:02x}"),
+        ));
+    };
+    Ok(match kind {
+        ElementValueKind::Constant(kind) => {
+            let constant_index = reader.read_u16()?;
+            expect_annotation_constant(pool, constant_index, kind)?;
+            ElementValue::Constant {
+                kind,
+                constant_index,
+            }
+        }
+        ElementValueKind::Enum => {
             let type_name_index = reader.read_u16()?;
             let constant_name_index = reader.read_u16()?;
             expect_utf8(pool, type_name_index)?;
@@ -547,24 +561,22 @@ fn parse_element_value(
                 constant_name_index,
             }
         }
-        b'c' => {
+        ElementValueKind::Class => {
             let index = reader.read_u16()?;
             expect_utf8(pool, index)?;
             ElementValue::Class(index)
         }
-        b'@' => ElementValue::Annotation(Box::new(parse_annotation(reader, pool, depth + 1)?)),
-        b'[' => {
+        ElementValueKind::Annotation => ElementValue::Annotation(Box::new(parse_annotation(
+            reader,
+            pool,
+            depth + ANNOTATION_NESTING_INCREMENT,
+        )?)),
+        ElementValueKind::Array => {
             let count = usize::from(reader.read_u16()?);
             let values = (0..count)
-                .map(|_| parse_element_value(reader, pool, depth + 1))
+                .map(|_| parse_element_value(reader, pool, depth + ANNOTATION_NESTING_INCREMENT))
                 .collect::<Result<_>>()?;
             ElementValue::Array(values)
-        }
-        _ => {
-            return Err(Error::invalid_class(
-                offset,
-                format!("invalid annotation element tag 0x{tag:02x}"),
-            ));
         }
     })
 }
@@ -576,7 +588,7 @@ fn parse_parameter_annotations(
 ) -> Result<ParameterAnnotationsAttribute> {
     let count = usize::from(reader.read_u8()?);
     let parameters = (0..count)
-        .map(|_| parse_annotations(reader, pool, 0))
+        .map(|_| parse_annotations(reader, pool, ROOT_ANNOTATION_DEPTH))
         .collect::<Result<_>>()?;
     Ok(ParameterAnnotationsAttribute {
         name_index,
@@ -607,78 +619,106 @@ fn parse_type_annotation(reader: &mut Reader<'_>, pool: &ConstantPool) -> Result
         let kind_offset = reader.absolute_position();
         let kind = reader.read_u8()?;
         let argument = reader.read_u8()?;
-        path.push(match (kind, argument) {
-            (0, 0) => TypePathEntry::Array,
-            (1, 0) => TypePathEntry::Nested,
-            (2, 0) => TypePathEntry::WildcardBound,
-            (3, index) => TypePathEntry::TypeArgument(index),
-            _ => {
-                return Err(Error::invalid_class(
-                    kind_offset,
-                    format!("invalid type path entry ({kind}, {argument})"),
-                ));
-            }
-        });
+        let Some(entry) = TypePathEntry::from_encoded(kind, argument) else {
+            return Err(Error::invalid_class(
+                kind_offset,
+                format!("invalid type path entry ({kind}, {argument})"),
+            ));
+        };
+        path.push(entry);
     }
     Ok(TypeAnnotation {
         target,
         path,
-        annotation: parse_annotation(reader, pool, 0)?,
+        annotation: parse_annotation(reader, pool, ROOT_ANNOTATION_DEPTH)?,
     })
 }
 
 #[allow(clippy::too_many_lines)]
 fn parse_type_target(reader: &mut Reader<'_>) -> Result<TypeAnnotationTarget> {
     let offset = reader.absolute_position();
-    Ok(match reader.read_u8()? {
-        0x00 => TypeAnnotationTarget::ClassTypeParameter(reader.read_u8()?),
-        0x01 => TypeAnnotationTarget::MethodTypeParameter(reader.read_u8()?),
-        0x10 => TypeAnnotationTarget::ClassExtends(reader.read_u16()?),
-        0x11 => TypeAnnotationTarget::ClassTypeParameterBound {
-            parameter_index: reader.read_u8()?,
-            bound_index: reader.read_u8()?,
-        },
-        0x12 => TypeAnnotationTarget::MethodTypeParameterBound {
-            parameter_index: reader.read_u8()?,
-            bound_index: reader.read_u8()?,
-        },
-        0x13 => TypeAnnotationTarget::Field,
-        0x14 => TypeAnnotationTarget::MethodReturn,
-        0x15 => TypeAnnotationTarget::MethodReceiver,
-        0x16 => TypeAnnotationTarget::MethodFormalParameter(reader.read_u8()?),
-        0x17 => TypeAnnotationTarget::Throws(reader.read_u16()?),
-        0x40 => TypeAnnotationTarget::LocalVariable(parse_local_variable_targets(reader)?),
-        0x41 => TypeAnnotationTarget::ResourceVariable(parse_local_variable_targets(reader)?),
-        0x42 => TypeAnnotationTarget::ExceptionParameter(reader.read_u16()?),
-        0x43 => TypeAnnotationTarget::InstanceOf(reader.read_u16()?),
-        0x44 => TypeAnnotationTarget::New(reader.read_u16()?),
-        0x45 => TypeAnnotationTarget::ConstructorReference(reader.read_u16()?),
-        0x46 => TypeAnnotationTarget::MethodReference(reader.read_u16()?),
-        0x47 => TypeAnnotationTarget::Cast {
+    let tag = reader.read_u8()?;
+    let Some(kind) = TypeAnnotationTargetKind::from_tag(tag) else {
+        return Err(Error::invalid_class(
+            offset,
+            format!("invalid type-annotation target tag 0x{tag:02x}"),
+        ));
+    };
+    Ok(match kind {
+        TypeAnnotationTargetKind::ClassTypeParameter => {
+            TypeAnnotationTarget::ClassTypeParameter(reader.read_u8()?)
+        }
+        TypeAnnotationTargetKind::MethodTypeParameter => {
+            TypeAnnotationTarget::MethodTypeParameter(reader.read_u8()?)
+        }
+        TypeAnnotationTargetKind::ClassExtends => {
+            TypeAnnotationTarget::ClassExtends(reader.read_u16()?)
+        }
+        TypeAnnotationTargetKind::ClassTypeParameterBound => {
+            TypeAnnotationTarget::ClassTypeParameterBound {
+                parameter_index: reader.read_u8()?,
+                bound_index: reader.read_u8()?,
+            }
+        }
+        TypeAnnotationTargetKind::MethodTypeParameterBound => {
+            TypeAnnotationTarget::MethodTypeParameterBound {
+                parameter_index: reader.read_u8()?,
+                bound_index: reader.read_u8()?,
+            }
+        }
+        TypeAnnotationTargetKind::Field => TypeAnnotationTarget::Field,
+        TypeAnnotationTargetKind::MethodReturn => TypeAnnotationTarget::MethodReturn,
+        TypeAnnotationTargetKind::MethodReceiver => TypeAnnotationTarget::MethodReceiver,
+        TypeAnnotationTargetKind::MethodFormalParameter => {
+            TypeAnnotationTarget::MethodFormalParameter(reader.read_u8()?)
+        }
+        TypeAnnotationTargetKind::Throws => TypeAnnotationTarget::Throws(reader.read_u16()?),
+        TypeAnnotationTargetKind::LocalVariable => {
+            TypeAnnotationTarget::LocalVariable(parse_local_variable_targets(reader)?)
+        }
+        TypeAnnotationTargetKind::ResourceVariable => {
+            TypeAnnotationTarget::ResourceVariable(parse_local_variable_targets(reader)?)
+        }
+        TypeAnnotationTargetKind::ExceptionParameter => {
+            TypeAnnotationTarget::ExceptionParameter(reader.read_u16()?)
+        }
+        TypeAnnotationTargetKind::InstanceOf => {
+            TypeAnnotationTarget::InstanceOf(reader.read_u16()?)
+        }
+        TypeAnnotationTargetKind::New => TypeAnnotationTarget::New(reader.read_u16()?),
+        TypeAnnotationTargetKind::ConstructorReference => {
+            TypeAnnotationTarget::ConstructorReference(reader.read_u16()?)
+        }
+        TypeAnnotationTargetKind::MethodReference => {
+            TypeAnnotationTarget::MethodReference(reader.read_u16()?)
+        }
+        TypeAnnotationTargetKind::Cast => TypeAnnotationTarget::Cast {
             offset: reader.read_u16()?,
             type_argument_index: reader.read_u8()?,
         },
-        0x48 => TypeAnnotationTarget::ConstructorInvocationTypeArgument {
-            offset: reader.read_u16()?,
-            type_argument_index: reader.read_u8()?,
-        },
-        0x49 => TypeAnnotationTarget::MethodInvocationTypeArgument {
-            offset: reader.read_u16()?,
-            type_argument_index: reader.read_u8()?,
-        },
-        0x4a => TypeAnnotationTarget::ConstructorReferenceTypeArgument {
-            offset: reader.read_u16()?,
-            type_argument_index: reader.read_u8()?,
-        },
-        0x4b => TypeAnnotationTarget::MethodReferenceTypeArgument {
-            offset: reader.read_u16()?,
-            type_argument_index: reader.read_u8()?,
-        },
-        tag => {
-            return Err(Error::invalid_class(
-                offset,
-                format!("invalid type-annotation target tag 0x{tag:02x}"),
-            ));
+        TypeAnnotationTargetKind::ConstructorInvocationTypeArgument => {
+            TypeAnnotationTarget::ConstructorInvocationTypeArgument {
+                offset: reader.read_u16()?,
+                type_argument_index: reader.read_u8()?,
+            }
+        }
+        TypeAnnotationTargetKind::MethodInvocationTypeArgument => {
+            TypeAnnotationTarget::MethodInvocationTypeArgument {
+                offset: reader.read_u16()?,
+                type_argument_index: reader.read_u8()?,
+            }
+        }
+        TypeAnnotationTargetKind::ConstructorReferenceTypeArgument => {
+            TypeAnnotationTarget::ConstructorReferenceTypeArgument {
+                offset: reader.read_u16()?,
+                type_argument_index: reader.read_u8()?,
+            }
+        }
+        TypeAnnotationTargetKind::MethodReferenceTypeArgument => {
+            TypeAnnotationTarget::MethodReferenceTypeArgument {
+                offset: reader.read_u16()?,
+                type_argument_index: reader.read_u8()?,
+            }
         }
     })
 }
