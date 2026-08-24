@@ -448,10 +448,10 @@ impl ApkFile {
         validate_entry_name(&name, kind)?;
         validate_entry_payload(&name, kind, &data)?;
         self.ensure_name_available(&name, None)?;
-        let id = EntryId(self.next_id);
+        let id = self.next_id;
         self.next_id = self
             .next_id
-            .checked_add(1)
+            .next()
             .ok_or_else(|| Error::invalid_apk("entry ID space is exhausted"))?;
         self.entries.insert(
             position,

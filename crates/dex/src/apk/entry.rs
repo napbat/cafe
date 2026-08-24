@@ -7,9 +7,9 @@ use zip::write::{FullFileOptions, SimpleFileOptions};
 use zip::{CompressionMethod, DateTime, HasZipMetadata, System};
 
 use super::layout::{
-    PORTABLE_DIRECTORY_MODE, PORTABLE_FILE_MODE, PORTABLE_SYMLINK_MODE,
-    ZIP_EXTRA_FIELD_HEADER_SIZE, ZIP_EXTRA_FIELD_ID_OFFSET, ZIP_EXTRA_FIELD_LENGTH_OFFSET,
-    ZIP_U16_FIELD_WIDTH, ZIP_U16_MAXIMUM,
+    ENTRY_ID_INCREMENT, INITIAL_ENTRY_ID, PORTABLE_DIRECTORY_MODE, PORTABLE_FILE_MODE,
+    PORTABLE_SYMLINK_MODE, ZIP_EXTRA_FIELD_HEADER_SIZE, ZIP_EXTRA_FIELD_ID_OFFSET,
+    ZIP_EXTRA_FIELD_LENGTH_OFFSET, ZIP_U16_FIELD_WIDTH, ZIP_U16_MAXIMUM,
 };
 use crate::{Error, Result};
 
@@ -29,6 +29,23 @@ impl EntryId {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+
+    pub(super) const fn initial() -> Self {
+        Self(INITIAL_ENTRY_ID)
+    }
+
+    pub(super) fn from_position(position: usize) -> Result<Self> {
+        u64::try_from(position)
+            .map(Self)
+            .map_err(|_| Error::invalid_apk("APK entry position does not fit the ID type"))
+    }
+
+    pub(super) const fn next(self) -> Option<Self> {
+        match self.0.checked_add(ENTRY_ID_INCREMENT) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
     }
 }
 
@@ -183,7 +200,7 @@ impl EntryMetadata {
 
 fn parse_extra_fields(raw: &[u8], placement: ExtraFieldPlacement) -> Result<Vec<ExtraField>> {
     let mut fields = Vec::new();
-    let mut cursor = 0;
+    let mut cursor = ZIP_EXTRA_FIELD_ID_OFFSET;
     while cursor < raw.len() {
         let header_end = cursor
             .checked_add(ZIP_EXTRA_FIELD_HEADER_SIZE)

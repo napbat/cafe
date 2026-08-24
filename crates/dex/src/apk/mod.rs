@@ -32,7 +32,6 @@ pub use self::signature::{
 pub use zip::{CompressionMethod, DateTime, System};
 
 use self::entry::{ApkEntry, EntryData, OriginalEntryStats};
-use self::layout::INITIAL_ENTRY_ID;
 use self::signature::parse_signing_block;
 
 type SourceReader = Cursor<Arc<[u8]>>;
@@ -45,7 +44,7 @@ pub struct ApkFile {
     comment: Vec<u8>,
     signing_block: Option<SigningBlock>,
     dirty: bool,
-    next_id: u64,
+    next_id: EntryId,
 }
 
 impl ApkFile {
@@ -58,7 +57,7 @@ impl ApkFile {
             comment: Vec::new(),
             signing_block: None,
             dirty: true,
-            next_id: INITIAL_ENTRY_ID,
+            next_id: EntryId::initial(),
         }
     }
 
@@ -87,9 +86,7 @@ impl ApkFile {
         let mut entries = Vec::with_capacity(archive.len());
         for index in 0..archive.len() {
             let file = archive.by_index(index)?;
-            let id = u64::try_from(index)
-                .map(EntryId)
-                .map_err(|_| Error::invalid_apk("APK entry count exceeds stable ID space"))?;
+            let id = EntryId::from_position(index)?;
             let name = file.name().to_owned();
             let kind = if file.is_symlink() {
                 EntryKind::Symlink
@@ -113,8 +110,7 @@ impl ApkFile {
                 encrypted: file.encrypted(),
             });
         }
-        let next_id = u64::try_from(archive.len())
-            .map_err(|_| Error::invalid_apk("APK entry count exceeds stable ID space"))?;
+        let next_id = EntryId::from_position(archive.len())?;
         Ok(Self {
             original: Some(original),
             entries,
@@ -210,14 +206,14 @@ impl ApkFile {
         self.entries
             .iter()
             .find(|entry| entry.id == id)
-            .ok_or(Error::ApkEntryIdNotFound(id.0))
+            .ok_or(Error::ApkEntryIdNotFound(id.get()))
     }
 
     fn entry_record_mut(&mut self, id: EntryId) -> Result<&mut ApkEntry> {
         self.entries
             .iter_mut()
             .find(|entry| entry.id == id)
-            .ok_or(Error::ApkEntryIdNotFound(id.0))
+            .ok_or(Error::ApkEntryIdNotFound(id.get()))
     }
 
     fn source_archive(&self) -> Result<ZipArchive<SourceReader>> {

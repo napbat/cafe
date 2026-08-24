@@ -4,7 +4,7 @@ use crate::{Error, Result};
 
 pub(super) const ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 pub(super) const ZIP_END_OF_CENTRAL_DIRECTORY_SIZE: usize = 22;
-pub(super) const ZIP_U16_MAXIMUM: usize = 65_535;
+pub(super) const ZIP_U16_MAXIMUM: usize = u16::MAX as usize;
 pub(super) const ZIP_MAXIMUM_COMMENT_SIZE: usize = ZIP_U16_MAXIMUM;
 pub(super) const ZIP_CENTRAL_DIRECTORY_OFFSET_FIELD: usize = 16;
 pub(super) const ZIP_COMMENT_LENGTH_FIELD: usize = 20;
@@ -28,6 +28,7 @@ pub(super) const PORTABLE_DIRECTORY_MODE: u32 = 0o755;
 pub(super) const PORTABLE_SYMLINK_MODE: u32 = 0o777;
 
 pub(super) const INITIAL_ENTRY_ID: u64 = 0;
+pub(super) const ENTRY_ID_INCREMENT: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ZipSections {
