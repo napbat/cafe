@@ -9,6 +9,8 @@ use crate::text::JavaText;
 
 /// Maximum array rank representable by a JVM descriptor.
 pub const MAX_ARRAY_DIMENSIONS: u8 = u8::MAX;
+/// Width of one descriptor tag measured in UTF-16 code units.
+pub const DESCRIPTOR_TAG_WIDTH: usize = 1;
 
 /// Internal name of the JNI-specialized `jclass` reference type.
 pub const JAVA_LANG_CLASS: &str = "java/lang/Class";
@@ -131,6 +133,9 @@ impl DescriptorTag {
 pub struct Utf16Offset(usize);
 
 impl Utf16Offset {
+    /// Start of a UTF-16 sequence.
+    pub const START: Self = Self(0);
+
     /// Creates an offset from its zero-based code-unit position.
     #[must_use]
     pub const fn new(value: usize) -> Self {
@@ -268,6 +273,9 @@ impl PrimitiveType {
 pub struct ArrayDimensions(NonZeroU8);
 
 impl ArrayDimensions {
+    /// Rank of a one-dimensional array.
+    pub const SINGLE: Self = Self(NonZeroU8::MIN);
+
     /// Creates a nonzero array rank.
     #[must_use]
     pub const fn new(value: u8) -> Option<Self> {
@@ -325,7 +333,7 @@ impl ArrayType {
     /// Returns the JNI array-reference type used at the native boundary.
     #[must_use]
     pub const fn native_type(&self) -> NativeType {
-        if self.dimensions.get() != 1 {
+        if self.dimensions.get() != ArrayDimensions::SINGLE.get() {
             return NativeType::ObjectArray;
         }
         match self.element {
@@ -534,7 +542,7 @@ impl MethodDescriptor {
     /// Returns the exact parameter-descriptor code units without parentheses.
     #[must_use]
     pub fn parameter_utf16_units(&self) -> &[u16] {
-        const FIRST_PARAMETER_OFFSET: usize = 1;
+        const FIRST_PARAMETER_OFFSET: usize = DESCRIPTOR_TAG_WIDTH;
 
         &self.text.utf16_units()[FIRST_PARAMETER_OFFSET..self.parameter_end.get()]
     }
@@ -565,12 +573,18 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     const fn new(units: &'a [u16]) -> Self {
-        Self { units, position: 0 }
+        Self {
+            units,
+            position: Utf16Offset::START.get(),
+        }
     }
 
     fn parse(mut self) -> Result<ParsedDescriptor, DescriptorError> {
         if self.take_tag() != Some(DescriptorTag::ParameterListStart) {
-            return Err(Self::error_at(0, DescriptorProblem::MissingParameterList));
+            return Err(Self::error_at(
+                Utf16Offset::START.get(),
+                DescriptorProblem::MissingParameterList,
+            ));
         }
 
         let mut parameters = Vec::new();
@@ -623,13 +637,13 @@ impl<'a> Parser<'a> {
             Some(DescriptorTag::Object) => self.parse_object().map(JavaType::Object),
             Some(DescriptorTag::Array) => self.parse_array(),
             Some(tag) => Err(Self::error_at(
-                self.position.saturating_sub(1),
+                self.position.saturating_sub(DESCRIPTOR_TAG_WIDTH),
                 DescriptorProblem::UnexpectedTypeTag(tag.unit()),
             )),
             None => {
                 let offset = self
                     .position
-                    .saturating_sub(usize::from(self.position != 0));
+                    .saturating_sub(usize::from(self.position != Utf16Offset::START.get()));
                 let unit = self.units.get(offset).copied().unwrap_or_default();
                 Err(Self::error_at(
                     offset,
@@ -658,11 +672,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(&mut self) -> Result<JavaType, DescriptorError> {
-        let array_start = self.position.saturating_sub(1);
-        let mut dimensions = 1_usize;
+        let array_start = self.position.saturating_sub(DESCRIPTOR_TAG_WIDTH);
+        let mut dimensions = usize::from(ArrayDimensions::SINGLE.get());
         while self.peek_tag() == Some(DescriptorTag::Array) {
             self.take();
-            dimensions = dimensions.saturating_add(1);
+            dimensions = dimensions.saturating_add(usize::from(ArrayDimensions::SINGLE.get()));
             if dimensions > usize::from(MAX_ARRAY_DIMENSIONS) {
                 return Err(Self::error_at(
                     array_start,
@@ -692,7 +706,7 @@ impl<'a> Parser<'a> {
 
     fn take(&mut self) -> Option<u16> {
         let value = self.peek()?;
-        self.position += 1;
+        self.position += DESCRIPTOR_TAG_WIDTH;
         Some(value)
     }
 

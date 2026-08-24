@@ -149,14 +149,11 @@ impl NativeMethods {
     }
 
     fn is_native_name_overloaded(&self, method: &NativeMethod) -> bool {
-        self.methods
-            .iter()
-            .filter(|candidate| {
-                candidate.owner() == method.owner() && candidate.name() == method.name()
-            })
-            .take(2)
-            .count()
-            > 1
+        let mut matches = self.methods.iter().filter(|candidate| {
+            candidate.owner() == method.owner() && candidate.name() == method.name()
+        });
+        matches.next();
+        matches.next().is_some()
     }
 }
 

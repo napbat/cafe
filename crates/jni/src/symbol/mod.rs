@@ -33,6 +33,7 @@ const ASCII_LOWERCASE_START: u16 = 'a' as u16;
 const ASCII_LOWERCASE_END: u16 = 'z' as u16;
 const ASCII_DIGIT_START: u16 = '0' as u16;
 const ASCII_DIGIT_END: u16 = '9' as u16;
+const PREVIOUS_UTF16_UNIT_DISTANCE: usize = 1;
 
 /// UTF-16 unit with a dedicated JNI symbol escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -256,8 +257,9 @@ fn append_escaped(
 ) -> Result<(), SymbolError> {
     for (position, &unit) in units.iter().enumerate() {
         if let Some(digit) = AmbiguousDigit::from_unit(unit)
-            && (position == 0
-                || units.get(position - 1).copied() == Some(SymbolUnit::PackageSeparator.unit()))
+            && (position == Utf16Offset::START.get()
+                || units.get(position - PREVIOUS_UTF16_UNIT_DISTANCE).copied()
+                    == Some(SymbolUnit::PackageSeparator.unit()))
         {
             return Err(SymbolError {
                 component,

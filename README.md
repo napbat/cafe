@@ -266,12 +266,12 @@ crates/
 │   ├── src/jar/
 │   └── tests/
 ├── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
-    ├── src/file/
-    ├── src/instruction/
-    ├── src/disassembly/
-    ├── src/cafe/
-    ├── src/apk/
-    └── tests/
+│   ├── src/file/
+│   ├── src/instruction/
+│   ├── src/disassembly/
+│   ├── src/cafe/
+│   ├── src/apk/
+│   └── tests/
 └── jni/                 JNI declarations, ABI types, symbols, and adapters
     ├── src/descriptor/
     ├── src/method/
