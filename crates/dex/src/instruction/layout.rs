@@ -24,6 +24,7 @@ pub(super) const NON_EMPTY_RANGE_LAST_DELTA: u16 = 1;
 pub(super) const SIGNED_NIBBLE_MINIMUM: i64 = -8;
 pub(super) const SIGNED_NIBBLE_MAXIMUM: i64 = 7;
 pub(super) const FIRST_CODE_UNIT_OFFSET: u32 = 0;
+pub(super) const FIRST_CODE_UNIT_INDEX: usize = 0;
 pub(super) const INVALID_ARRAY_ELEMENT_WIDTH: u16 = 0;
 pub(super) const CLEARED_LOW_BITS: i64 = 0;
 

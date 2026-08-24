@@ -82,6 +82,39 @@ impl InstructionWidth {
 }
 
 impl InstructionFormat {
+    /// Returns the canonical format identifier from the DEX specification.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::F10x => "10x",
+            Self::F12x => "12x",
+            Self::F11n => "11n",
+            Self::F11x => "11x",
+            Self::F10t => "10t",
+            Self::F20t => "20t",
+            Self::F22x => "22x",
+            Self::F21t => "21t",
+            Self::F21s => "21s",
+            Self::F21h => "21h",
+            Self::F21c => "21c",
+            Self::F23x => "23x",
+            Self::F22t => "22t",
+            Self::F22s => "22s",
+            Self::F22c => "22c",
+            Self::F22b => "22b",
+            Self::F30t => "30t",
+            Self::F32x => "32x",
+            Self::F31i => "31i",
+            Self::F31t => "31t",
+            Self::F31c => "31c",
+            Self::F35c => "35c",
+            Self::F3rc => "3rc",
+            Self::F45cc => "45cc",
+            Self::F4rcc => "4rcc",
+            Self::F51l => "51l",
+        }
+    }
+
     /// Returns the typed fixed width of this instruction format.
     #[must_use]
     pub const fn width(self) -> InstructionWidth {

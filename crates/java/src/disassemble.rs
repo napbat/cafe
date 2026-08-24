@@ -5,7 +5,7 @@ use std::fmt::{self, Write};
 use crate::bytecode::{Instruction, Operand};
 use crate::classfile::{
     Attribute, CATCH_ALL_EXCEPTION_INDEX, ClassAccessFlags, ClassFile, CodeAttribute, ConstantPool,
-    FieldAccessFlags, FieldInfo, MethodAccessFlags, MethodInfo,
+    FieldAccessFlags, FieldInfo, JAVA_LANG_OBJECT_NAME, MethodAccessFlags, MethodInfo,
 };
 use crate::descriptor::{self, JavaType};
 use crate::{Error, Result};
@@ -163,7 +163,7 @@ fn write_declaration(output: &mut String, class: &ClassFile, class_name: &str) -
     write!(output, "{kind} {class_name}").expect("writing to a String cannot fail");
 
     if let Some(super_name) = class.super_name()?
-        && super_name != "java/lang/Object"
+        && super_name != JAVA_LANG_OBJECT_NAME
         && !class.access_flags.contains(ClassAccessFlags::INTERFACE)
     {
         write!(output, " extends {}", display_class_name(super_name))

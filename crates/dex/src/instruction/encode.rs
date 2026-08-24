@@ -367,11 +367,11 @@ fn encode_register_list(
     })?;
     if count > MAX_REGISTER_LIST_COUNT {
         return Err(Error::invalid_assembly(format!(
-            "{} register list has {count} entries; at most five fit",
-            opcode.mnemonic()
+            "{} register list has {count} entries; at most {MAX_REGISTER_LIST_COUNT} fit",
+            opcode.mnemonic(),
         )));
     }
-    let mut encoded = [0u8; REGISTER_LIST_SLOTS];
+    let mut encoded = [RESERVED_BYTE_VALUE; REGISTER_LIST_SLOTS];
     for (target, register) in encoded.iter_mut().zip(registers) {
         *target = nibble(*register, opcode, "register-list entry")?;
     }
@@ -406,8 +406,9 @@ fn encode_register_range(
             .is_none()
     {
         return Err(Error::invalid_assembly(format!(
-            "{} register range v{start}..+{count} exceeds v65535",
-            opcode.mnemonic()
+            "{} register range v{start}..+{count} exceeds v{}",
+            opcode.mnemonic(),
+            u16::MAX,
         )));
     }
     output.extend_from_slice(&[word0(opcode, count), index_u16(opcode, index)?, start]);

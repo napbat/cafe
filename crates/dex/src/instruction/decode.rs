@@ -7,8 +7,8 @@ use crate::{Error, Result};
 use super::layout::{
     ALIGNMENT_ROUNDING_BIAS, ARRAY_DATA_HEADER_CODE_UNITS, ARRAY_PADDING_VALUE,
     BYTES_PER_CODE_UNIT, CODE_UNIT_BITS, CODE_UNITS_PER_WORD, DOUBLE_CODE_UNIT_BITS,
-    FIRST_OPERAND_WORD, FOURTH_OPERAND_WORD, HIGH_BYTE_INDEX, INVALID_ARRAY_ELEMENT_WIDTH,
-    LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT, NIBBLE_BITS, NIBBLE_MASK,
+    FIRST_CODE_UNIT_INDEX, FIRST_OPERAND_WORD, FOURTH_OPERAND_WORD, HIGH_BYTE_INDEX,
+    INVALID_ARRAY_ELEMENT_WIDTH, LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT, NIBBLE_BITS, NIBBLE_MASK,
     PACKED_SWITCH_HEADER_CODE_UNITS, PACKED_SWITCH_TARGET_CODE_UNITS, PayloadKind,
     REGISTER_LIST_SLOTS, RESERVED_BYTE_VALUE, SECOND_OPERAND_WORD, SPARSE_SWITCH_ENTRY_CODE_UNITS,
     SPARSE_SWITCH_HEADER_CODE_UNITS, THIRD_OPERAND_WORD, TRIPLE_CODE_UNIT_BITS,
@@ -30,7 +30,7 @@ use super::{
 /// reserved bits, overflowing addresses, malformed payloads, or bad targets.
 pub fn decode(code_units: &[u16]) -> Result<Vec<Instruction>> {
     let mut decoded = Vec::new();
-    let mut cursor = 0usize;
+    let mut cursor = FIRST_CODE_UNIT_INDEX;
     while cursor < code_units.len() {
         let offset = u32::try_from(cursor).map_err(|_| {
             Error::invalid_instruction(u32::MAX, "instruction stream exceeds DEX address space")
@@ -94,7 +94,7 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
 
     let operands = match opcode.format() {
         InstructionFormat::F10x => {
-            require_zero(high, offset, "format 10x reserved byte")?;
+            require_reserved_byte(high, offset, InstructionFormat::F10x)?;
             Operands::None
         }
         InstructionFormat::F12x => {
@@ -108,7 +108,7 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
         InstructionFormat::F11x => Operands::Register(u16::from(high)),
         InstructionFormat::F10t => Operands::Branch { target: target8()? },
         InstructionFormat::F20t => {
-            require_zero(high, offset, "format 20t reserved byte")?;
+            require_reserved_byte(high, offset, InstructionFormat::F20t)?;
             Operands::Branch {
                 target: target16()?,
             }
@@ -185,13 +185,13 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
             }
         }
         InstructionFormat::F30t => {
-            require_zero(high, offset, "format 30t reserved byte")?;
+            require_reserved_byte(high, offset, InstructionFormat::F30t)?;
             Operands::Branch {
                 target: target32()?,
             }
         }
         InstructionFormat::F32x => {
-            require_zero(high, offset, "format 32x reserved byte")?;
+            require_reserved_byte(high, offset, InstructionFormat::F32x)?;
             Operands::Registers {
                 first: words[FIRST_OPERAND_WORD],
                 second: words[SECOND_OPERAND_WORD],
@@ -236,7 +236,11 @@ fn decode_register_list(opcode: Opcode, high: u8, words: &[u16], offset: u32) ->
     if count > usize::from(MAX_REGISTER_LIST_COUNT) {
         return Err(Error::invalid_instruction(
             offset,
-            format!("format 35c/45cc register count {count} exceeds five"),
+            format!(
+                "formats {}/{} register count {count} exceeds {MAX_REGISTER_LIST_COUNT}",
+                InstructionFormat::F35c.name(),
+                InstructionFormat::F45cc.name(),
+            ),
         ));
     }
     let extra = u16::from(high & NIBBLE_MASK);
@@ -552,6 +556,14 @@ fn require_zero(value: u8, offset: u32, field: &str) -> Result<()> {
             format!("{field} is nonzero"),
         ))
     }
+}
+
+fn require_reserved_byte(value: u8, offset: u32, format: InstructionFormat) -> Result<()> {
+    require_zero(
+        value,
+        offset,
+        &format!("format {} reserved byte", format.name()),
+    )
 }
 
 fn take(code: &[u16], cursor: usize, count: usize, offset: u32) -> Result<&[u16]> {
