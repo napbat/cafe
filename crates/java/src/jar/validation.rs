@@ -8,10 +8,12 @@ use crate::classfile::ClassFile;
 use crate::descriptor;
 use crate::{Error, Result};
 
-use super::entry::validate_entry_name;
+use super::entry::{JarEntry, validate_entry_name};
 use super::reader::EntryReader;
+use super::services::{parse_providers, validate_binary_name};
 use super::{
-    EntryKind, JarFile, SERVICE_PREFIX, is_class_entry, is_service_entry, parse_versioned_entry,
+    EntryKind, JarFile, MULTI_RELEASE_ENABLED_VALUE, MULTI_RELEASE_HEADER, Manifest,
+    SERVICE_PREFIX, is_class_entry, is_service_entry, parse_versioned_entry,
 };
 
 /// Aggregate results from structurally validating every JAR entry.
@@ -74,13 +76,51 @@ impl JarFile {
     /// Returns an error identifying the first unsafe, duplicate, malformed,
     /// encrypted, unreadable, or unsupported entry.
     pub fn validate_archive(&self) -> Result<ArchiveValidationReport> {
+        let mut reader = EntryReader::new(self);
+        self.validate_archive_with_reader(&mut reader, |_, _| Ok(()))
+    }
+
+    /// Parses every class and decodes every method body in archive order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error identifying the first unreadable or invalid class entry.
+    pub fn validate_all(&self) -> Result<ValidationReport> {
+        let mut reader = EntryReader::new(self);
+        self.validate_all_with_reader(&mut reader)
+    }
+
+    fn validate_all_with_reader(&self, reader: &mut EntryReader) -> Result<ValidationReport> {
+        let mut report = ValidationReport::default();
+        self.validate_archive_with_reader(reader, |entry, bytes| {
+            if entry.kind != EntryKind::File || !is_class_entry(&entry.name) {
+                return Ok(());
+            }
+            let class = validate_class_round_trip(bytes, &entry.name)?;
+            record_class(&mut report, &class, entry.uncompressed_size());
+            validate_fields(&class, &entry.name)?;
+            validate_methods(&class, &entry.name, &mut report)?;
+            validate_control_flow(&class, &entry.name, &mut report)
+        })?;
+        Ok(report)
+    }
+
+    fn validate_archive_with_reader<F>(
+        &self,
+        reader: &mut EntryReader,
+        mut inspect: F,
+    ) -> Result<ArchiveValidationReport>
+    where
+        F: FnMut(&JarEntry, &[u8]) -> Result<()>,
+    {
         let mut report = ArchiveValidationReport {
             entries: self.entries.len(),
             signature_artifacts: self.signature_entry_ids().len(),
             ..ArchiveValidationReport::default()
         };
+        let manifest_entry_id = self.manifest_entry_id()?;
+        let mut manifest = None;
         let mut names = HashSet::with_capacity(self.entries.len());
-        let mut reader = EntryReader::new(self);
         for entry in &self.entries {
             validate_entry_name(&entry.name, entry.kind)?;
             if !names.insert(&entry.name) {
@@ -121,7 +161,17 @@ impl JarFile {
             }
             report.class_entries +=
                 usize::from(entry.kind == EntryKind::File && is_class_entry(&entry.name));
-            report.service_configurations += usize::from(is_service_entry(&entry.name));
+            let service_entry = entry.kind == EntryKind::File && is_service_entry(&entry.name);
+            report.service_configurations += usize::from(service_entry);
+            if Some(entry.id) == manifest_entry_id {
+                manifest = Some(Manifest::parse(&bytes)?);
+            }
+            if let Some(service) = entry.name.strip_prefix(SERVICE_PREFIX)
+                && service_entry
+            {
+                validate_binary_name(service, "service")?;
+                parse_providers(&bytes, &entry.name)?;
+            }
             if entry.kind == EntryKind::File
                 && entry.name.starts_with(super::MULTI_RELEASE_ENTRY_PREFIX)
                 && parse_versioned_entry(&entry.name).is_none()
@@ -140,38 +190,11 @@ impl JarFile {
                     entry.name
                 )));
             }
+            inspect(entry, &bytes)?;
         }
-        self.manifest()?;
-        self.service_configurations()?;
-        report.multi_release = self.is_multi_release()?;
-        Ok(report)
-    }
-
-    /// Parses every class and decodes every method body in archive order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error identifying the first unreadable or invalid class entry.
-    pub fn validate_all(&self) -> Result<ValidationReport> {
-        self.validate_archive()?;
-        let mut report = ValidationReport::default();
-        let mut reader = EntryReader::new(self);
-        for entry in &self.entries {
-            if entry.kind != EntryKind::File || !is_class_entry(&entry.name) {
-                continue;
-            }
-            let name = entry.name.clone();
-            let bytes = reader
-                .read(entry)
-                .map_err(|error| error.in_jar_entry(name.clone()))?;
-            let size = entry.uncompressed_size();
-
-            let class = validate_class_round_trip(&bytes, &name)?;
-            record_class(&mut report, &class, size);
-            validate_fields(&class, &name)?;
-            validate_methods(&class, &name, &mut report)?;
-            validate_control_flow(&class, &name, &mut report)?;
-        }
+        report.multi_release = manifest
+            .and_then(|manifest| manifest.main().get(MULTI_RELEASE_HEADER).map(str::to_owned))
+            .is_some_and(|value| value.eq_ignore_ascii_case(MULTI_RELEASE_ENABLED_VALUE));
         Ok(report)
     }
 }
@@ -315,4 +338,37 @@ fn validate_control_flow(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::classfile::{ClassAccessFlags, ClassFile, JAVA_8_MAJOR_VERSION};
+
+    use super::super::reader::EntryReader;
+    use super::JarFile;
+
+    const BULK_CLASS_COUNT: usize = 128;
+
+    #[test]
+    fn complete_validation_constructs_one_archive_reader() -> Result<()> {
+        let mut source = JarFile::new();
+        for index in 0..BULK_CLASS_COUNT {
+            let name = format!("sample/Type{index}");
+            source.add_class(&ClassFile::new(
+                JAVA_8_MAJOR_VERSION,
+                &name,
+                Some("java/lang/Object"),
+                ClassAccessFlags::PUBLIC,
+            )?)?;
+        }
+        let jar = JarFile::from_bytes(source.to_bytes()?)?;
+        let mut reader = EntryReader::new(&jar);
+
+        let report = jar.validate_all_with_reader(&mut reader)?;
+
+        assert_eq!(report.classes, BULK_CLASS_COUNT);
+        assert_eq!(reader.archive_constructions(), 1);
+        Ok(())
+    }
 }

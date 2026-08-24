@@ -170,7 +170,7 @@ fn service_entry_name(service: &str) -> Result<String> {
     Ok(format!("{SERVICE_PREFIX}{service}"))
 }
 
-fn parse_providers(bytes: &[u8], entry: &str) -> Result<Vec<String>> {
+pub(super) fn parse_providers(bytes: &[u8], entry: &str) -> Result<Vec<String>> {
     let text = std::str::from_utf8(bytes).map_err(|_| Error::UnsupportedJarEntry {
         entry: entry.to_owned(),
         message: "service configuration is not UTF-8".to_owned(),
@@ -223,7 +223,7 @@ fn render_providers(providers: &[String]) -> Vec<u8> {
     output
 }
 
-fn validate_binary_name(name: &str, role: &str) -> Result<()> {
+pub(super) fn validate_binary_name(name: &str, role: &str) -> Result<()> {
     let invalid = name.is_empty()
         || name.starts_with('.')
         || name.ends_with('.')

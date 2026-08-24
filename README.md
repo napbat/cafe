@@ -45,7 +45,9 @@ consumer
 parse individual classes, and validate an entire archive. Its full validation
 path parses and reassembles every class, decodes and re-encodes every method
 body, checks descriptors and constant references, and constructs every shared
-control-flow graph. Both binary round trips must reproduce the original bytes.
+control-flow graph. Archive metadata, resources, and classes are validated in
+one payload pass using one ZIP reader. Both binary round trips must reproduce
+the original bytes.
 
 Unknown class-file attributes remain exact raw payloads. Modified UTF-8
 constants retain their original UTF-16 units, including unpaired surrogates,

@@ -26,6 +26,9 @@ These rules apply to the entire repository.
   assembly, bytecode decoding and encoding, JAR utilities, and adapters into
   the disassembler and Program. It must not depend on Cafe. Do not add
   `src/main.rs`, Clap, or tool-specific output policy to this crate.
+- Use the JAR entry reader for archive-wide operations. Validation, rewriting,
+  and bulk consumers must share one ZIP reader rather than reopening the
+  central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, Dalvik instruction decoding and encoding, APK and multidex
   provenance, and adapters into the disassembler and Program. It must not
