@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/cafe", "crates/disassembler", "crates/java"]
-default-members = ["crates/cafe", "crates/disassembler", "crates/java"]
+members = ["crates/cafe", "crates/dex", "crates/disassembler", "crates/java"]
+default-members = ["crates/cafe", "crates/dex", "crates/disassembler", "crates/java"]
 resolver = "3"
 
 [workspace.package]
@@ -14,8 +14,10 @@ homepage = "https://github.com/napbat/cafe"
 [workspace.dependencies]
 cafe = { version = "0.1.0", path = "crates/cafe" }
 disassembler = { version = "0.1.0", path = "crates/disassembler" }
+dex = { version = "0.1.0", path = "crates/dex" }
 cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib", rev = "5331ad5684d14568ef94a2e8714026dec5712117" }
 thiserror = "2.0.20"
+sha1 = "0.10.6"
 zip = { version = "8.6.0", default-features = false, features = [
     "deflate-flate2-zlib-rs",
     "unreserved",
