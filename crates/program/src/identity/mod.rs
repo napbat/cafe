@@ -1,4 +1,4 @@
-//! Stable identities for program definitions.
+//! Stable, format-qualified identities for program definitions.
 
 use disassembler::BinaryFormat;
 

@@ -1,4 +1,4 @@
-//! Program-model construction errors.
+//! Program construction and mutation errors.
 
 use std::fmt;
 

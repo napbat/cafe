@@ -1,4 +1,4 @@
-//! Owned type, field, and method definitions.
+//! Owned program type, field, and method definitions.
 
 use std::collections::BTreeMap;
 

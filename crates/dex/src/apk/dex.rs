@@ -2,12 +2,12 @@
 
 use std::num::NonZeroU32;
 
-use ::cafe::Module;
 use disassembler::Disassembly;
+use program::Module;
 
 use super::{ApkFile, EntryId, EntryKind};
-use crate::cafe::{CafeOptions, lower_file_named_with_options};
 use crate::disassembly::lower_file_named;
+use crate::program::{ProgramOptions, lower_file_named_with_options};
 use crate::{DexFile, Error, Result};
 
 const DEX_ENTRY_STEM: &str = "classes";
@@ -76,12 +76,12 @@ impl DexArtifact {
             .map_err(|error| error.in_apk_entry(self.origin.entry_name.clone()))
     }
 
-    /// Builds a Cafe module using this artifact's exact APK entry name.
+    /// Builds a program module using this artifact's exact APK entry name.
     ///
     /// # Errors
     ///
     /// Returns an error when DEX definitions or requested bodies are invalid.
-    pub fn to_module(&self, options: CafeOptions) -> Result<Module> {
+    pub fn to_module(&self, options: ProgramOptions) -> Result<Module> {
         lower_file_named_with_options(&self.file, &self.origin.entry_name, options)
             .map_err(|error| error.in_apk_entry(self.origin.entry_name.clone()))
     }

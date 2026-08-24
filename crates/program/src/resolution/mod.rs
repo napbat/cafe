@@ -1,4 +1,4 @@
-//! Explicit definition-resolution outcomes.
+//! Explicit cross-module definition-resolution outcomes.
 
 /// Result of resolving an identity across a multi-module [`Program`](crate::Program).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

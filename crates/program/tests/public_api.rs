@@ -1,7 +1,7 @@
-//! Integration coverage for the public Cafe ownership and resolution API.
+//! Integration coverage for the public program ownership and resolution API.
 
-use cafe::{MethodId, Module, Program, Resolution, TypeId};
 use disassembler::{BinaryFormat, Disassembly, Function, FunctionSymbol, RawAccessFlags};
+use program::{MethodId, Module, Program, Resolution, TypeId};
 
 const SAMPLE_ACCESS_FLAG_BITS: u32 = 1;
 

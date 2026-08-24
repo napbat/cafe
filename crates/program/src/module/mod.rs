@@ -1,4 +1,4 @@
-//! Module ownership, lookup, and raw-disassembly conversion.
+//! Module ownership, indexed lookup, and raw-disassembly conversion.
 
 use std::collections::BTreeMap;
 

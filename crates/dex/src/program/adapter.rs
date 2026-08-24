@@ -1,6 +1,6 @@
-//! DEX hierarchy, member, and executable-body lowering into Cafe.
+//! DEX hierarchy, member, and executable-body lowering into the program model.
 
-use ::cafe::{
+use ::program::{
     FieldDefinition, FieldId, MethodDefinition, MethodId, Module, ModuleId, ModuleSource,
     RawAccessFlags, TypeDefinition, TypeId,
 };
@@ -10,7 +10,7 @@ use crate::disassembly;
 use crate::file::{ClassDefinition, DexFile, EncodedMethod};
 use crate::{DEFAULT_DEX_FILE_NAME, Result};
 
-/// Controls whether Cafe method definitions retain decoded DEX bodies.
+/// Controls whether program method definitions retain decoded DEX bodies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MethodBodyMode {
     /// Lower every available DEX `code_item` into shared disassembly.
@@ -20,9 +20,9 @@ pub enum MethodBodyMode {
     DeclarationsOnly,
 }
 
-/// Configuration for lowering a DEX file into Cafe.
+/// Configuration for lowering a DEX file into the shared program model.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct CafeOptions {
+pub struct ProgramOptions {
     /// Method-body loading behavior.
     pub method_bodies: MethodBodyMode,
 }
@@ -34,7 +34,7 @@ pub struct CafeOptions {
 /// Returns an error when identifiers, definitions, or executable bodies cannot
 /// be represented by the shared model.
 pub fn lower_file(file: &DexFile) -> Result<Module> {
-    lower_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, CafeOptions::default())
+    lower_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, ProgramOptions::default())
 }
 
 /// Builds a shared module using the default artifact name and explicit options.
@@ -43,7 +43,7 @@ pub fn lower_file(file: &DexFile) -> Result<Module> {
 ///
 /// Returns an error when identifiers, definitions, or requested executable
 /// bodies cannot be represented by the shared model.
-pub fn lower_file_with_options(file: &DexFile, options: CafeOptions) -> Result<Module> {
+pub fn lower_file_with_options(file: &DexFile, options: ProgramOptions) -> Result<Module> {
     lower_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, options)
 }
 
@@ -54,7 +54,7 @@ pub fn lower_file_with_options(file: &DexFile, options: CafeOptions) -> Result<M
 /// Returns an error when identifiers, definitions, or executable bodies cannot
 /// be represented by the shared model.
 pub fn lower_file_named(file: &DexFile, name: impl Into<String>) -> Result<Module> {
-    lower_file_named_with_options(file, name, CafeOptions::default())
+    lower_file_named_with_options(file, name, ProgramOptions::default())
 }
 
 /// Builds a shared module using an explicit artifact name and body policy.
@@ -66,7 +66,7 @@ pub fn lower_file_named(file: &DexFile, name: impl Into<String>) -> Result<Modul
 pub fn lower_file_named_with_options(
     file: &DexFile,
     name: impl Into<String>,
-    options: CafeOptions,
+    options: ProgramOptions,
 ) -> Result<Module> {
     let format = BinaryFormat::Dex;
     let mut module = Module::new(ModuleId::new(format, name))?;
@@ -87,7 +87,7 @@ impl ModuleSource for DexFile {
 fn lower_class(
     file: &DexFile,
     class: &ClassDefinition,
-    options: CafeOptions,
+    options: ProgramOptions,
 ) -> Result<TypeDefinition> {
     let format = BinaryFormat::Dex;
     let owner = file.type_descriptor(class.class)?;
@@ -148,10 +148,10 @@ fn lower_method(
 
 #[cfg(test)]
 mod tests {
-    use ::cafe::{ModuleSource, TypeId as CafeTypeId};
+    use ::program::{ModuleSource, TypeId as ProgramTypeId};
     use disassembler::BinaryFormat;
 
-    use super::{CafeOptions, MethodBodyMode, lower_file, lower_file_with_options};
+    use super::{MethodBodyMode, ProgramOptions, lower_file, lower_file_with_options};
     use crate::file::{
         AccessFlags, AnnotationDirectory, ClassData, ClassDefinition, DexFile, DexString,
         DexVersion, EncodedField, FieldId, TypeId,
@@ -216,14 +216,14 @@ mod tests {
         let through_trait = file.to_module().unwrap();
         assert_eq!(direct, through_trait);
 
-        let id = CafeTypeId::new(BinaryFormat::Dex, "LChild;");
+        let id = ProgramTypeId::new(BinaryFormat::Dex, "LChild;");
         let definition = direct.type_definition(&id).unwrap();
         assert_eq!(definition.superclass().unwrap().name, "LParent;");
         assert_eq!(definition.field_count(), 1);
 
         let declarations = lower_file_with_options(
             &file,
-            CafeOptions {
+            ProgramOptions {
                 method_bodies: MethodBodyMode::DeclarationsOnly,
             },
         )

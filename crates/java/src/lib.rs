@@ -3,12 +3,14 @@
 mod error;
 
 pub mod bytecode;
-pub mod cafe;
 pub mod classfile;
 pub mod descriptor;
 pub mod disassemble;
 pub mod disassembly;
 pub mod jar;
+pub mod program;
+
+pub use self::program::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};
 
 /// Compatibility facade for JVM class-file assembly.
 pub mod assemble {

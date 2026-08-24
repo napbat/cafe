@@ -1,15 +1,15 @@
 //! JVM class metadata and disassembled-body lowering into a shared module.
 
-use cafe::{
+use disassembler::BinaryFormat;
+use program::{
     FieldDefinition, FieldId, MethodDefinition, MethodId, Module, ModuleId, ModuleSource,
     RawAccessFlags, TypeDefinition, TypeId,
 };
-use disassembler::BinaryFormat;
 
 use crate::classfile::ClassFile;
 use crate::{Result, disassembly};
 
-/// Controls whether Cafe method definitions retain decoded instruction bodies.
+/// Controls whether program method definitions retain decoded instruction bodies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MethodBodyMode {
     /// Decode and lower every available JVM `Code` attribute.
@@ -19,9 +19,9 @@ pub enum MethodBodyMode {
     DeclarationsOnly,
 }
 
-/// Configuration for lowering a JVM class into Cafe.
+/// Configuration for lowering a JVM class into the shared program model.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct CafeOptions {
+pub struct ProgramOptions {
     /// Method-body loading behavior.
     pub method_bodies: MethodBodyMode,
 }
@@ -36,16 +36,16 @@ pub struct CafeOptions {
 /// Returns an error if class metadata or bytecode cannot be resolved, decoded,
 /// or represented by the shared model.
 pub fn lower_class(class: &ClassFile) -> Result<Module> {
-    lower_class_with_options(class, CafeOptions::default())
+    lower_class_with_options(class, ProgramOptions::default())
 }
 
-/// Builds a shared Cafe module using explicit body-loading options.
+/// Builds a shared program module using explicit body-loading options.
 ///
 /// # Errors
 ///
 /// Returns an error if class metadata or requested bytecode bodies cannot be
 /// resolved, decoded, or represented by the shared model.
-pub fn lower_class_with_options(class: &ClassFile, options: CafeOptions) -> Result<Module> {
+pub fn lower_class_with_options(class: &ClassFile, options: ProgramOptions) -> Result<Module> {
     let format = BinaryFormat::JavaClass;
     let owner = class.class_name()?.to_owned();
     let type_id = TypeId::new(format, &owner);
@@ -113,9 +113,9 @@ impl ModuleSource for ClassFile {
 
 #[cfg(test)]
 mod tests {
-    use cafe::{ModuleSource, TypeId};
+    use program::{ModuleSource, TypeId};
 
-    use super::{CafeOptions, MethodBodyMode, lower_class, lower_class_with_options};
+    use super::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};
     use crate::classfile::{
         ClassAccessFlags, ClassFile, Constant, ConstantPool, FieldAccessFlags, FieldInfo,
     };
@@ -179,7 +179,7 @@ mod tests {
 
         let declarations = lower_class_with_options(
             &class,
-            CafeOptions {
+            ProgramOptions {
                 method_bodies: MethodBodyMode::DeclarationsOnly,
             },
         )

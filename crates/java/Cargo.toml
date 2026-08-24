@@ -12,8 +12,8 @@ keywords = ["java", "jvm", "bytecode", "classfile", "jar"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
-cafe.workspace = true
 disassembler.workspace = true
+program.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 

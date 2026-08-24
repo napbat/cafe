@@ -3,17 +3,20 @@ name = "cafe"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Java bytecode object model and definition resolver"
+description = "Complete entry point for Java class-file, DEX, JNI, and bytecode analysis tooling"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
-keywords = ["bytecode", "model", "java", "dex", "analysis"]
-categories = ["development-tools", "data-structures"]
+keywords = ["java", "jvm", "dex", "jni", "bytecode"]
+categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+dex.workspace = true
 disassembler.workspace = true
-thiserror.workspace = true
+java.workspace = true
+jni.workspace = true
+program.workspace = true
 
 [lints]
 workspace = true

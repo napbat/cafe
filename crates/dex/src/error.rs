@@ -152,9 +152,9 @@ pub enum Error {
     #[error(transparent)]
     Graph(#[from] disassembler::GraphError),
 
-    /// DEX metadata could not be represented in Cafe's owned model.
+    /// DEX metadata could not be represented in the shared program model.
     #[error(transparent)]
-    Cafe(#[from] cafe::Error),
+    Program(#[from] program::Error),
 
     /// Saving would silently invalidate an APK signature.
     #[error("refusing to rewrite a signed APK without an explicit signature policy")]

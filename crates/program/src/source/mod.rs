@@ -1,4 +1,4 @@
-//! Adapter contract implemented by concrete format crates.
+//! Program adapter contract implemented by concrete format crates.
 
 use crate::Module;
 

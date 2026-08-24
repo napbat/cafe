@@ -1,22 +1,19 @@
 [package]
-name = "dex"
+name = "program"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Lossless Android DEX assembly, disassembly, and APK tooling"
+description = "Owned Java bytecode program model and definition resolver"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
-keywords = ["android", "dex", "dalvik", "bytecode", "apk"]
-categories = ["development-tools", "parser-implementations"]
+keywords = ["bytecode", "model", "java", "dex", "analysis"]
+categories = ["development-tools", "data-structures"]
 
 [dependencies]
 disassembler.workspace = true
-program.workspace = true
-sha1.workspace = true
 thiserror.workspace = true
-zip.workspace = true
 
 [lints]
 workspace = true

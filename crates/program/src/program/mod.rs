@@ -1,4 +1,4 @@
-//! Multi-module program storage and definition resolution.
+//! Multi-module storage, traversal, and definition resolution.
 
 use disassembler::Disassembly;
 

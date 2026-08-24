@@ -63,9 +63,9 @@ pub enum Error {
     #[error(transparent)]
     DisassemblyGraph(#[from] disassembler::GraphError),
 
-    /// JVM metadata could not be represented in the shared Cafe model.
+    /// JVM metadata could not be represented in the shared program model.
     #[error(transparent)]
-    Cafe(#[from] cafe::Error),
+    Program(#[from] program::Error),
 
     /// A requested class is not present in the archive.
     #[error("class `{0}` was not found in the JAR")]
