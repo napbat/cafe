@@ -166,6 +166,8 @@ pub enum DescriptorProblem {
     MissingReturnType,
     /// More data follows the return type.
     TrailingData,
+    /// A field or array element type is absent.
+    MissingType,
     /// A type starts with an unknown or contextually invalid tag.
     UnexpectedTypeTag(u16),
     /// An object type has no terminating semicolon.
@@ -183,6 +185,7 @@ impl fmt::Display for DescriptorProblem {
             Self::UnterminatedParameterList => formatter.write_str("unterminated parameter list"),
             Self::MissingReturnType => formatter.write_str("missing return type"),
             Self::TrailingData => formatter.write_str("trailing descriptor data"),
+            Self::MissingType => formatter.write_str("missing field type"),
             Self::UnexpectedTypeTag(unit) => {
                 write!(formatter, "unexpected type tag U+{unit:04X}")
             }
@@ -623,33 +626,31 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<JavaType, DescriptorError> {
-        match self.take_tag() {
-            Some(
-                tag @ (DescriptorTag::Boolean
-                | DescriptorTag::Byte
-                | DescriptorTag::Char
-                | DescriptorTag::Short
-                | DescriptorTag::Int
-                | DescriptorTag::Long
-                | DescriptorTag::Float
-                | DescriptorTag::Double),
-            ) => Ok(JavaType::Primitive(primitive_from_tag(tag))),
-            Some(DescriptorTag::Object) => self.parse_object().map(JavaType::Object),
-            Some(DescriptorTag::Array) => self.parse_array(),
-            Some(tag) => Err(Self::error_at(
-                self.position.saturating_sub(DESCRIPTOR_TAG_WIDTH),
+        let offset = self.position;
+        let Some(unit) = self.take() else {
+            return Err(Self::error_at(offset, DescriptorProblem::MissingType));
+        };
+        let Some(tag) = DescriptorTag::from_unit(unit) else {
+            return Err(Self::error_at(
+                offset,
+                DescriptorProblem::UnexpectedTypeTag(unit),
+            ));
+        };
+        match tag {
+            tag @ (DescriptorTag::Boolean
+            | DescriptorTag::Byte
+            | DescriptorTag::Char
+            | DescriptorTag::Short
+            | DescriptorTag::Int
+            | DescriptorTag::Long
+            | DescriptorTag::Float
+            | DescriptorTag::Double) => Ok(JavaType::Primitive(primitive_from_tag(tag))),
+            DescriptorTag::Object => self.parse_object().map(JavaType::Object),
+            DescriptorTag::Array => self.parse_array(),
+            tag => Err(Self::error_at(
+                offset,
                 DescriptorProblem::UnexpectedTypeTag(tag.unit()),
             )),
-            None => {
-                let offset = self
-                    .position
-                    .saturating_sub(usize::from(self.position != Utf16Offset::START.get()));
-                let unit = self.units.get(offset).copied().unwrap_or_default();
-                Err(Self::error_at(
-                    offset,
-                    DescriptorProblem::UnexpectedTypeTag(unit),
-                ))
-            }
         }
     }
 
@@ -813,6 +814,14 @@ mod tests {
             error.problem(),
             DescriptorProblem::UnterminatedParameterList
         );
+        assert_eq!(error.offset().get(), 2);
+    }
+
+    #[test]
+    fn reports_a_missing_array_element_at_end_of_input() {
+        let error = MethodDescriptor::parse("([").unwrap_err();
+
+        assert_eq!(error.problem(), DescriptorProblem::MissingType);
         assert_eq!(error.offset().get(), 2);
     }
 }
