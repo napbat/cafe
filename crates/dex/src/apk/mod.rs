@@ -21,7 +21,9 @@ mod layout;
 mod reader;
 mod signature;
 
-pub use self::dex::{DexArtifact, DexEntry, DexOrdinal, dex_entry_name, parse_dex_entry_name};
+pub use self::dex::{
+    DexArtifact, DexEntry, DexOrdinal, DexVisitControl, dex_entry_name, parse_dex_entry_name,
+};
 pub use self::discovery::{APK_EXTENSION, Traversal, discover_apks, is_apk_path};
 pub use self::edit::SignaturePolicy;
 pub use self::entry::{EntryId, EntryKind, EntryMetadata, ExtraField, ExtraFieldPlacement};

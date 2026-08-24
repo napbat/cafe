@@ -30,6 +30,9 @@ These rules apply to the entire repository.
   assembly, Dalvik instruction decoding and encoding, APK and multidex
   provenance, and adapters into the disassembler and Program. It must not
   depend on Cafe or leak DEX/APK details into shared lower layers.
+- Use the APK entry reader for archive-wide operations. Bulk DEX consumers must
+  select and visit artifacts through the single-reader API instead of reopening
+  the ZIP directory per entry.
 - Keep `crates/jni` a safe, Java-specific linkage-metadata layer. It owns JNI
   descriptor-to-ABI mapping, exact symbol escaping, native declaration sets,
   explicit registration keys, and adapters from Java and DEX artifacts. It

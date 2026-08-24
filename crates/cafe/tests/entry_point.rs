@@ -23,6 +23,17 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let native_methods = jni::java::native_methods(&class)?;
     let bindings = native_methods.bindings()?;
     let empty_dex = dex::DexFile::new(dex::DexVersion::V040);
+    let mut apk = dex::apk::ApkFile::new();
+    apk.put_dex(dex::apk::DexOrdinal::PRIMARY, &empty_dex)?;
+    let mut visited_dex = false;
+    apk.visit_dex(
+        |_| true,
+        |artifact| -> dex::Result<dex::apk::DexVisitControl> {
+            assert_eq!(artifact.file.version(), dex::DexVersion::V040);
+            visited_dex = true;
+            Ok(dex::apk::DexVisitControl::Stop)
+        },
+    )?;
     let mut jar = java::jar::JarFile::new();
     jar.add_class(&class)?;
     let mut visited_class = false;
@@ -39,6 +50,7 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     assert_eq!(program.module_count(), 1);
     assert_eq!(bindings.len(), 1);
     assert!(visited_class);
+    assert!(visited_dex);
     assert_eq!(
         bindings[0].symbol().as_str(),
         "Java_sample_Native_transform"

@@ -57,8 +57,8 @@ class files and therefore do not introduce another instruction set.
 
 The `dex` crate now owns typed DEX files, the complete standard Dalvik
 instruction codec, shared adapters, APK editing, deterministic multidex
-provenance, and explicit signature-material policies. Continue hardening that
-baseline with:
+provenance, explicit signature-material policies, and single-reader bulk DEX
+visitation and APK rewriting. Continue hardening that baseline with:
 
 - representative DEX and APK corpora from multiple Android toolchain releases;
 - differential instruction and file-format tests against Android's published

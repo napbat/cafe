@@ -5,6 +5,7 @@ use std::num::NonZeroU32;
 use disassembler::Disassembly;
 use program::Module;
 
+use super::reader::EntryReader;
 use super::{ApkFile, EntryId, EntryKind};
 use crate::disassembly::lower_file_named;
 use crate::program::{ProgramOptions, lower_file_named_with_options};
@@ -63,6 +64,15 @@ pub struct DexArtifact {
     pub origin: DexEntry,
     /// Parsed logical DEX file.
     pub file: DexFile,
+}
+
+/// Control returned after visiting one parsed DEX artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DexVisitControl {
+    /// Continue with the next selected multidex entry.
+    Continue,
+    /// Stop successfully without reading later entries.
+    Stop,
 }
 
 impl DexArtifact {
@@ -156,22 +166,7 @@ impl ApkFile {
     ///
     /// Returns an error for duplicate, missing-primary, or gapped ordinals.
     pub fn validate_dex_layout(&self) -> Result<()> {
-        let entries = self.dex_entries()?;
-        for (position, entry) in entries.iter().enumerate() {
-            let expected = u32::try_from(position)
-                .ok()
-                .and_then(|value| value.checked_add(DexOrdinal::PRIMARY.get()))
-                .and_then(DexOrdinal::new)
-                .ok_or_else(|| Error::invalid_apk("multidex ordinal exceeds 32 bits"))?;
-            if entry.ordinal != expected {
-                return Err(Error::invalid_apk(format!(
-                    "multidex layout expected `{}` but found `{}`",
-                    dex_entry_name(expected),
-                    entry.entry_name
-                )));
-            }
-        }
-        Ok(())
+        self.validated_dex_entries().map(drop)
     }
 
     /// Parses one DEX artifact by multidex ordinal.
@@ -182,11 +177,41 @@ impl ApkFile {
     pub fn read_dex(&self, ordinal: DexOrdinal) -> Result<DexArtifact> {
         let name = dex_entry_name(ordinal);
         let entry_id = self.unique_entry_id(&name)?;
-        self.read_dex_entry(DexEntry {
-            ordinal,
-            entry_id,
-            entry_name: name,
-        })
+        let mut reader = EntryReader::new(self);
+        self.read_dex_entry(
+            &mut reader,
+            DexEntry {
+                ordinal,
+                entry_id,
+                entry_name: name,
+            },
+        )
+    }
+
+    /// Visits selected DEX artifacts in numeric multidex order using one ZIP reader.
+    ///
+    /// The APK must have a contiguous canonical multidex layout. `select`
+    /// receives artifact provenance before its payload is decompressed or
+    /// parsed; returning `false` skips that entry. `visit` receives the owned
+    /// parsed artifact and may return [`DexVisitControl::Stop`] to finish
+    /// successfully without reading later entries.
+    ///
+    /// The callback error is generic so consumers can retain their own error
+    /// type. It must be constructible from this crate's [`Error`]. Archive and
+    /// parser failures retain the exact APK entry name before conversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns a multidex-layout error, the first selected entry's scoped read
+    /// or parse error, or an error returned by `visit`.
+    pub fn visit_dex<S, V, E>(&self, select: S, visit: V) -> std::result::Result<(), E>
+    where
+        S: FnMut(&DexEntry) -> bool,
+        V: FnMut(DexArtifact) -> std::result::Result<DexVisitControl, E>,
+        E: From<Error>,
+    {
+        let mut reader = EntryReader::new(self);
+        self.visit_dex_with_reader(&mut reader, select, visit)
     }
 
     /// Parses every DEX artifact in numeric multidex order.
@@ -195,11 +220,15 @@ impl ApkFile {
     ///
     /// Returns an entry-scoped error for the first unreadable or invalid file.
     pub fn read_all_dex(&self) -> Result<Vec<DexArtifact>> {
-        self.validate_dex_layout()?;
-        self.dex_entries()?
-            .into_iter()
-            .map(|entry| self.read_dex_entry(entry))
-            .collect()
+        let mut artifacts = Vec::new();
+        self.visit_dex(
+            |_| true,
+            |artifact| -> Result<DexVisitControl> {
+                artifacts.push(artifact);
+                Ok(DexVisitControl::Continue)
+            },
+        )?;
+        Ok(artifacts)
     }
 
     /// Adds or replaces a canonical DEX entry from a structured file.
@@ -224,17 +253,75 @@ impl ApkFile {
         self.remove_entry(&dex_entry_name(ordinal))
     }
 
-    fn read_dex_entry(&self, origin: DexEntry) -> Result<DexArtifact> {
-        let bytes = self.read_entry_by_id(origin.entry_id)?;
+    fn validated_dex_entries(&self) -> Result<Vec<DexEntry>> {
+        let entries = self.dex_entries()?;
+        validate_dex_entries(&entries)?;
+        Ok(entries)
+    }
+
+    fn visit_dex_with_reader<S, V, E>(
+        &self,
+        reader: &mut EntryReader,
+        mut select: S,
+        mut visit: V,
+    ) -> std::result::Result<(), E>
+    where
+        S: FnMut(&DexEntry) -> bool,
+        V: FnMut(DexArtifact) -> std::result::Result<DexVisitControl, E>,
+        E: From<Error>,
+    {
+        for origin in self.validated_dex_entries().map_err(E::from)? {
+            if !select(&origin) {
+                continue;
+            }
+            let artifact = self.read_dex_entry(reader, origin).map_err(E::from)?;
+            if visit(artifact)? == DexVisitControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_dex_entry(&self, reader: &mut EntryReader, origin: DexEntry) -> Result<DexArtifact> {
+        let entry = self
+            .entry_record(origin.entry_id)
+            .map_err(|error| error.in_apk_entry(origin.entry_name.clone()))?;
+        let bytes = reader
+            .read(entry)
+            .map_err(|error| error.in_apk_entry(origin.entry_name.clone()))?;
         let file = DexFile::parse(&bytes)
             .map_err(|error| error.in_apk_entry(origin.entry_name.clone()))?;
         Ok(DexArtifact { origin, file })
     }
 }
 
+fn validate_dex_entries(entries: &[DexEntry]) -> Result<()> {
+    for (position, entry) in entries.iter().enumerate() {
+        let expected = u32::try_from(position)
+            .ok()
+            .and_then(|value| value.checked_add(DexOrdinal::PRIMARY.get()))
+            .and_then(DexOrdinal::new)
+            .ok_or_else(|| Error::invalid_apk("multidex ordinal exceeds 32 bits"))?;
+        if entry.ordinal != expected {
+            return Err(Error::invalid_apk(format!(
+                "multidex layout expected `{}` but found `{}`",
+                dex_entry_name(expected),
+                entry.entry_name
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DexOrdinal, dex_entry_name, parse_dex_entry_name};
+    use super::super::reader::EntryReader;
+    use super::{
+        ApkFile, DexFile, DexOrdinal, DexVisitControl, dex_entry_name, parse_dex_entry_name,
+    };
+    use crate::{DexVersion, Error, Result};
+
+    const BULK_DEX_COUNT: u32 = 128;
 
     #[test]
     fn parses_only_canonical_multidex_names() {
@@ -248,5 +335,83 @@ mod tests {
         assert_eq!(parse_dex_entry_name("classes02.dex"), None);
         assert_eq!(parse_dex_entry_name("nested/classes.dex"), None);
         assert_eq!(parse_dex_entry_name("classes1.dex"), None);
+    }
+
+    #[test]
+    fn bulk_visitation_constructs_one_archive_reader() -> Result<()> {
+        let mut source = ApkFile::new();
+        let file = DexFile::new(DexVersion::V040);
+        for value in DexOrdinal::PRIMARY.get()..=BULK_DEX_COUNT {
+            source.put_dex(
+                DexOrdinal::new(value).expect("test ordinal is nonzero"),
+                &file,
+            )?;
+        }
+        let apk = ApkFile::from_bytes(source.to_bytes()?)?;
+        let mut reader = EntryReader::new(&apk);
+        let mut visited = 0_u32;
+
+        apk.visit_dex_with_reader(
+            &mut reader,
+            |_| true,
+            |artifact| -> Result<DexVisitControl> {
+                assert_eq!(artifact.file.version(), DexVersion::V040);
+                visited += 1;
+                Ok(DexVisitControl::Continue)
+            },
+        )?;
+
+        assert_eq!(visited, BULK_DEX_COUNT);
+        assert_eq!(reader.archive_constructions(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn selection_skips_parsing_and_visitors_stop_before_later_entries() -> Result<()> {
+        let mut apk = ApkFile::new();
+        let file = DexFile::new(DexVersion::V040);
+        let second = DexOrdinal::new(2).expect("test ordinal is nonzero");
+        let third = DexOrdinal::new(3).expect("test ordinal is nonzero");
+        let fourth = DexOrdinal::new(4).expect("test ordinal is nonzero");
+        apk.put_dex(DexOrdinal::PRIMARY, &file)?;
+        apk.add_file(dex_entry_name(second), b"not a DEX file".to_vec())?;
+        apk.put_dex(third, &file)?;
+        apk.add_file(dex_entry_name(fourth), b"also not a DEX file".to_vec())?;
+        let mut visited = Vec::new();
+
+        apk.visit_dex(
+            |entry| entry.ordinal != second,
+            |artifact| -> Result<DexVisitControl> {
+                visited.push(artifact.origin.ordinal);
+                Ok(if artifact.origin.ordinal == third {
+                    DexVisitControl::Stop
+                } else {
+                    DexVisitControl::Continue
+                })
+            },
+        )?;
+
+        assert_eq!(visited, [DexOrdinal::PRIMARY, third]);
+        Ok(())
+    }
+
+    #[test]
+    fn selected_parse_errors_retain_the_apk_entry_name() -> Result<()> {
+        let mut apk = ApkFile::new();
+        apk.add_file(
+            dex_entry_name(DexOrdinal::PRIMARY),
+            b"not a DEX file".to_vec(),
+        )?;
+
+        let result: Result<()> = apk.visit_dex(
+            |_| true,
+            |_| -> Result<DexVisitControl> { Ok(DexVisitControl::Continue) },
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::ApkEntry { entry, .. }) if entry == "classes.dex"
+        ));
+        Ok(())
     }
 }

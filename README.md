@@ -224,29 +224,39 @@ shared disassembly, or converted into Cafe modules:
 
 ```rust
 use cafe::dex;
-use cafe::dex::{ProgramOptions, apk::ApkFile};
+use cafe::dex::{
+    ProgramOptions,
+    apk::{ApkFile, DexVisitControl},
+};
 
 fn inspect_apk(path: &str) -> Result<(), dex::Error> {
     let apk = ApkFile::open(path)?;
 
-    for artifact in apk.read_all_dex()? {
-        println!(
-            "{}: DEX {:?}",
-            artifact.origin.entry_name,
-            artifact.file.version()
-        );
-        let disassembly = artifact.disassemble()?;
-        let module = artifact.to_module(ProgramOptions::default())?;
-        println!(
-            "{} functions, {} types",
-            disassembly.functions.len(),
-            module.type_count()
-        );
-    }
-
-    Ok(())
+    apk.visit_dex(
+        |_| true,
+        |artifact| -> Result<DexVisitControl, dex::Error> {
+            println!(
+                "{}: DEX {:?}",
+                artifact.origin.entry_name,
+                artifact.file.version()
+            );
+            let disassembly = artifact.disassemble()?;
+            let module = artifact.to_module(ProgramOptions::default())?;
+            println!(
+                "{} functions, {} types",
+                disassembly.functions.len(),
+                module.type_count()
+            );
+            Ok(DexVisitControl::Continue)
+        },
+    )
 }
 ```
+
+`visit_dex` validates canonical contiguous multidex provenance, selects entries
+before decompression, supports early stopping, and keeps one ZIP reader alive
+for the complete visit. `read_all_dex` provides the collecting convenience API
+over the same single-pass implementation.
 
 Structured DEX edits are assembled through `DexFile::to_bytes`. APK rewrites
 require an explicit signature policy whenever existing v1 or signing-block
