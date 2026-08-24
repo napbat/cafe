@@ -88,6 +88,7 @@ fn validate_method_body(
             "method instruction stream is empty",
         ));
     }
+    crate::analysis::analyze_body(code)?;
     let expected_incoming = incoming_words(
         descriptors,
         prototype,

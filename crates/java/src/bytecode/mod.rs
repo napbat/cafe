@@ -1,11 +1,13 @@
 //! Decoder and encoder for typed JVM method bytecode.
 
+mod builder;
 mod encode;
 pub mod opcode;
 
 use crate::classfile::CodeAttribute;
 use crate::{Error, Result};
 
+pub use self::builder::{BuiltCode, CatchTarget, CodeBuilder, InstructionId, Label, LocalKind};
 pub use self::opcode::{ArrayType, Opcode};
 
 /// Sentinel size used when constructing an instruction whose encoded size

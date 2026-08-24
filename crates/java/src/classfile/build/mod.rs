@@ -1,6 +1,7 @@
 //! Ergonomic constructors and indexed mutation for JVM class models.
 
-use crate::bytecode::{self, Instruction};
+use crate::analysis::{MethodAnalysis, ReferenceHierarchy};
+use crate::bytecode::{self, BuiltCode, Instruction};
 use crate::{Result, descriptor};
 
 use super::{
@@ -256,6 +257,90 @@ impl CodeAttribute {
             exception_table: Vec::new(),
             attributes: Vec::new(),
         })
+    }
+
+    /// Creates a code attribute from label-resolved symbolic bytecode.
+    ///
+    /// The completed builder output supplies the encoded instructions and
+    /// exception table while the caller supplies semantic stack/local limits.
+    /// The builder output remains available for source-offset lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `Code` attribute name cannot be interned.
+    pub fn from_built(
+        pool: &mut ConstantPool,
+        max_stack: u16,
+        max_locals: u16,
+        built: &BuiltCode,
+    ) -> Result<Self> {
+        Ok(Self {
+            name_index: pool.intern_utf8(super::CODE_ATTRIBUTE_NAME)?,
+            max_stack,
+            max_locals,
+            code: built.code().to_vec(),
+            exception_table: built.exception_table().to_vec(),
+            attributes: Vec::new(),
+        })
+    }
+
+    /// Creates symbolic bytecode with computed maxima and a stack-map table.
+    ///
+    /// This is the high-level construction path for newly generated methods:
+    /// branch layout, exception metadata, stack/local analysis, and symbolic
+    /// verification types are all resolved before the result is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid stack behavior, incompatible control-flow
+    /// frames, unsupported legacy subroutines, or a full constant pool.
+    pub fn from_built_analyzed(
+        pool: &mut ConstantPool,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+        access_flags: MethodAccessFlags,
+        built: &BuiltCode,
+    ) -> Result<(Self, MethodAnalysis)> {
+        let mut code = Self::from_built(pool, 0, 0, built)?;
+        let analysis =
+            crate::analysis::analyze_code(pool, owner, name, descriptor, access_flags, &code)?;
+        analysis.apply_to_code(pool, &mut code)?;
+        Ok((code, analysis))
+    }
+
+    /// Creates symbolic bytecode with computed frames using a classpath hierarchy.
+    ///
+    /// This is the high-level path for generated methods whose reference flows
+    /// depend on superclass or interface relationships outside the class being
+    /// assembled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid stack behavior, incompatible reference or
+    /// control-flow frames, unsupported legacy subroutines, or a full pool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_built_analyzed_with_hierarchy(
+        pool: &mut ConstantPool,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+        access_flags: MethodAccessFlags,
+        built: &BuiltCode,
+        hierarchy: &dyn ReferenceHierarchy,
+    ) -> Result<(Self, MethodAnalysis)> {
+        let mut code = Self::from_built(pool, 0, 0, built)?;
+        let analysis = crate::analysis::analyze_code_with_hierarchy(
+            pool,
+            owner,
+            name,
+            descriptor,
+            access_flags,
+            &code,
+            hierarchy,
+        )?;
+        analysis.apply_to_code(pool, &mut code)?;
+        Ok((code, analysis))
     }
 }
 

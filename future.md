@@ -32,10 +32,19 @@ reserving architectural space for, and it remains demand-driven.
   consumer access remains rooted at `cafe`.
 - Build and verify control-flow graphs for ordinary, branch, switch,
   exceptional, and legacy control flow.
+- Keep format-qualified source maps and structured diagnostics in the neutral
+  disassembly boundary; transformation policy remains outside that crate.
 
 ## 1. JVM coverage and hardening
 
 Continue hardening the existing `java` crate before broadening the workspace:
+
+The reusable generation baseline now includes label-based construction,
+branch relaxation, compact local/constant selection, symbolic exception
+regions, exact stack/local analysis, classpath-aware reference merging, and
+deterministic full-frame `StackMapTable` generation. Typed instruction-reference
+resolution retains exact Java UTF-16 names and validates descriptor categories.
+Continue hardening that baseline with:
 
 - validate parsing, assembly, and method-bytecode round trips against class
   files produced by multiple Java releases and compilers;
@@ -58,7 +67,17 @@ class files and therefore do not introduce another instruction set.
 The `dex` crate now owns typed DEX files, the complete standard Dalvik
 instruction codec, shared adapters, APK editing, deterministic multidex
 provenance, explicit signature-material policies, and single-reader bulk DEX
-visitation and APK rewriting. Continue hardening that baseline with:
+visitation and APK rewriting.
+
+The executable-analysis baseline is also complete: all standard opcodes expose
+typed uses, definitions, result and throw semantics; payload and move-result
+associations are validated; control flow excludes data payloads and includes
+typed exceptional edges; and fixed-point register analysis tracks wide values,
+arrays, fields, calls, constructors, handler pre-states, and pluggable hierarchy
+relationships. Owned identifier and encoded-value resolution preserves exact
+Java string content.
+
+Continue hardening that baseline with:
 
 - representative DEX and APK corpora from multiple Android toolchain releases;
 - differential instruction and file-format tests against Android's published
@@ -75,6 +94,20 @@ visitation and APK rewriting. Continue hardening that baseline with:
 Keep exact pristine output, matching parse/assemble coverage, contextual
 malformed-input errors, and verified control flow as release gates rather than
 future aspirations.
+
+## Cross-format transformation boundary
+
+Cafe now has the reusable prerequisites for a future cross-format consumer:
+typed DEX executable semantics and register frames, symbolic JVM layout, JVM
+verification frames and stack maps, owned symbols, source maps, and structured
+diagnostics. No cross-format instruction translator or archive conversion
+workflow is implemented by this baseline.
+
+If one is added later, keep policy in a focused feature crate that depends on
+both frontends. It must not move DEX/APK details into `java`, JVM/class-file
+details into `dex`, or either frontend into the neutral `disassembler` and
+`program` layers. Unsupported semantic cases must be explicit diagnostics with
+native source locations rather than silent approximations.
 
 ## 3. JNI boundary hardening
 

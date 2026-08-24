@@ -48,6 +48,16 @@ pub fn encode(instructions: &[Instruction]) -> Result<Vec<u8>> {
     Ok(code)
 }
 
+pub(super) fn encoded_size_at(instruction: &Instruction, start: usize) -> Result<usize> {
+    let mut code = Vec::new();
+    if instruction.wide {
+        code.push(Opcode::Wide.byte());
+    }
+    code.push(instruction.opcode.byte());
+    encode_operand(&mut code, instruction, start)?;
+    Ok(code.len())
+}
+
 #[allow(clippy::too_many_lines)]
 fn encode_operand(code: &mut Vec<u8>, instruction: &Instruction, start: usize) -> Result<()> {
     let opcode = instruction.opcode;

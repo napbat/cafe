@@ -258,6 +258,85 @@ define_opcodes! {
     ImpDep2 = 0xff => "impdep2",
 }
 
+impl Opcode {
+    /// Returns whether this opcode is a conditional control-flow branch.
+    #[must_use]
+    pub const fn is_conditional_branch(self) -> bool {
+        matches!(
+            self,
+            Self::IfEq
+                | Self::IfNe
+                | Self::IfLt
+                | Self::IfGe
+                | Self::IfGt
+                | Self::IfLe
+                | Self::IfICmpEq
+                | Self::IfICmpNe
+                | Self::IfICmpLt
+                | Self::IfICmpGe
+                | Self::IfICmpGt
+                | Self::IfICmpLe
+                | Self::IfACmpEq
+                | Self::IfACmpNe
+                | Self::IfNull
+                | Self::IfNonNull
+        )
+    }
+
+    /// Returns the conditional branch with the opposite predicate.
+    ///
+    /// This is used when a short conditional branch must be relaxed into an
+    /// inverted short branch around a `goto_w` instruction.
+    #[must_use]
+    pub const fn inverted_conditional(self) -> Option<Self> {
+        match self {
+            Self::IfEq => Some(Self::IfNe),
+            Self::IfNe => Some(Self::IfEq),
+            Self::IfLt => Some(Self::IfGe),
+            Self::IfGe => Some(Self::IfLt),
+            Self::IfGt => Some(Self::IfLe),
+            Self::IfLe => Some(Self::IfGt),
+            Self::IfICmpEq => Some(Self::IfICmpNe),
+            Self::IfICmpNe => Some(Self::IfICmpEq),
+            Self::IfICmpLt => Some(Self::IfICmpGe),
+            Self::IfICmpGe => Some(Self::IfICmpLt),
+            Self::IfICmpGt => Some(Self::IfICmpLe),
+            Self::IfICmpLe => Some(Self::IfICmpGt),
+            Self::IfACmpEq => Some(Self::IfACmpNe),
+            Self::IfACmpNe => Some(Self::IfACmpEq),
+            Self::IfNull => Some(Self::IfNonNull),
+            Self::IfNonNull => Some(Self::IfNull),
+            _ => None,
+        }
+    }
+
+    /// Returns whether this opcode is an unconditional direct branch.
+    #[must_use]
+    pub const fn is_unconditional_branch(self) -> bool {
+        matches!(self, Self::Goto | Self::GotoW | Self::Jsr | Self::JsrW)
+    }
+
+    /// Returns whether this opcode terminates a method normally.
+    #[must_use]
+    pub const fn is_return(self) -> bool {
+        matches!(
+            self,
+            Self::IReturn
+                | Self::LReturn
+                | Self::FReturn
+                | Self::DReturn
+                | Self::AReturn
+                | Self::Return
+        )
+    }
+
+    /// Returns whether this opcode performs integer switch dispatch.
+    #[must_use]
+    pub const fn is_switch(self) -> bool {
+        matches!(self, Self::TableSwitch | Self::LookupSwitch)
+    }
+}
+
 macro_rules! define_array_types {
     ($($(#[$metadata:meta])* $variant:ident = $byte:expr => $name:literal),+ $(,)?) => {
         /// Primitive element types accepted by the JVM `newarray` instruction.

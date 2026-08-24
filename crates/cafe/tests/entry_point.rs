@@ -4,6 +4,8 @@ use cafe::{ModuleSource, Program, cfglib, dex, disassembler, java, jni, program}
 
 #[test]
 fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::Error>> {
+    exercise_analysis_entry_points()?;
+
     let mut class = java::classfile::ClassFile::new(
         java::classfile::JAVA_8_MAJOR_VERSION,
         "sample/Native",
@@ -65,5 +67,74 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<java::jar::JarFile>();
     let _ = std::any::type_name::<dex::apk::ApkFile>();
     let _ = std::any::type_name::<cfglib::BlockId>();
+    let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
+    let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
+    Ok(())
+}
+
+fn exercise_analysis_entry_points() -> Result<(), Box<dyn std::error::Error>> {
+    let mut code = java::bytecode::CodeBuilder::new();
+    let _ = code.emit(
+        java::bytecode::Opcode::Return,
+        java::bytecode::Operand::None,
+    );
+    let built_code = code.finish()?;
+    assert_eq!(built_code.code(), [java::bytecode::Opcode::Return.byte()]);
+    let mut analysis_pool = java::classfile::ConstantPool::new();
+    let (_analyzed_code, method_analysis) = java::classfile::CodeAttribute::from_built_analyzed(
+        &mut analysis_pool,
+        "sample/Generated",
+        "run",
+        "()V",
+        java::classfile::MethodAccessFlags::STATIC,
+        &built_code,
+    )?;
+    assert_eq!(method_analysis.max_stack(), 0);
+
+    let dalvik_return = dex::instruction::Instruction::operation(
+        0,
+        dex::instruction::Opcode::ReturnVoid,
+        dex::instruction::Operands::None,
+    );
+    assert!(
+        dex::analysis::instruction_semantics(&dalvik_return)?
+            .reads
+            .is_empty()
+    );
+
+    let source_coordinate = disassembler::FunctionCoordinate::new(
+        disassembler::BinaryFormat::Dex,
+        disassembler::FunctionSymbol {
+            owner: "Lsample/Generated;".to_owned(),
+            name: "run".to_owned(),
+            signature: "()V".to_owned(),
+        },
+        disassembler::AddressUnit::CodeUnit16,
+    );
+    let generated_coordinate = disassembler::FunctionCoordinate::new(
+        disassembler::BinaryFormat::JavaClass,
+        disassembler::FunctionSymbol {
+            owner: "sample/Generated".to_owned(),
+            name: "run".to_owned(),
+            signature: "()V".to_owned(),
+        },
+        disassembler::AddressUnit::Byte,
+    );
+    let source_map = disassembler::SourceMap::new(source_coordinate.clone(), generated_coordinate);
+    assert!(source_map.is_empty());
+    let mut diagnostics = disassembler::Diagnostics::new();
+    diagnostics.push(
+        disassembler::Diagnostic::new(disassembler::DiagnosticLevel::Note, "fixture").at(
+            disassembler::DiagnosticLocation::new(
+                source_coordinate,
+                disassembler::AddressRange::new(
+                    disassembler::CodeAddress::new(0),
+                    disassembler::CodeAddress::new(1),
+                ),
+            ),
+        ),
+    );
+    assert!(!diagnostics.has_errors());
+
     Ok(())
 }

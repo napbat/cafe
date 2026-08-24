@@ -2,7 +2,9 @@
 
 use disassembler::cfglib::{DominatorTree, verify};
 use disassembler::{
-    AddressUnit, CodeAddress, CodeSize, FunctionBody, Instruction, InstructionFlow,
+    AddressRange, AddressUnit, BinaryFormat, CodeAddress, CodeSize, Diagnostic, DiagnosticLevel,
+    DiagnosticLocation, Diagnostics, FunctionBody, FunctionCoordinate, FunctionSymbol, Instruction,
+    InstructionFlow, SourceMap,
 };
 
 const INSTRUCTION_SIZE: CodeSize = CodeSize::new(1);
@@ -16,6 +18,55 @@ fn instruction(address: u32, flow: InstructionFlow) -> Instruction {
         Vec::new(),
         flow,
     )
+}
+
+fn coordinate(format: BinaryFormat, unit: AddressUnit) -> FunctionCoordinate {
+    FunctionCoordinate::new(
+        format,
+        FunctionSymbol {
+            owner: "sample/Example".to_owned(),
+            name: "value".to_owned(),
+            signature: "()I".to_owned(),
+        },
+        unit,
+    )
+}
+
+#[test]
+fn source_maps_support_expansion_and_reverse_lookup() {
+    let source = coordinate(BinaryFormat::Dex, AddressUnit::CodeUnit16);
+    let generated = coordinate(BinaryFormat::JavaClass, AddressUnit::Byte);
+    let mut map = SourceMap::new(source, generated);
+    let source_range = AddressRange::new(CodeAddress::new(2), CodeAddress::new(3));
+    let generated_range = AddressRange::new(CodeAddress::new(5), CodeAddress::new(9));
+    assert!(map.insert(source_range, generated_range).unwrap());
+    assert!(!map.insert(source_range, generated_range).unwrap());
+    assert_eq!(map.mappings_from(CodeAddress::new(2)).count(), 1);
+    assert_eq!(map.mappings_to(CodeAddress::new(8)).count(), 1);
+    assert!(map.mappings_to(CodeAddress::new(9)).next().is_none());
+
+    let empty = AddressRange::new(CodeAddress::new(3), CodeAddress::new(3));
+    assert!(map.insert(empty, generated_range).is_err());
+}
+
+#[test]
+fn diagnostics_retain_typed_locations_and_severity() {
+    let location = DiagnosticLocation::new(
+        coordinate(BinaryFormat::Dex, AddressUnit::CodeUnit16),
+        AddressRange::new(CodeAddress::new(4), CodeAddress::new(5)),
+    );
+    let diagnostic = Diagnostic::new(DiagnosticLevel::Error, "unsupported fixture")
+        .with_code("fixture.unsupported")
+        .at(location)
+        .with_note("replace the fixture operation");
+    let mut diagnostics = Diagnostics::new();
+    diagnostics.push(diagnostic);
+    assert!(diagnostics.has_errors());
+    assert!(
+        diagnostics.as_slice()[0]
+            .to_string()
+            .contains("fixture.unsupported")
+    );
 }
 
 #[test]

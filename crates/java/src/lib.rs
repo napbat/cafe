@@ -2,6 +2,7 @@
 
 mod error;
 
+pub mod analysis;
 pub mod bytecode;
 pub mod classfile;
 pub mod descriptor;

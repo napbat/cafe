@@ -11,12 +11,15 @@ other five are focused implementation boundaries:
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
   cross-module resolution.
-- `disassembler` owns shared instructions, references, executable bodies, and
-  cfglib-backed control-flow graphs.
-- `java` owns JVM class-file parsing and assembly, JVM bytecode, JAR utilities,
-  javap-like presentation, and lowering into shared layers.
-- `dex` owns DEX parsing and assembly, Dalvik instructions, APK editing,
-  multidex provenance, and lowering into shared layers.
+- `disassembler` owns shared instructions, references, executable bodies,
+  cfglib-backed control-flow graphs, format-qualified source maps, and
+  structured diagnostics.
+- `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
+  construction, frame and stack-map analysis, JAR utilities, javap-like
+  presentation, and lowering into shared layers.
+- `dex` owns DEX parsing and assembly, Dalvik instructions, executable-body and
+  register analysis, APK editing, multidex provenance, and lowering into shared
+  layers.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
   registration keys, and Java/DEX extraction.
 
@@ -61,6 +64,14 @@ either retain an unchanged instruction layout, explicitly discard code
 metadata, or provide a `BytecodeOffsetMap` that remaps exception handlers,
 stack maps, debugging ranges, and code-level type annotations together.
 
+New JVM bodies can be built with labels instead of precomputed offsets.
+`CodeBuilder` selects compact local and constant forms, aligns switches, widens
+distant branches, expands distant conditional branches, and resolves symbolic
+exception regions. `CodeAttribute::from_built_analyzed` then computes exact
+stack/local maxima and emits deterministic full-frame stack maps. A
+caller-supplied `ClassHierarchy` enables strict superclass and interface checks
+when generated code references types outside the class being assembled.
+
 Cafe definitions retain format-qualified and overload-qualified identities.
 Java adapters can load complete executable bodies or declarations only, which
 keeps metadata-oriented consumers from paying for bytecode decoding.
@@ -72,6 +83,21 @@ data, and map provenance. It parses DEX versions 035, 037, 038, 039, 040, and
 Dalvik opcode and payload has matching decoding and encoding, and validation
 covers descriptor, index, register-width, invocation, branch, payload, and
 exception constraints.
+
+DEX executable analysis is available independently of any output format.
+Every standard opcode has typed register uses, definitions, result behavior,
+and throw behavior. Body analysis associates switch and array payloads,
+move-result producers, and handler entries; operation-level control flow keeps
+payloads non-executable and adds exceptional edges only for operations that can
+throw. Fixed-point register analysis tracks parameters, wide pairs, constants,
+arrays, fields, invocations, constructor initialization, exception pre-states,
+and caller-supplied classpath hierarchy relationships. Indexed instruction and
+encoded-value resolvers retain owned symbols and exact Java UTF-16 names.
+
+Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
+and machine-readable reporting for consumers that generate or transform
+bytecode. These are infrastructure APIs only: Cafe does not currently include a
+DEX-to-JVM instruction translator or a DEX-to-JAR workflow.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -198,6 +224,45 @@ fn inspect_class(jar_path: &str) -> Result<(), java::Error> {
 }
 ```
 
+## Bytecode construction and analysis
+
+Symbolic construction keeps branch offsets and stack-map details out of the
+consumer's policy code:
+
+```rust
+use cafe::java;
+use cafe::java::{analysis::ClassHierarchy, bytecode, classfile};
+
+fn generated_method() -> Result<classfile::CodeAttribute, java::Error> {
+    let mut pool = classfile::ConstantPool::new();
+    let mut builder = bytecode::CodeBuilder::new();
+    let _ = builder.emit_load(bytecode::LocalKind::Integer, 0);
+    let _ = builder.emit(bytecode::Opcode::IConst1, bytecode::Operand::None);
+    let _ = builder.emit(bytecode::Opcode::IAdd, bytecode::Operand::None);
+    let _ = builder.emit(bytecode::Opcode::IReturn, bytecode::Operand::None);
+    let built = builder.finish()?;
+
+    let hierarchy = ClassHierarchy::new();
+    let (code, analysis) = classfile::CodeAttribute::from_built_analyzed_with_hierarchy(
+        &mut pool,
+        "sample/Generated",
+        "increment",
+        "(I)I",
+        classfile::MethodAccessFlags::STATIC,
+        &built,
+        &hierarchy,
+    )?;
+    assert_eq!((analysis.max_stack(), analysis.max_locals()), (2, 1));
+    Ok(code)
+}
+```
+
+For DEX, `cafe::dex::analysis` exposes structural body analysis, typed control
+flow, exact symbol resolution, and method register analysis. The default method
+entry point derives a hierarchy from the enclosing file;
+`analyze_method_registers_with_hierarchy` accepts classpath relationships for
+external types.
+
 ## Cafe object model
 
 Java classes can be lowered into independently owned modules and combined into
@@ -314,8 +379,11 @@ crates/
 ├── disassembler/        shared disassembly IR and CFG construction
 │   ├── src/model/
 │   ├── src/graph/
+│   ├── src/source_map.rs
+│   ├── src/diagnostic.rs
 │   └── tests/
 ├── java/                JVM class files, bytecode, JARs, and adapters
+│   ├── src/analysis/
 │   ├── src/bytecode/
 │   ├── src/classfile/
 │   ├── src/disassembly/
@@ -323,6 +391,7 @@ crates/
 │   ├── src/jar/
 │   └── tests/
 ├── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
+│   ├── src/analysis/
 │   ├── src/file/
 │   ├── src/instruction/
 │   ├── src/disassembly/

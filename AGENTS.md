@@ -11,8 +11,9 @@ These rules apply to the entire repository.
   `crates/<concept>` and follow Cargo's conventional project layout.
 - Keep `crates/disassembler` neutral across Java ecosystem formats. It owns raw
   disassembly IR, the `DisassemblySource` adapter contract, and cfglib-backed
-  control-flow graphs. It must not depend on Cafe, Program, Java, or a native
-  binary format.
+  control-flow graphs, plus format-qualified source maps and structured
+  diagnostics. It must not depend on Cafe, Program, Java, or a native binary
+  format.
 - Keep `crates/program` neutral across Java ecosystem formats. It owns the
   editable `Program`/`Module`/definition model, identities, indexed lookup, and
   resolution. It may depend on the disassembler, but never on Cafe or a native
@@ -24,15 +25,17 @@ These rules apply to the entire repository.
   implementation crates must not depend back on Cafe.
 - Keep `crates/java` a library-only JVM frontend. It owns `.class` parsing and
   assembly, bytecode decoding and encoding, JAR utilities, and adapters into
-  the disassembler and Program. It must not depend on Cafe. Do not add
-  `src/main.rs`, Clap, or tool-specific output policy to this crate.
+  the disassembler and Program. It also owns symbolic bytecode layout and JVM
+  frame/stack-map analysis. It must not depend on Cafe. Do not add `src/main.rs`,
+  Clap, or tool-specific output policy to this crate.
 - Use the JAR entry reader for archive-wide operations. Validation, rewriting,
   and bulk consumers must share one ZIP reader rather than reopening the
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, Dalvik instruction decoding and encoding, APK and multidex
-  provenance, and adapters into the disassembler and Program. It must not
-  depend on Cafe or leak DEX/APK details into shared lower layers.
+  provenance, executable semantics and register analysis, and adapters into
+  the disassembler and Program. It must not depend on Cafe or leak DEX/APK
+  details into shared lower layers.
 - Use the APK entry reader for archive-wide operations. Bulk DEX consumers must
   select and visit artifacts through the single-reader API instead of reopening
   the ZIP directory per entry.
@@ -61,11 +64,11 @@ These rules apply to the entire repository.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
 - In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `program/`
-  independent. Keep descriptors, textual presentation, crate errors, and
-  public entry points at the source root.
+  independent. Keep frame analysis under `analysis/`. Keep descriptors, textual
+  presentation, crate errors, and public entry points at the source root.
 - In DEX, keep `file/`, `instruction/`, `apk/`, `disassembly/`, and `program/`
-  independent. Treat APK as a container and provenance boundary, not another
-  instruction set.
+  independent. Keep executable and register analysis under `analysis/`. Treat
+  APK as a container and provenance boundary, not another instruction set.
 - In JNI, keep `descriptor/`, `method/`, `symbol/`, `binding/`, `java/`, and
   `dex/` independent. Preserve exact UTF-16 precursors through descriptor
   parsing and symbol escaping.
@@ -98,6 +101,8 @@ These rules apply to the entire repository.
   references, and resolved display names needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
   control-flow edges through cfglib for every lowered executable body.
+- Keep source mappings format-qualified and capable of representing expansion
+  and fusion. Diagnostics must retain overload-qualified native locations.
 - Keep Program definition identity format-qualified and overload-qualified.
   Module mutation must preserve indexed lookup invariants; cross-module
   resolution must distinguish missing, unique, and ambiguous results.
@@ -108,8 +113,10 @@ These rules apply to the entire repository.
 
 - Add focused tests for shared IR and graphs, Program ownership and resolution,
   native-format adapters, class parsing and assembly, bytecode, descriptors,
-  JAR traversal, JNI ABI mapping, symbol escaping, native overload plans, and
-  Cafe-only access to every public workspace capability.
+  symbolic layout, DEX semantics and registers, JVM frames and stack maps,
+  source maps and diagnostics, JAR traversal, JNI ABI mapping, symbol escaping,
+  native overload plans, and Cafe-only access to every public workspace
+  capability.
 - Require all of these commands to pass:
 
   ```text
