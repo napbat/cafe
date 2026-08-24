@@ -69,6 +69,37 @@ pub enum JavaType {
     Array(Box<JavaType>),
 }
 
+/// Number of JVM local-variable or operand-stack slots occupied by a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JvmSlotWidth {
+    /// All JVM values except `long` and `double`.
+    Single,
+    /// A `long` or `double` value.
+    Double,
+}
+
+impl JvmSlotWidth {
+    /// Returns the number of occupied JVM slots.
+    #[must_use]
+    pub const fn slot_count(self) -> usize {
+        match self {
+            Self::Single => 1,
+            Self::Double => 2,
+        }
+    }
+}
+
+impl JavaType {
+    /// Returns this value type's JVM slot width.
+    #[must_use]
+    pub const fn slot_width(&self) -> JvmSlotWidth {
+        match self {
+            Self::Long | Self::Double => JvmSlotWidth::Double,
+            _ => JvmSlotWidth::Single,
+        }
+    }
+}
+
 impl fmt::Display for JavaType {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use crate::bytecode::{self, Instruction};
 use crate::{Error, Result};
 
+use super::attribute::{STACK_MAP_OFFSET_DELTA_BIAS, StackMapFrameTag};
 use super::{
     Attribute, CodeAttribute, KnownAttribute, LocalVariableTarget, StackMapFrame,
     TypeAnnotationTarget, VerificationType,
@@ -201,7 +202,7 @@ fn remap_stack_maps(frames: &mut Vec<StackMapFrame>, offsets: &BytecodeOffsetMap
         let new_absolute = offsets.require(old_absolute, "stack-map frame")?;
         let new_delta = frame_delta(new_previous, new_absolute)?;
         remap_frame_verification_types(&mut frame, offsets)?;
-        remapped.push(frame_with_delta(frame, new_delta)?);
+        remapped.push(frame_with_delta(frame, new_delta));
         old_previous = Some(old_absolute);
         new_previous = Some(new_absolute);
     }
@@ -214,7 +215,7 @@ fn absolute_frame_offset(previous: Option<u16>, delta: u16) -> Result<u16> {
         None => Ok(delta),
         Some(previous) => previous
             .checked_add(delta)
-            .and_then(|offset| offset.checked_add(1))
+            .and_then(|offset| offset.checked_add(STACK_MAP_OFFSET_DELTA_BIAS))
             .ok_or_else(|| Error::invalid_assembly("stack-map frame offset overflows u16")),
     }
 }
@@ -224,39 +225,34 @@ fn frame_delta(previous: Option<u16>, absolute: u16) -> Result<u16> {
         None => Ok(absolute),
         Some(previous) => absolute
             .checked_sub(previous)
-            .and_then(|distance| distance.checked_sub(1))
+            .and_then(|distance| distance.checked_sub(STACK_MAP_OFFSET_DELTA_BIAS))
             .ok_or_else(|| Error::invalid_assembly("offset map reorders stack-map frames")),
     }
 }
 
-fn frame_with_delta(frame: StackMapFrame, delta: u16) -> Result<StackMapFrame> {
-    let frame = match frame {
-        StackMapFrame::Same { .. } if delta <= 63 => StackMapFrame::Same {
-            offset_delta: u8::try_from(delta)
-                .map_err(|_| Error::invalid_assembly("compact stack-map offset exceeds u8"))?,
-        },
-        StackMapFrame::Same { .. } | StackMapFrame::SameExtended { .. } => {
+fn frame_with_delta(frame: StackMapFrame, delta: u16) -> StackMapFrame {
+    let compact_delta = StackMapFrameTag::compact_offset(delta);
+    match frame {
+        StackMapFrame::Same { .. } => compact_delta.map_or(
             StackMapFrame::SameExtended {
                 offset_delta: delta,
-            }
-        }
+            },
+            |offset_delta| StackMapFrame::Same { offset_delta },
+        ),
+        StackMapFrame::SameExtended { .. } => StackMapFrame::SameExtended {
+            offset_delta: delta,
+        },
         StackMapFrame::SameLocalsOneStack { stack, .. }
-        | StackMapFrame::SameLocalsOneStackExtended { stack, .. }
-            if delta <= 63 =>
-        {
-            StackMapFrame::SameLocalsOneStack {
-                offset_delta: u8::try_from(delta)
-                    .map_err(|_| Error::invalid_assembly("compact stack-map offset exceeds u8"))?,
-                stack,
-            }
-        }
-        StackMapFrame::SameLocalsOneStack { stack, .. }
-        | StackMapFrame::SameLocalsOneStackExtended { stack, .. } => {
+        | StackMapFrame::SameLocalsOneStackExtended { stack, .. } => compact_delta.map_or(
             StackMapFrame::SameLocalsOneStackExtended {
                 offset_delta: delta,
                 stack,
-            }
-        }
+            },
+            |offset_delta| StackMapFrame::SameLocalsOneStack {
+                offset_delta,
+                stack,
+            },
+        ),
         StackMapFrame::Chop { absent_locals, .. } => StackMapFrame::Chop {
             offset_delta: delta,
             absent_locals,
@@ -270,8 +266,7 @@ fn frame_with_delta(frame: StackMapFrame, delta: u16) -> Result<StackMapFrame> {
             locals,
             stack,
         },
-    };
-    Ok(frame)
+    }
 }
 
 fn remap_frame_verification_types(

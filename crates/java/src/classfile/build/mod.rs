@@ -5,7 +5,7 @@ use crate::{Result, descriptor};
 
 use super::{
     Attribute, ClassAccessFlags, ClassFile, CodeAttribute, ConstantPool, FieldAccessFlags,
-    FieldInfo, MethodAccessFlags, MethodInfo, NO_SUPER_CLASS_INDEX,
+    FieldInfo, MethodAccessFlags, MethodInfo, NO_SUPER_CLASS_INDEX, STANDARD_CLASS_MINOR_VERSION,
 };
 
 impl ClassFile {
@@ -30,7 +30,7 @@ impl ClassFile {
             .transpose()?
             .unwrap_or(NO_SUPER_CLASS_INDEX);
         Ok(Self {
-            minor_version: 0,
+            minor_version: STANDARD_CLASS_MINOR_VERSION,
             major_version,
             constant_pool,
             access_flags,

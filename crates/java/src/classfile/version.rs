@@ -8,6 +8,28 @@ pub const JAVA_1_1_MAJOR_VERSION: u16 = 45;
 pub const JAVA_2_MAJOR_VERSION: u16 = 46;
 /// Offset between modern Java release numbers and class-file major versions.
 pub const JAVA_RELEASE_MAJOR_OFFSET: u16 = 44;
+/// Class-file major version used by Java 6.
+pub const JAVA_6_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 6;
+/// Class-file major version used by Java 7.
+pub const JAVA_7_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 7;
+/// Class-file major version used by Java 8.
+pub const JAVA_8_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 8;
+/// Class-file major version used by Java 9.
+pub const JAVA_9_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 9;
+/// Class-file major version used by Java 11.
+pub const JAVA_11_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 11;
+/// Class-file major version used by Java 12, the first release with preview class files.
+pub const JAVA_12_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 12;
+/// Class-file major version used by Java 16.
+pub const JAVA_16_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 16;
+/// Class-file major version used by Java 17.
+pub const JAVA_17_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 17;
+/// Class-file major version used by Java 26.
+pub const JAVA_26_MAJOR_VERSION: u16 = JAVA_RELEASE_MAJOR_OFFSET + 26;
+/// Minor version used by ordinary, non-preview class files.
+pub const STANDARD_CLASS_MINOR_VERSION: u16 = 0;
+/// Minor version marking a preview-feature class file.
+pub const PREVIEW_CLASS_MINOR_VERSION: u16 = u16::MAX;
 
 const JAVA_1_1_RELEASE_NUMBER: u16 = 1;
 
@@ -42,6 +64,16 @@ impl JavaRelease {
         match self {
             Self::Java1_1 => JAVA_1_1_RELEASE_NUMBER,
             Self::Number(number) => number,
+        }
+    }
+
+    /// Maps this Java release to its class-file major version when representable.
+    #[must_use]
+    pub const fn class_major(self) -> Option<u16> {
+        match self {
+            Self::Java1_1 => Some(JAVA_1_1_MAJOR_VERSION),
+            Self::Number(number) if number >= 2 => number.checked_add(JAVA_RELEASE_MAJOR_OFFSET),
+            Self::Number(_) => None,
         }
     }
 }

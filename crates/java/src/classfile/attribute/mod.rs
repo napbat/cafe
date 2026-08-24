@@ -28,7 +28,7 @@ pub use self::stack_map::{
     StackMapFrame, StackMapTableAttribute, VerificationType, VerificationTypeKind,
 };
 
-pub(crate) use self::stack_map::StackMapFrameTag;
+pub(crate) use self::stack_map::{STACK_MAP_OFFSET_DELTA_BIAS, StackMapFrameTag};
 
 pub(crate) use self::parse::parse_attributes;
 pub(crate) use self::write::{validate_known_model, write_attributes};
@@ -100,37 +100,7 @@ impl KnownAttribute {
     /// Returns the standard attribute name.
     #[must_use]
     pub const fn name(&self) -> &'static str {
-        match self {
-            Self::ConstantValue(_) => "ConstantValue",
-            Self::StackMapTable(_) => "StackMapTable",
-            Self::Exceptions(_) => "Exceptions",
-            Self::InnerClasses(_) => "InnerClasses",
-            Self::EnclosingMethod(_) => "EnclosingMethod",
-            Self::Synthetic(_) => "Synthetic",
-            Self::Signature(_) => "Signature",
-            Self::SourceFile(_) => "SourceFile",
-            Self::SourceDebugExtension(_) => "SourceDebugExtension",
-            Self::LineNumberTable(_) => "LineNumberTable",
-            Self::LocalVariableTable(_) => "LocalVariableTable",
-            Self::LocalVariableTypeTable(_) => "LocalVariableTypeTable",
-            Self::Deprecated(_) => "Deprecated",
-            Self::RuntimeVisibleAnnotations(_) => "RuntimeVisibleAnnotations",
-            Self::RuntimeInvisibleAnnotations(_) => "RuntimeInvisibleAnnotations",
-            Self::RuntimeVisibleParameterAnnotations(_) => "RuntimeVisibleParameterAnnotations",
-            Self::RuntimeInvisibleParameterAnnotations(_) => "RuntimeInvisibleParameterAnnotations",
-            Self::RuntimeVisibleTypeAnnotations(_) => "RuntimeVisibleTypeAnnotations",
-            Self::RuntimeInvisibleTypeAnnotations(_) => "RuntimeInvisibleTypeAnnotations",
-            Self::AnnotationDefault(_) => "AnnotationDefault",
-            Self::BootstrapMethods(_) => "BootstrapMethods",
-            Self::MethodParameters(_) => "MethodParameters",
-            Self::Module(_) => "Module",
-            Self::ModulePackages(_) => "ModulePackages",
-            Self::ModuleMainClass(_) => "ModuleMainClass",
-            Self::NestHost(_) => "NestHost",
-            Self::NestMembers(_) => "NestMembers",
-            Self::Record(_) => "Record",
-            Self::PermittedSubclasses(_) => "PermittedSubclasses",
-        }
+        self.kind().name()
     }
 
     /// Returns the constant-pool index of the attribute name.

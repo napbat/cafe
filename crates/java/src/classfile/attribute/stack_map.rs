@@ -11,6 +11,7 @@ const SAME_FRAME_EXTENDED_TAG: u8 = 251;
 const APPEND_FRAME_MIN_TAG: u8 = 252;
 const APPEND_FRAME_MAX_TAG: u8 = 254;
 const FULL_FRAME_TAG: u8 = 255;
+pub(crate) const STACK_MAP_OFFSET_DELTA_BIAS: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StackMapFrameTag {
@@ -79,6 +80,11 @@ impl StackMapFrameTag {
         } else {
             None
         }
+    }
+
+    pub(crate) fn compact_offset(offset_delta: u16) -> Option<u8> {
+        let offset_delta = u8::try_from(offset_delta).ok()?;
+        Self::same(offset_delta).map(|_| offset_delta)
     }
 
     pub(crate) const fn byte(self) -> u8 {

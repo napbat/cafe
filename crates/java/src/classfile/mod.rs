@@ -38,7 +38,12 @@ pub use self::constant_pool::{
 pub use self::validation::{
     ClassValidationReport, MAX_SUPPORTED_CLASS_MAJOR, MIN_SUPPORTED_CLASS_MAJOR,
 };
-pub use self::version::JavaRelease;
+pub use self::version::{
+    JAVA_1_1_MAJOR_VERSION, JAVA_2_MAJOR_VERSION, JAVA_6_MAJOR_VERSION, JAVA_7_MAJOR_VERSION,
+    JAVA_8_MAJOR_VERSION, JAVA_9_MAJOR_VERSION, JAVA_11_MAJOR_VERSION, JAVA_12_MAJOR_VERSION,
+    JAVA_16_MAJOR_VERSION, JAVA_17_MAJOR_VERSION, JAVA_26_MAJOR_VERSION, JavaRelease,
+    PREVIEW_CLASS_MINOR_VERSION, STANDARD_CLASS_MINOR_VERSION,
+};
 
 use crate::Result;
 
@@ -52,8 +57,21 @@ pub const CATCH_ALL_EXCEPTION_INDEX: u16 = RESERVED_CONSTANT_POOL_INDEX;
 pub const MAX_CODE_LENGTH: usize = u16::MAX as usize;
 /// Standard name of a method's executable-code attribute.
 pub const CODE_ATTRIBUTE_NAME: &str = "Code";
+/// Internal name of the root Java class.
+pub const JAVA_LANG_OBJECT_NAME: &str = "java/lang/Object";
+/// Reserved JVM instance-initializer method name.
+pub const INSTANCE_INITIALIZER_NAME: &str = "<init>";
+/// Reserved JVM class-initializer method name.
+pub const CLASS_INITIALIZER_NAME: &str = "<clinit>";
+/// Required descriptor of the JVM class initializer.
+pub const CLASS_INITIALIZER_DESCRIPTOR: &str = "()V";
+/// Internal class name used for a Java module descriptor.
+pub const MODULE_INFO_CLASS_NAME: &str = "module-info";
+/// Sentinel used by optional constant-pool index fields.
+pub const OPTIONAL_CONSTANT_POOL_INDEX: u16 = RESERVED_CONSTANT_POOL_INDEX;
 
 const CLASS_MAGIC_OFFSET: usize = 0;
+pub(crate) const MODEL_VALIDATION_OFFSET: usize = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AttributeLocation {

@@ -5,8 +5,8 @@ use crate::{Error, Result};
 
 use super::super::io::Writer;
 use super::super::{
-    Attribute, AttributeLocation, CATCH_ALL_EXCEPTION_INDEX, CodeAttribute, Constant, ConstantPool,
-    MAX_CODE_LENGTH, RawAttribute,
+    Attribute, AttributeLocation, CATCH_ALL_EXCEPTION_INDEX, CODE_ATTRIBUTE_NAME, CodeAttribute,
+    Constant, ConstantPool, MAX_CODE_LENGTH, OPTIONAL_CONSTANT_POOL_INDEX, RawAttribute,
 };
 use super::{
     Annotation, AnnotationConstantKind, ElementValue, KnownAttribute, LocalVariableTarget,
@@ -56,7 +56,7 @@ pub(crate) fn validate_known_model(attribute: &KnownAttribute, pool: &ConstantPo
 }
 
 fn write_code(output: &mut Writer, code: &CodeAttribute, pool: &ConstantPool) -> Result<()> {
-    verify_attribute_name(pool, code.name_index, "Code")?;
+    verify_attribute_name(pool, code.name_index, CODE_ATTRIBUTE_NAME)?;
     if code.code.len() > MAX_CODE_LENGTH {
         return Err(Error::invalid_assembly(format!(
             "method code exceeds {MAX_CODE_LENGTH} bytes: {}",
@@ -184,7 +184,7 @@ fn write_known_payload(
         }
         KnownAttribute::RuntimeVisibleAnnotations(attribute)
         | KnownAttribute::RuntimeInvisibleAnnotations(attribute) => {
-            write_annotations(output, &attribute.annotations, pool, 0)?;
+            write_annotations(output, &attribute.annotations, pool, ROOT_ANNOTATION_DEPTH)?;
         }
         KnownAttribute::RuntimeVisibleParameterAnnotations(attribute)
         | KnownAttribute::RuntimeInvisibleParameterAnnotations(attribute) => {
@@ -193,7 +193,7 @@ fn write_known_payload(
                 "annotated parameters",
             )?);
             for annotations in &attribute.parameters {
-                write_annotations(output, annotations, pool, 0)?;
+                write_annotations(output, annotations, pool, ROOT_ANNOTATION_DEPTH)?;
             }
         }
         KnownAttribute::RuntimeVisibleTypeAnnotations(attribute)
@@ -769,7 +769,7 @@ fn expect_optional(
     expected: &str,
     predicate: impl Fn(&Constant) -> bool,
 ) -> Result<()> {
-    if index == 0 {
+    if index == OPTIONAL_CONSTANT_POOL_INDEX {
         Ok(())
     } else {
         expect_tag(pool, index, expected, predicate)

@@ -5,27 +5,36 @@ mod constants;
 use std::collections::HashSet;
 
 use crate::bytecode::{Instruction, Opcode, Operand};
-use crate::descriptor::{self, JavaType};
+use crate::descriptor::{self, JavaType, JvmSlotWidth};
 use crate::{Error, Result};
 
 use self::constants::{
     bootstrap_method_count, dynamic_has_category_two_descriptor, validate_constant_pool,
     validate_dynamic_bootstraps,
 };
+use super::attribute::STACK_MAP_OFFSET_DELTA_BIAS;
 use super::attribute::validate_known_model;
 use super::{
-    Attribute, AttributeLocation, ClassAccessFlags, ClassFile, CodeAttribute, Constant,
-    ConstantPool, FieldAccessFlags, KnownAttribute, MethodAccessFlags, StackMapFrame,
+    Attribute, AttributeLocation, CLASS_INITIALIZER_DESCRIPTOR, CLASS_INITIALIZER_NAME,
+    CODE_ATTRIBUTE_NAME, ClassAccessFlags, ClassFile, CodeAttribute, Constant, ConstantPool,
+    FieldAccessFlags, INSTANCE_INITIALIZER_NAME, JAVA_1_1_MAJOR_VERSION, JAVA_9_MAJOR_VERSION,
+    JAVA_12_MAJOR_VERSION, JAVA_26_MAJOR_VERSION, JAVA_LANG_OBJECT_NAME, KnownAttribute,
+    KnownAttributeKind, MODEL_VALIDATION_OFFSET, MODULE_INFO_CLASS_NAME, MethodAccessFlags,
+    NO_SUPER_CLASS_INDEX, PREVIEW_CLASS_MINOR_VERSION, STANDARD_CLASS_MINOR_VERSION, StackMapFrame,
     TypeAnnotationTarget, VerificationType,
 };
 
 /// Oldest supported class-file major version (Java 1.1).
-pub const MIN_SUPPORTED_CLASS_MAJOR: u16 = 45;
+pub const MIN_SUPPORTED_CLASS_MAJOR: u16 = JAVA_1_1_MAJOR_VERSION;
 /// Newest supported class-file major version (Java SE 26).
-pub const MAX_SUPPORTED_CLASS_MAJOR: u16 = 70;
+pub const MAX_SUPPORTED_CLASS_MAJOR: u16 = JAVA_26_MAJOR_VERSION;
 
-const PREVIEW_MINOR_VERSION: u16 = u16::MAX;
-const FIRST_PREVIEW_MAJOR_VERSION: u16 = 56;
+const NO_CODE_ATTRIBUTES: usize = 0;
+const REQUIRED_CODE_ATTRIBUTES: usize = 1;
+const NO_ARRAY_DIMENSIONS: usize = 0;
+const REQUIRED_MODULE_ATTRIBUTES: usize = 1;
+const MAX_VISIBILITY_MODIFIERS: usize = 1;
+const RECEIVER_SLOT_COUNT: usize = JvmSlotWidth::Single.slot_count();
 
 /// Deterministic aggregate counts produced by class validation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,12 +87,15 @@ fn validate_version(class: &ClassFile) -> Result<()> {
             class.major_version, class.minor_version
         )));
     }
-    if class.major_version >= FIRST_PREVIEW_MAJOR_VERSION
-        && !matches!(class.minor_version, 0 | PREVIEW_MINOR_VERSION)
+    if class.major_version >= JAVA_12_MAJOR_VERSION
+        && !matches!(
+            class.minor_version,
+            STANDARD_CLASS_MINOR_VERSION | PREVIEW_CLASS_MINOR_VERSION
+        )
     {
         return Err(invalid(format!(
-            "class-file major {} requires minor version 0 or 65535",
-            class.major_version
+            "class-file major {} requires minor version {STANDARD_CLASS_MINOR_VERSION} or {PREVIEW_CLASS_MINOR_VERSION}",
+            class.major_version,
         )));
     }
     Ok(())
@@ -93,8 +105,8 @@ fn validate_class_header(class: &ClassFile) -> Result<()> {
     let pool = &class.constant_pool;
     let name = pool.class_name(class.this_class)?;
     validate_internal_or_array_name(name, false)?;
-    if class.super_class == 0 {
-        if name != "java/lang/Object" && !class.access_flags.contains(ClassAccessFlags::MODULE) {
+    if class.super_class == NO_SUPER_CLASS_INDEX {
+        if name != JAVA_LANG_OBJECT_NAME && !class.access_flags.contains(ClassAccessFlags::MODULE) {
             return Err(invalid(
                 "only java/lang/Object or module-info may have no superclass",
             ));
@@ -139,7 +151,13 @@ fn validate_fields(class: &ClassFile, report: &mut ClassValidationReport) -> Res
         if !declarations.insert((name, descriptor)) {
             return Err(invalid(format!("duplicate field `{name}:{descriptor}`")));
         }
-        validate_visibility(field.access_flags.bits(), "field", name)?;
+        validate_visibility(
+            field.access_flags.contains(FieldAccessFlags::PUBLIC),
+            field.access_flags.contains(FieldAccessFlags::PRIVATE),
+            field.access_flags.contains(FieldAccessFlags::PROTECTED),
+            "field",
+            name,
+        )?;
         if field.access_flags.contains(FieldAccessFlags::FINAL)
             && field.access_flags.contains(FieldAccessFlags::VOLATILE)
         {
@@ -176,14 +194,23 @@ fn validate_methods(class: &ClassFile, report: &mut ClassValidationReport) -> Re
         if !declarations.insert((name, descriptor_text)) {
             return Err(contextualize(invalid("duplicate method declaration")));
         }
-        validate_visibility(method.access_flags.bits(), "method", name).map_err(&contextualize)?;
+        validate_visibility(
+            method.access_flags.contains(MethodAccessFlags::PUBLIC),
+            method.access_flags.contains(MethodAccessFlags::PRIVATE),
+            method.access_flags.contains(MethodAccessFlags::PROTECTED),
+            "method",
+            name,
+        )
+        .map_err(&contextualize)?;
         validate_method_flags(method.access_flags, name).map_err(&contextualize)?;
-        if name == "<init>" && !matches!(descriptor.return_type, descriptor::ReturnType::Void) {
+        if name == INSTANCE_INITIALIZER_NAME
+            && !matches!(descriptor.return_type, descriptor::ReturnType::Void)
+        {
             return Err(contextualize(invalid(
                 "constructor descriptor must return void",
             )));
         }
-        if name == "<clinit>" && descriptor_text != "()V" {
+        if name == CLASS_INITIALIZER_NAME && descriptor_text != CLASS_INITIALIZER_DESCRIPTOR {
             return Err(contextualize(invalid(
                 "class initializer descriptor must be ()V",
             )));
@@ -195,7 +222,9 @@ fn validate_methods(class: &ClassFile, report: &mut ClassValidationReport) -> Re
             .count();
         let body_forbidden = method.access_flags.contains(MethodAccessFlags::ABSTRACT)
             || method.access_flags.contains(MethodAccessFlags::NATIVE);
-        if (body_forbidden && code_count != 0) || (!body_forbidden && code_count != 1) {
+        if (body_forbidden && code_count != NO_CODE_ATTRIBUTES)
+            || (!body_forbidden && code_count != REQUIRED_CODE_ATTRIBUTES)
+        {
             return Err(contextualize(invalid(format!(
                 "method has {code_count} Code attributes"
             ))));
@@ -376,7 +405,7 @@ fn validate_instruction(
         (Operand::InvokeInterface { index, count }, Opcode::InvokeInterface) => {
             let descriptor = referenced_method_descriptor(pool, *index, true)?;
             let expected = parameter_slots(&descriptor)?
-                .checked_add(1)
+                .checked_add(RECEIVER_SLOT_COUNT)
                 .ok_or_else(|| invalid("invokeinterface argument count overflow"))?;
             if usize::from(*count) != expected {
                 return Err(invalid(format!(
@@ -402,7 +431,7 @@ fn validate_instruction(
         (Operand::MultiArray { index, dimensions }, Opcode::MultiANewArray) => {
             let name = pool.class_name(*index)?;
             let available = name.bytes().take_while(|byte| *byte == b'[').count();
-            if available == 0 || usize::from(*dimensions) > available {
+            if available == NO_ARRAY_DIMENSIONS || usize::from(*dimensions) > available {
                 return Err(invalid(format!(
                     "multianewarray dimensions {dimensions} exceed `{name}`"
                 )));
@@ -474,7 +503,9 @@ fn validate_stack_maps(
     for frame in frames {
         let absolute = match previous {
             None => u32::from(frame.offset_delta()),
-            Some(previous) => previous + u32::from(frame.offset_delta()) + 1,
+            Some(previous) => {
+                previous + u32::from(frame.offset_delta()) + u32::from(STACK_MAP_OFFSET_DELTA_BIAS)
+            }
         };
         let offset = u16::try_from(absolute)
             .map_err(|_| invalid("stack-map frame bytecode offset overflows u16"))?;
@@ -594,10 +625,10 @@ fn validate_module_shape(class: &ClassFile) -> Result<()> {
     if !class.access_flags.contains(ClassAccessFlags::MODULE) {
         return Ok(());
     }
-    if class.major_version < 53
+    if class.major_version < JAVA_9_MAJOR_VERSION
         || class.access_flags.bits() != ClassAccessFlags::MODULE.bits()
-        || class.constant_pool.class_name(class.this_class)? != "module-info"
-        || class.super_class != 0
+        || class.constant_pool.class_name(class.this_class)? != MODULE_INFO_CLASS_NAME
+        || class.super_class != NO_SUPER_CLASS_INDEX
         || !class.interfaces.is_empty()
         || !class.fields.is_empty()
         || !class.methods.is_empty()
@@ -609,7 +640,7 @@ fn validate_module_shape(class: &ClassFile) -> Result<()> {
         .iter()
         .filter(|attribute| matches!(attribute, Attribute::Known(KnownAttribute::Module(_))))
         .count();
-    if module_count != 1 {
+    if module_count != REQUIRED_MODULE_ATTRIBUTES {
         return Err(invalid(format!(
             "module-info class has {module_count} Module attributes"
         )));
@@ -618,19 +649,8 @@ fn validate_module_shape(class: &ClassFile) -> Result<()> {
 }
 
 fn validate_known_version(attribute: &KnownAttribute, major: u16) -> Result<()> {
-    let required = match attribute {
-        KnownAttribute::StackMapTable(_) => 50,
-        KnownAttribute::BootstrapMethods(_) => 51,
-        KnownAttribute::RuntimeVisibleTypeAnnotations(_)
-        | KnownAttribute::RuntimeInvisibleTypeAnnotations(_)
-        | KnownAttribute::MethodParameters(_) => 52,
-        KnownAttribute::Module(_)
-        | KnownAttribute::ModulePackages(_)
-        | KnownAttribute::ModuleMainClass(_) => 53,
-        KnownAttribute::NestHost(_) | KnownAttribute::NestMembers(_) => 55,
-        KnownAttribute::Record(_) => 60,
-        KnownAttribute::PermittedSubclasses(_) => 61,
-        _ => return Ok(()),
+    let Some(required) = attribute.kind().minimum_major_version() else {
+        return Ok(());
     };
     if major < required {
         Err(invalid(format!(
@@ -694,54 +714,32 @@ fn validate_type_targets(attribute: &KnownAttribute, location: AttributeLocation
 }
 
 fn is_singleton_attribute(name: &str) -> bool {
-    is_standard_attribute_name(name)
-        && !matches!(
-            name,
-            "LineNumberTable" | "LocalVariableTable" | "LocalVariableTypeTable"
+    if name == CODE_ATTRIBUTE_NAME {
+        return true;
+    }
+    KnownAttributeKind::from_name(name).is_some_and(|kind| {
+        !matches!(
+            kind,
+            KnownAttributeKind::LineNumberTable
+                | KnownAttributeKind::LocalVariableTable
+                | KnownAttributeKind::LocalVariableTypeTable
         )
+    })
 }
 
 fn is_standard_attribute_name(name: &str) -> bool {
-    matches!(
-        name,
-        "ConstantValue"
-            | "Code"
-            | "StackMapTable"
-            | "Exceptions"
-            | "InnerClasses"
-            | "EnclosingMethod"
-            | "Synthetic"
-            | "Signature"
-            | "SourceFile"
-            | "SourceDebugExtension"
-            | "LineNumberTable"
-            | "LocalVariableTable"
-            | "LocalVariableTypeTable"
-            | "Deprecated"
-            | "RuntimeVisibleAnnotations"
-            | "RuntimeInvisibleAnnotations"
-            | "RuntimeVisibleParameterAnnotations"
-            | "RuntimeInvisibleParameterAnnotations"
-            | "RuntimeVisibleTypeAnnotations"
-            | "RuntimeInvisibleTypeAnnotations"
-            | "AnnotationDefault"
-            | "BootstrapMethods"
-            | "MethodParameters"
-            | "Module"
-            | "ModulePackages"
-            | "ModuleMainClass"
-            | "NestHost"
-            | "NestMembers"
-            | "Record"
-            | "PermittedSubclasses"
-    )
+    name == CODE_ATTRIBUTE_NAME || KnownAttributeKind::from_name(name).is_some()
 }
 
-fn validate_visibility(bits: u16, kind: &str, name: &str) -> Result<()> {
-    let visibility = usize::from(bits & 0x0001 != 0)
-        + usize::from(bits & 0x0002 != 0)
-        + usize::from(bits & 0x0004 != 0);
-    if visibility > 1 {
+fn validate_visibility(
+    is_public: bool,
+    is_private: bool,
+    is_protected: bool,
+    kind: &str,
+    name: &str,
+) -> Result<()> {
+    let visibility = usize::from(is_public) + usize::from(is_private) + usize::from(is_protected);
+    if visibility > MAX_VISIBILITY_MODIFIERS {
         Err(invalid(format!(
             "{kind} `{name}` has conflicting visibility flags"
         )))
@@ -755,7 +753,10 @@ pub(super) fn validate_unqualified_name(name: &str, method: bool) -> Result<()> 
         || name
             .chars()
             .any(|character| matches!(character, '.' | ';' | '[' | '/'))
-        || (method && name != "<init>" && name != "<clinit>" && name.contains(['<', '>']));
+        || (method
+            && name != INSTANCE_INITIALIZER_NAME
+            && name != CLASS_INITIALIZER_NAME
+            && name.contains(['<', '>']));
     if is_invalid {
         Err(invalid(format!("invalid JVM unqualified name `{name}`")))
     } else {
@@ -808,7 +809,7 @@ fn parameter_slots(descriptor: &descriptor::MethodDescriptor) -> Result<usize> {
     let mut slots = 0_usize;
     for parameter in &descriptor.parameters {
         slots = slots
-            .checked_add(usize::from(matches!(parameter, JavaType::Long | JavaType::Double)) + 1)
+            .checked_add(parameter.slot_width().slot_count())
             .ok_or_else(|| invalid("method parameter slot count overflow"))?;
     }
     Ok(slots)
@@ -838,5 +839,5 @@ fn expect_tag(
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::invalid_class(0, message)
+    Error::invalid_class(MODEL_VALIDATION_OFFSET, message)
 }

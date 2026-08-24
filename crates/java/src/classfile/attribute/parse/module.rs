@@ -4,8 +4,8 @@ use crate::{Error, Result};
 
 use super::super::super::io::Reader;
 use super::super::super::{
-    Constant, ConstantPool, ModuleAccessFlags, ModuleExportsFlags, ModuleOpensFlags,
-    ModuleRequiresFlags,
+    Constant, ConstantPool, MODEL_VALIDATION_OFFSET, ModuleAccessFlags, ModuleExportsFlags,
+    ModuleOpensFlags, ModuleRequiresFlags, OPTIONAL_CONSTANT_POOL_INDEX,
 };
 use super::super::{ModuleAttribute, ModuleExport, ModuleOpen, ModuleProvide, ModuleRequire};
 
@@ -117,7 +117,7 @@ fn read_u16_list(reader: &mut Reader<'_>) -> Result<Vec<u16>> {
 }
 
 fn expect_optional_utf8(pool: &ConstantPool, index: u16) -> Result<()> {
-    if index == 0 {
+    if index == OPTIONAL_CONSTANT_POOL_INDEX {
         Ok(())
     } else {
         expect_tag(pool, index, "Utf8", |constant| {
@@ -167,7 +167,7 @@ fn expect_tag(
         Ok(())
     } else {
         Err(Error::invalid_class(
-            0,
+            MODEL_VALIDATION_OFFSET,
             format!(
                 "constant-pool index #{index} is {}, expected {expected}",
                 constant.tag_name()

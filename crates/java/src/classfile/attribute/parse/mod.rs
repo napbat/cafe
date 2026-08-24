@@ -7,8 +7,9 @@ use crate::{Error, Result};
 use self::module::parse_module;
 use super::super::io::Reader;
 use super::super::{
-    Attribute, AttributeLocation, CATCH_ALL_EXCEPTION_INDEX, CodeAttribute, Constant, ConstantPool,
-    ExceptionHandler, InnerClassAccessFlags, MAX_CODE_LENGTH, MethodParameterAccessFlags,
+    Attribute, AttributeLocation, CATCH_ALL_EXCEPTION_INDEX, CODE_ATTRIBUTE_NAME, CodeAttribute,
+    Constant, ConstantPool, ExceptionHandler, InnerClassAccessFlags, MAX_CODE_LENGTH,
+    MODEL_VALIDATION_OFFSET, MethodParameterAccessFlags, OPTIONAL_CONSTANT_POOL_INDEX,
     RawAttribute,
 };
 use super::{
@@ -27,6 +28,7 @@ use super::{
 const MAX_ANNOTATION_DEPTH: usize = 128;
 const ROOT_ANNOTATION_DEPTH: usize = 0;
 const ANNOTATION_NESTING_INCREMENT: usize = 1;
+const MAX_CODE_ATTRIBUTES_PER_LOCATION: usize = 1;
 
 pub(crate) fn parse_attributes(
     reader: &mut Reader<'_>,
@@ -67,7 +69,7 @@ fn parse_attribute(
     pool: &ConstantPool,
     location: AttributeLocation,
 ) -> Result<Attribute> {
-    if name == "Code" {
+    if name == CODE_ATTRIBUTE_NAME {
         require_location(
             name,
             location,
@@ -126,7 +128,7 @@ fn parse_known(
             let class_index = reader.read_u16()?;
             expect_class(pool, class_index)?;
             let method_index = reader.read_u16()?;
-            if method_index != 0 {
+            if method_index != OPTIONAL_CONSTANT_POOL_INDEX {
                 expect_tag(pool, method_index, "NameAndType", |constant| {
                     matches!(constant, Constant::NameAndType { .. })
                 })?;
@@ -899,7 +901,7 @@ fn expect_optional(
     expected: &str,
     predicate: impl Fn(&Constant) -> bool,
 ) -> Result<()> {
-    if index == 0 {
+    if index == OPTIONAL_CONSTANT_POOL_INDEX {
         Ok(())
     } else {
         expect_tag(pool, index, expected, predicate)
@@ -917,7 +919,7 @@ fn expect_tag(
         Ok(())
     } else {
         Err(Error::invalid_class(
-            0,
+            MODEL_VALIDATION_OFFSET,
             format!(
                 "constant-pool index #{index} is {}, expected {expected}",
                 constant.tag_name()
@@ -961,9 +963,9 @@ fn validate_attribute_multiplicity(
         .iter()
         .filter(|attribute| matches!(attribute, Attribute::Code(_)))
         .count();
-    if code_count > 1 {
+    if code_count > MAX_CODE_ATTRIBUTES_PER_LOCATION {
         return Err(Error::invalid_class(
-            0,
+            MODEL_VALIDATION_OFFSET,
             format!("multiple Code attributes at {location:?} location"),
         ));
     }

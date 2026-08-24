@@ -1,7 +1,10 @@
 //! Stable discriminators for querying typed attributes.
 
 use super::KnownAttribute;
-use crate::classfile::AttributeLocation;
+use crate::classfile::{
+    AttributeLocation, JAVA_6_MAJOR_VERSION, JAVA_7_MAJOR_VERSION, JAVA_8_MAJOR_VERSION,
+    JAVA_9_MAJOR_VERSION, JAVA_11_MAJOR_VERSION, JAVA_16_MAJOR_VERSION, JAVA_17_MAJOR_VERSION,
+};
 
 /// Kind of a recognized standard JVM attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -140,6 +143,25 @@ impl KnownAttributeKind {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|kind| kind.name() == name)
+    }
+
+    /// Returns the first class-file major version supporting this attribute.
+    #[must_use]
+    pub const fn minimum_major_version(self) -> Option<u16> {
+        match self {
+            Self::StackMapTable => Some(JAVA_6_MAJOR_VERSION),
+            Self::BootstrapMethods => Some(JAVA_7_MAJOR_VERSION),
+            Self::RuntimeVisibleTypeAnnotations
+            | Self::RuntimeInvisibleTypeAnnotations
+            | Self::MethodParameters => Some(JAVA_8_MAJOR_VERSION),
+            Self::Module | Self::ModulePackages | Self::ModuleMainClass => {
+                Some(JAVA_9_MAJOR_VERSION)
+            }
+            Self::NestHost | Self::NestMembers => Some(JAVA_11_MAJOR_VERSION),
+            Self::Record => Some(JAVA_16_MAJOR_VERSION),
+            Self::PermittedSubclasses => Some(JAVA_17_MAJOR_VERSION),
+            _ => None,
+        }
     }
 
     pub(super) const fn of(attribute: &KnownAttribute) -> Self {

@@ -1,10 +1,12 @@
 //! Semantic validation for constant-pool entries and bootstrap references.
 
-use crate::descriptor::{self, JavaType};
+use crate::descriptor::{self, JvmSlotWidth};
 use crate::{Error, Result};
 
 use super::super::{
-    Attribute, ClassFile, Constant, ConstantPool, KnownAttribute, MethodHandleKind,
+    Attribute, CLASS_INITIALIZER_NAME, ClassFile, Constant, ConstantPool,
+    INSTANCE_INITIALIZER_NAME, JAVA_7_MAJOR_VERSION, JAVA_8_MAJOR_VERSION, JAVA_9_MAJOR_VERSION,
+    JAVA_11_MAJOR_VERSION, KnownAttribute, MODEL_VALIDATION_OFFSET, MethodHandleKind,
 };
 use super::{validate_internal_or_array_name, validate_unqualified_name};
 
@@ -129,16 +131,16 @@ pub(super) fn dynamic_has_category_two_descriptor(
     pool.name_and_type(*name_and_type_index)
         .ok()
         .and_then(|(_, descriptor)| descriptor::parse_field(descriptor).ok())
-        .is_some_and(|kind| matches!(kind, JavaType::Long | JavaType::Double))
+        .is_some_and(|kind| kind.slot_width() == JvmSlotWidth::Double)
 }
 
 fn validate_constant_version(index: u16, constant: &Constant, major: u16) -> Result<()> {
     let required = match constant {
         Constant::MethodHandle { .. }
         | Constant::MethodType { .. }
-        | Constant::InvokeDynamic { .. } => 51,
-        Constant::Module { .. } | Constant::Package { .. } => 53,
-        Constant::Dynamic { .. } => 55,
+        | Constant::InvokeDynamic { .. } => JAVA_7_MAJOR_VERSION,
+        Constant::Module { .. } | Constant::Package { .. } => JAVA_9_MAJOR_VERSION,
+        Constant::Dynamic { .. } => JAVA_11_MAJOR_VERSION,
         _ => return Ok(()),
     };
     if major < required {
@@ -168,7 +170,8 @@ fn validate_method_handle(
         }
         MethodHandleKind::InvokeStatic | MethodHandleKind::InvokeSpecial => {
             matches!(constant, Constant::MethodRef { .. })
-                || (major >= 52 && matches!(constant, Constant::InterfaceMethodRef { .. }))
+                || (major >= JAVA_8_MAJOR_VERSION
+                    && matches!(constant, Constant::InterfaceMethodRef { .. }))
         }
         MethodHandleKind::InvokeInterface => {
             matches!(constant, Constant::InterfaceMethodRef { .. })
@@ -191,7 +194,8 @@ fn validate_method_handle(
     } = constant
     {
         let (name, _) = pool.name_and_type(*name_and_type_index)?;
-        if (kind == MethodHandleKind::NewInvokeSpecial) != (name == "<init>") || name == "<clinit>"
+        if (kind == MethodHandleKind::NewInvokeSpecial) != (name == INSTANCE_INITIALIZER_NAME)
+            || name == CLASS_INITIALIZER_NAME
         {
             return Err(invalid(format!(
                 "method handle {} has invalid target name `{name}`",
@@ -214,5 +218,5 @@ fn validate_name_and_type(pool: &ConstantPool, index: u16, method: bool) -> Resu
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::invalid_class(0, message)
+    Error::invalid_class(MODEL_VALIDATION_OFFSET, message)
 }
