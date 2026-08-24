@@ -6,6 +6,8 @@
 //! or more DEX artifacts; an APK is not treated as another instruction set.
 
 mod error;
+pub mod file;
 pub mod instruction;
 
 pub use self::error::{Error, Result};
+pub use self::file::{DexFile, DexVersion};

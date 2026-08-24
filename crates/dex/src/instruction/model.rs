@@ -1,6 +1,11 @@
 //! Owned instruction and payload values.
 
 use super::Opcode;
+use super::layout::{
+    ALIGNMENT_ROUNDING_BIAS_U32, ARRAY_DATA_HEADER_CODE_UNITS_U32, BYTES_PER_CODE_UNIT_U32,
+    PACKED_SWITCH_HEADER_CODE_UNITS_U32, PACKED_SWITCH_TARGET_CODE_UNITS_U32,
+    SPARSE_SWITCH_ENTRY_CODE_UNITS_U32, SPARSE_SWITCH_HEADER_CODE_UNITS_U32,
+};
 
 /// One decoded item in a DEX code-unit stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,7 +252,9 @@ impl PackedSwitchPayload {
     #[must_use]
     pub fn code_units(&self) -> Option<u32> {
         let count = u32::try_from(self.targets.len()).ok()?;
-        count.checked_mul(2)?.checked_add(4)
+        count
+            .checked_mul(PACKED_SWITCH_TARGET_CODE_UNITS_U32)?
+            .checked_add(PACKED_SWITCH_HEADER_CODE_UNITS_U32)
     }
 }
 
@@ -265,7 +272,9 @@ impl SparseSwitchPayload {
     #[must_use]
     pub fn code_units(&self) -> Option<u32> {
         let count = u32::try_from(self.keys.len()).ok()?;
-        count.checked_mul(4)?.checked_add(2)
+        count
+            .checked_mul(SPARSE_SWITCH_ENTRY_CODE_UNITS_U32)?
+            .checked_add(SPARSE_SWITCH_HEADER_CODE_UNITS_U32)
     }
 }
 
@@ -285,6 +294,9 @@ impl ArrayDataPayload {
     #[must_use]
     pub fn code_units(&self) -> Option<u32> {
         let byte_count = u32::try_from(self.data.len()).ok()?;
-        byte_count.checked_add(1)?.checked_div(2)?.checked_add(4)
+        byte_count
+            .checked_add(ALIGNMENT_ROUNDING_BIAS_U32)?
+            .checked_div(BYTES_PER_CODE_UNIT_U32)?
+            .checked_add(ARRAY_DATA_HEADER_CODE_UNITS_U32)
     }
 }

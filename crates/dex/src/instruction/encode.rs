@@ -4,11 +4,14 @@ use std::collections::BTreeMap;
 
 use crate::{Error, Result};
 
+use super::layout::{
+    ARRAY_PADDING_VALUE, BYTE_BITS, BYTES_PER_CODE_UNIT, CLEARED_LOW_BITS, CODE_UNIT_BITS,
+    CODE_UNITS_PER_WORD, EMPTY_REGISTER_COUNT, FIRST_CODE_UNIT_OFFSET, HIGH_BYTE_INDEX,
+    INVALID_ARRAY_ELEMENT_WIDTH, LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT, NIBBLE_BITS, NIBBLE_MASK,
+    NON_EMPTY_RANGE_LAST_DELTA, PayloadKind, REGISTER_LIST_SLOTS, RESERVED_BYTE_VALUE,
+    RegisterListSlot, SIGNED_NIBBLE_MAXIMUM, SIGNED_NIBBLE_MINIMUM, TRIPLE_CODE_UNIT_BITS,
+};
 use super::{Instruction, InstructionData, InstructionFormat, Opcode, Operands, decode};
-
-const PACKED_SWITCH_PAYLOAD: u16 = 0x0100;
-const SPARSE_SWITCH_PAYLOAD: u16 = 0x0200;
-const ARRAY_DATA_PAYLOAD: u16 = 0x0300;
 
 /// Encodes a complete Dalvik instruction stream.
 ///
@@ -22,11 +25,13 @@ const ARRAY_DATA_PAYLOAD: u16 = 0x0300;
 pub fn encode(instructions: &[Instruction]) -> Result<Vec<u16>> {
     validate_layout(instructions)?;
     let switch_bases = collect_switch_bases(instructions)?;
-    let capacity = instructions.last().map_or(0, |instruction| {
-        instruction
-            .offset()
-            .saturating_add(instruction.code_units().unwrap_or(u32::MAX))
-    });
+    let capacity = instructions
+        .last()
+        .map_or(FIRST_CODE_UNIT_OFFSET, |instruction| {
+            instruction
+                .offset()
+                .saturating_add(instruction.code_units().unwrap_or(u32::MAX))
+        });
     let capacity = usize::try_from(capacity)
         .map_err(|_| Error::invalid_assembly("instruction stream does not fit this platform"))?;
     let mut output = Vec::with_capacity(capacity);
@@ -60,7 +65,7 @@ pub fn encode(instructions: &[Instruction]) -> Result<Vec<u16>> {
 }
 
 fn validate_layout(instructions: &[Instruction]) -> Result<()> {
-    let mut expected = 0u32;
+    let mut expected = FIRST_CODE_UNIT_OFFSET;
     for instruction in instructions {
         if instruction.offset() != expected {
             return Err(Error::invalid_assembly(format!(
@@ -121,31 +126,46 @@ fn encode_operation(
     operands: &Operands,
 ) -> Result<()> {
     match (opcode.format(), operands) {
-        (InstructionFormat::F10x, Operands::None) => output.push(word0(opcode, 0)),
+        (InstructionFormat::F10x, Operands::None) => {
+            output.push(word0(opcode, RESERVED_BYTE_VALUE));
+        }
         (InstructionFormat::F12x, Operands::Registers { first, second }) => {
             let first = nibble(*first, opcode, "first register")?;
             let second = nibble(*second, opcode, "second register")?;
-            output.push(word0(opcode, first | (second << 4)));
+            output.push(word0(opcode, first | (second << NIBBLE_BITS)));
         }
         (InstructionFormat::F11n, Operands::RegisterLiteral { register, literal }) => {
             let register = nibble(*register, opcode, "register")?;
-            let literal = i8::try_from(*literal)
-                .map_err(|_| range_error(opcode, "literal", *literal, -8, 7))?;
-            if !(-8..=7).contains(&literal) {
-                return Err(range_error(opcode, "literal", i64::from(literal), -8, 7));
+            let literal = i8::try_from(*literal).map_err(|_| {
+                range_error(
+                    opcode,
+                    "literal",
+                    *literal,
+                    SIGNED_NIBBLE_MINIMUM,
+                    SIGNED_NIBBLE_MAXIMUM,
+                )
+            })?;
+            if !(SIGNED_NIBBLE_MINIMUM..=SIGNED_NIBBLE_MAXIMUM).contains(&i64::from(literal)) {
+                return Err(range_error(
+                    opcode,
+                    "literal",
+                    i64::from(literal),
+                    SIGNED_NIBBLE_MINIMUM,
+                    SIGNED_NIBBLE_MAXIMUM,
+                ));
             }
-            let bits = literal.to_ne_bytes()[0] & 0x0f;
-            output.push(word0(opcode, register | (bits << 4)));
+            let bits = literal.to_ne_bytes()[LOW_BYTE_INDEX] & NIBBLE_MASK;
+            output.push(word0(opcode, register | (bits << NIBBLE_BITS)));
         }
         (InstructionFormat::F11x, Operands::Register(register)) => {
             output.push(word0(opcode, byte(*register, opcode, "register")?));
         }
         (InstructionFormat::F10t, Operands::Branch { target }) => {
             let delta = branch_i8(opcode, offset, *target)?;
-            output.push(word0(opcode, delta.to_ne_bytes()[0]));
+            output.push(word0(opcode, delta.to_ne_bytes()[LOW_BYTE_INDEX]));
         }
         (InstructionFormat::F20t, Operands::Branch { target }) => {
-            output.push(word0(opcode, 0));
+            output.push(word0(opcode, RESERVED_BYTE_VALUE));
             output.push(i16_word(branch_i16(opcode, offset, *target)?));
         }
         (InstructionFormat::F22x, Operands::Registers { first, second }) => {
@@ -163,12 +183,12 @@ fn encode_operation(
         (InstructionFormat::F21h, Operands::RegisterLiteral { register, literal }) => {
             output.push(word0(opcode, byte(*register, opcode, "register")?));
             let shift = if opcode == Opcode::ConstWideHigh16 {
-                48
+                TRIPLE_CODE_UNIT_BITS
             } else {
-                16
+                CODE_UNIT_BITS
             };
             let mask = (1_i64 << shift) - 1;
-            if literal & mask != 0 {
+            if literal & mask != CLEARED_LOW_BITS {
                 return Err(Error::invalid_assembly(format!(
                     "{} literal {literal} has nonzero low {shift} bits",
                     opcode.mnemonic()
@@ -191,7 +211,7 @@ fn encode_operation(
             output.push(word0(opcode, byte(*first, opcode, "first register")?));
             output.push(
                 u16::from(byte(*second, opcode, "second register")?)
-                    | (u16::from(byte(*third, opcode, "third register")?) << 8),
+                    | (u16::from(byte(*third, opcode, "third register")?) << BYTE_BITS),
             );
         }
         (
@@ -204,7 +224,7 @@ fn encode_operation(
         ) => {
             let first = nibble(*first, opcode, "first register")?;
             let second = nibble(*second, opcode, "second register")?;
-            output.push(word0(opcode, first | (second << 4)));
+            output.push(word0(opcode, first | (second << NIBBLE_BITS)));
             output.push(i16_word(branch_i16(opcode, offset, *target)?));
         }
         (
@@ -217,7 +237,7 @@ fn encode_operation(
         ) => {
             let first = nibble(*first, opcode, "first register")?;
             let second = nibble(*second, opcode, "second register")?;
-            output.push(word0(opcode, first | (second << 4)));
+            output.push(word0(opcode, first | (second << NIBBLE_BITS)));
             output.push(i16_word(literal_i16(opcode, *literal)?));
         }
         (
@@ -230,7 +250,7 @@ fn encode_operation(
         ) => {
             let first = nibble(*first, opcode, "first register")?;
             let second = nibble(*second, opcode, "second register")?;
-            output.push(word0(opcode, first | (second << 4)));
+            output.push(word0(opcode, first | (second << NIBBLE_BITS)));
             output.push(index_u16(opcode, *index)?);
         }
         (
@@ -243,16 +263,25 @@ fn encode_operation(
         ) => {
             output.push(word0(opcode, byte(*first, opcode, "first register")?));
             let second = byte(*second, opcode, "second register")?;
-            let literal = i8::try_from(*literal)
-                .map_err(|_| range_error(opcode, "literal", *literal, -128, 127))?;
-            output.push(u16::from(second) | (u16::from(literal.to_ne_bytes()[0]) << 8));
+            let literal = i8::try_from(*literal).map_err(|_| {
+                range_error(
+                    opcode,
+                    "literal",
+                    *literal,
+                    i64::from(i8::MIN),
+                    i64::from(i8::MAX),
+                )
+            })?;
+            output.push(
+                u16::from(second) | (u16::from(literal.to_ne_bytes()[LOW_BYTE_INDEX]) << BYTE_BITS),
+            );
         }
         (InstructionFormat::F30t, Operands::Branch { target }) => {
-            output.push(word0(opcode, 0));
+            output.push(word0(opcode, RESERVED_BYTE_VALUE));
             push_i32(output, branch_i32(opcode, offset, *target)?);
         }
         (InstructionFormat::F32x, Operands::Registers { first, second }) => {
-            output.extend_from_slice(&[word0(opcode, 0), *first, *second]);
+            output.extend_from_slice(&[word0(opcode, RESERVED_BYTE_VALUE), *first, *second]);
         }
         (InstructionFormat::F31i, Operands::RegisterLiteral { register, literal }) => {
             output.push(word0(opcode, byte(*register, opcode, "register")?));
@@ -336,23 +365,26 @@ fn encode_register_list(
     let count = u8::try_from(registers.len()).map_err(|_| {
         Error::invalid_assembly(format!("{} has too many registers", opcode.mnemonic()))
     })?;
-    if count > 5 {
+    if count > MAX_REGISTER_LIST_COUNT {
         return Err(Error::invalid_assembly(format!(
             "{} register list has {count} entries; at most five fit",
             opcode.mnemonic()
         )));
     }
-    let mut encoded = [0u8; 5];
+    let mut encoded = [0u8; REGISTER_LIST_SLOTS];
     for (target, register) in encoded.iter_mut().zip(registers) {
         *target = nibble(*register, opcode, "register-list entry")?;
     }
-    output.push(word0(opcode, (count << 4) | encoded[4]));
+    output.push(word0(
+        opcode,
+        (count << NIBBLE_BITS) | encoded[RegisterListSlot::G.index()],
+    ));
     output.push(index_u16(opcode, index)?);
     output.push(
-        u16::from(encoded[0])
-            | (u16::from(encoded[1]) << 4)
-            | (u16::from(encoded[2]) << 8)
-            | (u16::from(encoded[3]) << 12),
+        u16::from(encoded[RegisterListSlot::C.index()])
+            | (u16::from(encoded[RegisterListSlot::D.index()]) << NIBBLE_BITS)
+            | (u16::from(encoded[RegisterListSlot::E.index()]) << BYTE_BITS)
+            | (u16::from(encoded[RegisterListSlot::F.index()]) << (BYTE_BITS + NIBBLE_BITS)),
     );
     if let Some(secondary) = secondary {
         output.push(index_u16(opcode, secondary)?);
@@ -368,7 +400,11 @@ fn encode_register_range(
     index: u32,
     secondary: Option<u32>,
 ) -> Result<()> {
-    if count != 0 && start.checked_add(u16::from(count) - 1).is_none() {
+    if count != EMPTY_REGISTER_COUNT
+        && start
+            .checked_add(u16::from(count) - NON_EMPTY_RANGE_LAST_DELTA)
+            .is_none()
+    {
         return Err(Error::invalid_assembly(format!(
             "{} register range v{start}..+{count} exceeds v65535",
             opcode.mnemonic()
@@ -393,7 +429,7 @@ fn encode_packed_switch(
             "packed-switch payload at {offset} has too many targets"
         ))
     })?;
-    output.extend_from_slice(&[PACKED_SWITCH_PAYLOAD, count]);
+    output.extend_from_slice(&[PayloadKind::PackedSwitch.identifier(), count]);
     push_i32(output, payload.first_key);
     for target in &payload.targets {
         push_i32(output, branch_i32(Opcode::PackedSwitch, base, *target)?);
@@ -425,7 +461,7 @@ fn encode_sparse_switch(
             "sparse-switch payload at {offset} has too many targets"
         ))
     })?;
-    output.extend_from_slice(&[SPARSE_SWITCH_PAYLOAD, count]);
+    output.extend_from_slice(&[PayloadKind::SparseSwitch.identifier(), count]);
     for key in &payload.keys {
         push_i32(output, *key);
     }
@@ -441,7 +477,7 @@ fn encode_array_data(
     payload: &super::ArrayDataPayload,
 ) -> Result<()> {
     require_payload_alignment(offset)?;
-    if payload.element_width == 0 {
+    if payload.element_width == INVALID_ARRAY_ELEMENT_WIDTH {
         return Err(Error::invalid_assembly(format!(
             "array-data payload at {offset} has zero-width elements"
         )));
@@ -458,11 +494,14 @@ fn encode_array_data(
             payload.data.len()
         )));
     }
-    output.extend_from_slice(&[ARRAY_DATA_PAYLOAD, payload.element_width]);
+    output.extend_from_slice(&[PayloadKind::ArrayData.identifier(), payload.element_width]);
     push_u32(output, payload.element_count);
-    for pair in payload.data.chunks(2) {
-        let low = pair[0];
-        let high = pair.get(1).copied().unwrap_or(0);
+    for pair in payload.data.chunks(BYTES_PER_CODE_UNIT) {
+        let low = pair[LOW_BYTE_INDEX];
+        let high = pair
+            .get(HIGH_BYTE_INDEX)
+            .copied()
+            .unwrap_or(ARRAY_PADDING_VALUE);
         output.push(u16::from_le_bytes([low, high]));
     }
     Ok(())
@@ -503,7 +542,7 @@ fn operand_error(opcode: Opcode, expected: &str) -> Error {
 }
 
 fn require_payload_alignment(offset: u32) -> Result<()> {
-    if offset.is_multiple_of(2) {
+    if offset.is_multiple_of(CODE_UNITS_PER_WORD) {
         Ok(())
     } else {
         Err(Error::invalid_assembly(format!(
@@ -513,19 +552,35 @@ fn require_payload_alignment(offset: u32) -> Result<()> {
 }
 
 fn word0(opcode: Opcode, high: u8) -> u16 {
-    u16::from(opcode.byte()) | (u16::from(high) << 8)
+    u16::from(opcode.byte()) | (u16::from(high) << BYTE_BITS)
 }
 
 fn nibble(value: u16, opcode: Opcode, name: &str) -> Result<u8> {
     let value = u8::try_from(value)
         .ok()
-        .filter(|value| *value <= 0x0f)
-        .ok_or_else(|| range_error(opcode, name, i64::from(value), 0, 15))?;
+        .filter(|value| *value <= NIBBLE_MASK)
+        .ok_or_else(|| {
+            range_error(
+                opcode,
+                name,
+                i64::from(value),
+                i64::from(u8::MIN),
+                i64::from(NIBBLE_MASK),
+            )
+        })?;
     Ok(value)
 }
 
 fn byte(value: u16, opcode: Opcode, name: &str) -> Result<u8> {
-    u8::try_from(value).map_err(|_| range_error(opcode, name, i64::from(value), 0, 255))
+    u8::try_from(value).map_err(|_| {
+        range_error(
+            opcode,
+            name,
+            i64::from(value),
+            i64::from(u8::MIN),
+            i64::from(u8::MAX),
+        )
+    })
 }
 
 fn index_u16(opcode: Opcode, value: u32) -> Result<u16> {
@@ -559,7 +614,15 @@ fn branch_delta(opcode: Opcode, source: u32, target: u32) -> Result<i64> {
 
 fn branch_i8(opcode: Opcode, source: u32, target: u32) -> Result<i8> {
     let delta = branch_delta(opcode, source, target)?;
-    i8::try_from(delta).map_err(|_| range_error(opcode, "branch delta", delta, -128, 127))
+    i8::try_from(delta).map_err(|_| {
+        range_error(
+            opcode,
+            "branch delta",
+            delta,
+            i64::from(i8::MIN),
+            i64::from(i8::MAX),
+        )
+    })
 }
 
 fn branch_i16(opcode: Opcode, source: u32, target: u32) -> Result<i16> {
@@ -601,10 +664,13 @@ fn i16_word(value: i16) -> u16 {
 
 fn push_u32(output: &mut Vec<u16>, value: u32) {
     let bytes = value.to_le_bytes();
-    output.extend_from_slice(&[
-        u16::from_le_bytes([bytes[0], bytes[1]]),
-        u16::from_le_bytes([bytes[2], bytes[3]]),
-    ]);
+    output.extend(
+        bytes
+            .as_chunks::<BYTES_PER_CODE_UNIT>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair)),
+    );
 }
 
 fn push_i32(output: &mut Vec<u16>, value: i32) {
@@ -613,10 +679,11 @@ fn push_i32(output: &mut Vec<u16>, value: i32) {
 
 fn push_i64(output: &mut Vec<u16>, value: i64) {
     let bytes = value.to_le_bytes();
-    output.extend_from_slice(&[
-        u16::from_le_bytes([bytes[0], bytes[1]]),
-        u16::from_le_bytes([bytes[2], bytes[3]]),
-        u16::from_le_bytes([bytes[4], bytes[5]]),
-        u16::from_le_bytes([bytes[6], bytes[7]]),
-    ]);
+    output.extend(
+        bytes
+            .as_chunks::<BYTES_PER_CODE_UNIT>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair)),
+    );
 }

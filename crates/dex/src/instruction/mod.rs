@@ -7,6 +7,7 @@
 
 mod decode;
 mod encode;
+mod layout;
 mod model;
 mod opcode;
 
@@ -16,4 +17,4 @@ pub use self::model::{
     ArrayDataPayload, Instruction, InstructionData, Operands, PackedSwitchPayload,
     SparseSwitchPayload,
 };
-pub use self::opcode::{IndexKind, InstructionFormat, Opcode};
+pub use self::opcode::{IndexKind, InstructionFormat, InstructionWidth, Opcode};

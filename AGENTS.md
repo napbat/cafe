@@ -54,9 +54,11 @@ These rules apply to the entire repository.
   method-handle kinds, primitive array types, traversal modes, and body-loading
   modes.
 - Use typed bit-flag wrappers for combinable access flags.
-- Use named constants for fixed signatures, attribute names, limits, widths,
-  sentinels, masks, archive suffixes, and semantic string values. Do not leave
-  unexplained numeric or string literals in production logic.
+- Use named constants or dedicated types for every format-defined signature,
+  tag, opcode, debug event, field offset, flag, limit, width, alignment,
+  sentinel, mask, archive suffix, and semantic string value. Raw numeric and
+  string literals are only appropriate for ordinary calculations and test
+  fixtures; on-disk protocol meaning must never live in a magic literal.
 - Keep parsing and assembly, and bytecode decoding and encoding,
   feature-complete together. A newly supported parsed structure or opcode must
   have a matching encoding path.

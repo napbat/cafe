@@ -4,14 +4,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Error, Result};
 
+use super::layout::{
+    ARRAY_DATA_HEADER_CODE_UNITS, ARRAY_PADDING_VALUE, BYTES_PER_CODE_UNIT, CODE_UNIT_BITS,
+    CODE_UNITS_PER_WORD, DOUBLE_CODE_UNIT_BITS, FIRST_OPERAND_WORD, FOURTH_OPERAND_WORD,
+    HIGH_BYTE_INDEX, INVALID_ARRAY_ELEMENT_WIDTH, LOW_BYTE_INDEX, MAX_REGISTER_LIST_COUNT,
+    NIBBLE_BITS, NIBBLE_MASK, PACKED_SWITCH_HEADER_CODE_UNITS, PACKED_SWITCH_TARGET_CODE_UNITS,
+    PayloadKind, REGISTER_LIST_SLOTS, RESERVED_BYTE_VALUE, SECOND_OPERAND_WORD,
+    SPARSE_SWITCH_ENTRY_CODE_UNITS, SPARSE_SWITCH_HEADER_CODE_UNITS, THIRD_OPERAND_WORD,
+    TRIPLE_CODE_UNIT_BITS,
+};
 use super::{
     ArrayDataPayload, Instruction, InstructionData, InstructionFormat, Opcode, Operands,
     PackedSwitchPayload, SparseSwitchPayload,
 };
-
-const PACKED_SWITCH_PAYLOAD: u16 = 0x0100;
-const SPARSE_SWITCH_PAYLOAD: u16 = 0x0200;
-const ARRAY_DATA_PAYLOAD: u16 = 0x0300;
 
 /// Decodes and validates an entire Dalvik instruction stream.
 ///
@@ -31,11 +36,11 @@ pub fn decode(code_units: &[u16]) -> Result<Vec<Instruction>> {
             Error::invalid_instruction(u32::MAX, "instruction stream exceeds DEX address space")
         })?;
         let word = code_units[cursor];
-        let instruction = match word {
-            PACKED_SWITCH_PAYLOAD => decode_packed_switch(code_units, cursor, offset)?,
-            SPARSE_SWITCH_PAYLOAD => decode_sparse_switch(code_units, cursor, offset)?,
-            ARRAY_DATA_PAYLOAD => decode_array_data(code_units, cursor, offset)?,
-            _ => decode_operation(code_units, cursor, offset)?,
+        let instruction = match PayloadKind::from_identifier(word) {
+            Some(PayloadKind::PackedSwitch) => decode_packed_switch(code_units, cursor, offset)?,
+            Some(PayloadKind::SparseSwitch) => decode_sparse_switch(code_units, cursor, offset)?,
+            Some(PayloadKind::ArrayData) => decode_array_data(code_units, cursor, offset)?,
+            None => decode_operation(code_units, cursor, offset)?,
         };
         let width = instruction.code_units().ok_or_else(|| {
             Error::invalid_instruction(offset, "instruction width exceeds DEX address space")
@@ -69,10 +74,23 @@ fn decode_operation(code: &[u16], cursor: usize, offset: u32) -> Result<Instruct
 
 #[allow(clippy::too_many_lines)]
 fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Result<Operands> {
-    let nibbles = || (u16::from(high & 0x0f), u16::from(high >> 4));
+    let nibbles = || {
+        (
+            u16::from(high & NIBBLE_MASK),
+            u16::from(high >> NIBBLE_BITS),
+        )
+    };
     let target8 = || relative_target(offset, i64::from(i8::from_ne_bytes([high])));
-    let target16 = || relative_target(offset, i64::from(signed16(words[1])));
-    let target32 = || relative_target(offset, i64::from(signed32(words[1], words[2])));
+    let target16 = || relative_target(offset, i64::from(signed16(words[FIRST_OPERAND_WORD])));
+    let target32 = || {
+        relative_target(
+            offset,
+            i64::from(signed32(
+                words[FIRST_OPERAND_WORD],
+                words[SECOND_OPERAND_WORD],
+            )),
+        )
+    };
 
     let operands = match opcode.format() {
         InstructionFormat::F10x => {
@@ -84,8 +102,8 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
             Operands::Registers { first, second }
         }
         InstructionFormat::F11n => Operands::RegisterLiteral {
-            register: u16::from(high & 0x0f),
-            literal: i64::from(sign_nibble(high >> 4)),
+            register: u16::from(high & NIBBLE_MASK),
+            literal: i64::from(sign_nibble(high >> NIBBLE_BITS)),
         },
         InstructionFormat::F11x => Operands::Register(u16::from(high)),
         InstructionFormat::F10t => Operands::Branch { target: target8()? },
@@ -97,7 +115,7 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
         }
         InstructionFormat::F22x => Operands::Registers {
             first: u16::from(high),
-            second: words[1],
+            second: words[FIRST_OPERAND_WORD],
         },
         InstructionFormat::F21t | InstructionFormat::F31t => Operands::RegisterBranch {
             register: u16::from(high),
@@ -109,25 +127,25 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
         },
         InstructionFormat::F21s => Operands::RegisterLiteral {
             register: u16::from(high),
-            literal: i64::from(signed16(words[1])),
+            literal: i64::from(signed16(words[FIRST_OPERAND_WORD])),
         },
         InstructionFormat::F21h => {
             let shift = if opcode == Opcode::ConstWideHigh16 {
-                48
+                TRIPLE_CODE_UNIT_BITS
             } else {
-                16
+                CODE_UNIT_BITS
             };
             Operands::RegisterLiteral {
                 register: u16::from(high),
-                literal: i64::from(signed16(words[1])) << shift,
+                literal: i64::from(signed16(words[FIRST_OPERAND_WORD])) << shift,
             }
         }
         InstructionFormat::F21c => Operands::RegisterIndex {
             register: u16::from(high),
-            index: u32::from(words[1]),
+            index: u32::from(words[FIRST_OPERAND_WORD]),
         },
         InstructionFormat::F23x => {
-            let [second, third] = words[1].to_le_bytes();
+            let [second, third] = words[FIRST_OPERAND_WORD].to_le_bytes();
             Operands::ThreeRegisters {
                 first: u16::from(high),
                 second: u16::from(second),
@@ -147,7 +165,7 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
             Operands::RegistersLiteral {
                 first,
                 second,
-                literal: i64::from(signed16(words[1])),
+                literal: i64::from(signed16(words[FIRST_OPERAND_WORD])),
             }
         }
         InstructionFormat::F22c => {
@@ -155,11 +173,11 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
             Operands::RegistersIndex {
                 first,
                 second,
-                index: u32::from(words[1]),
+                index: u32::from(words[FIRST_OPERAND_WORD]),
             }
         }
         InstructionFormat::F22b => {
-            let [second, literal] = words[1].to_le_bytes();
+            let [second, literal] = words[FIRST_OPERAND_WORD].to_le_bytes();
             Operands::RegistersLiteral {
                 first: u16::from(high),
                 second: u16::from(second),
@@ -175,76 +193,87 @@ fn decode_operands(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Resu
         InstructionFormat::F32x => {
             require_zero(high, offset, "format 32x reserved byte")?;
             Operands::Registers {
-                first: words[1],
-                second: words[2],
+                first: words[FIRST_OPERAND_WORD],
+                second: words[SECOND_OPERAND_WORD],
             }
         }
         InstructionFormat::F31i => Operands::RegisterLiteral {
             register: u16::from(high),
-            literal: i64::from(signed32(words[1], words[2])),
+            literal: i64::from(signed32(
+                words[FIRST_OPERAND_WORD],
+                words[SECOND_OPERAND_WORD],
+            )),
         },
         InstructionFormat::F31c => Operands::RegisterIndex {
             register: u16::from(high),
-            index: unsigned32(words[1], words[2]),
+            index: unsigned32(words[FIRST_OPERAND_WORD], words[SECOND_OPERAND_WORD]),
         },
         InstructionFormat::F35c | InstructionFormat::F45cc => {
             decode_register_list(opcode, high, words, offset)?
         }
         InstructionFormat::F3rc | InstructionFormat::F4rcc => Operands::RegisterRangeIndex {
-            start: words[2],
+            start: words[SECOND_OPERAND_WORD],
             count: high,
-            index: u32::from(words[1]),
+            index: u32::from(words[FIRST_OPERAND_WORD]),
             secondary_index: (opcode.format() == InstructionFormat::F4rcc)
-                .then(|| u32::from(words[3])),
+                .then(|| u32::from(words[THIRD_OPERAND_WORD])),
         },
         InstructionFormat::F51l => Operands::RegisterLiteral {
             register: u16::from(high),
-            literal: signed64(words[1], words[2], words[3], words[4]),
+            literal: signed64(
+                words[FIRST_OPERAND_WORD],
+                words[SECOND_OPERAND_WORD],
+                words[THIRD_OPERAND_WORD],
+                words[FOURTH_OPERAND_WORD],
+            ),
         },
     };
     Ok(operands)
 }
 
 fn decode_register_list(opcode: Opcode, high: u8, words: &[u16], offset: u32) -> Result<Operands> {
-    let count = usize::from(high >> 4);
-    if count > 5 {
+    let count = usize::from(high >> NIBBLE_BITS);
+    if count > usize::from(MAX_REGISTER_LIST_COUNT) {
         return Err(Error::invalid_instruction(
             offset,
             format!("format 35c/45cc register count {count} exceeds five"),
         ));
     }
-    let extra = u16::from(high & 0x0f);
-    let [first, second] = words[2].to_le_bytes();
-    let candidates = [
-        u16::from(first & 0x0f),
-        u16::from(first >> 4),
-        u16::from(second & 0x0f),
-        u16::from(second >> 4),
+    let extra = u16::from(high & NIBBLE_MASK);
+    let [first, second] = words[SECOND_OPERAND_WORD].to_le_bytes();
+    let candidates: [u16; REGISTER_LIST_SLOTS] = [
+        u16::from(first & NIBBLE_MASK),
+        u16::from(first >> NIBBLE_BITS),
+        u16::from(second & NIBBLE_MASK),
+        u16::from(second >> NIBBLE_BITS),
         extra,
     ];
     let registers = candidates[..count].to_vec();
     Ok(Operands::RegisterListIndex {
         registers,
-        index: u32::from(words[1]),
-        secondary_index: (opcode.format() == InstructionFormat::F45cc).then(|| u32::from(words[3])),
+        index: u32::from(words[FIRST_OPERAND_WORD]),
+        secondary_index: (opcode.format() == InstructionFormat::F45cc)
+            .then(|| u32::from(words[THIRD_OPERAND_WORD])),
     })
 }
 
 fn decode_packed_switch(code: &[u16], cursor: usize, offset: u32) -> Result<Instruction> {
     require_payload_alignment(offset)?;
-    let head = take(code, cursor, 4, offset)?;
-    let count = usize::from(head[1]);
+    let head = take(code, cursor, PACKED_SWITCH_HEADER_CODE_UNITS, offset)?;
+    let count = usize::from(head[FIRST_OPERAND_WORD]);
     let width = count
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(4))
+        .checked_mul(PACKED_SWITCH_TARGET_CODE_UNITS)
+        .and_then(|value| value.checked_add(PACKED_SWITCH_HEADER_CODE_UNITS))
         .ok_or_else(|| Error::invalid_instruction(offset, "packed-switch size overflowed"))?;
     let words = take(code, cursor, width, offset)?;
-    let first_key = signed32(words[2], words[3]);
-    let targets = words[4..]
-        .as_chunks::<2>()
+    let first_key = signed32(words[SECOND_OPERAND_WORD], words[THIRD_OPERAND_WORD]);
+    let targets = words[PACKED_SWITCH_HEADER_CODE_UNITS..]
+        .as_chunks::<PACKED_SWITCH_TARGET_CODE_UNITS>()
         .0
         .iter()
-        .map(|pair| u32::from_ne_bytes(signed32(pair[0], pair[1]).to_ne_bytes()))
+        .map(|pair| {
+            u32::from_ne_bytes(signed32(pair[LOW_BYTE_INDEX], pair[HIGH_BYTE_INDEX]).to_ne_bytes())
+        })
         .collect();
     Ok(Instruction::packed_switch(
         offset,
@@ -254,25 +283,27 @@ fn decode_packed_switch(code: &[u16], cursor: usize, offset: u32) -> Result<Inst
 
 fn decode_sparse_switch(code: &[u16], cursor: usize, offset: u32) -> Result<Instruction> {
     require_payload_alignment(offset)?;
-    let head = take(code, cursor, 2, offset)?;
-    let count = usize::from(head[1]);
+    let head = take(code, cursor, SPARSE_SWITCH_HEADER_CODE_UNITS, offset)?;
+    let count = usize::from(head[FIRST_OPERAND_WORD]);
     let width = count
-        .checked_mul(4)
-        .and_then(|value| value.checked_add(2))
+        .checked_mul(SPARSE_SWITCH_ENTRY_CODE_UNITS)
+        .and_then(|value| value.checked_add(SPARSE_SWITCH_HEADER_CODE_UNITS))
         .ok_or_else(|| Error::invalid_instruction(offset, "sparse-switch size overflowed"))?;
     let words = take(code, cursor, width, offset)?;
-    let key_end = 2 + count * 2;
-    let keys = words[2..key_end]
-        .as_chunks::<2>()
+    let key_end = SPARSE_SWITCH_HEADER_CODE_UNITS + count * PACKED_SWITCH_TARGET_CODE_UNITS;
+    let keys = words[SPARSE_SWITCH_HEADER_CODE_UNITS..key_end]
+        .as_chunks::<PACKED_SWITCH_TARGET_CODE_UNITS>()
         .0
         .iter()
-        .map(|pair| signed32(pair[0], pair[1]))
+        .map(|pair| signed32(pair[LOW_BYTE_INDEX], pair[HIGH_BYTE_INDEX]))
         .collect();
     let targets = words[key_end..]
-        .as_chunks::<2>()
+        .as_chunks::<PACKED_SWITCH_TARGET_CODE_UNITS>()
         .0
         .iter()
-        .map(|pair| u32::from_ne_bytes(signed32(pair[0], pair[1]).to_ne_bytes()))
+        .map(|pair| {
+            u32::from_ne_bytes(signed32(pair[LOW_BYTE_INDEX], pair[HIGH_BYTE_INDEX]).to_ne_bytes())
+        })
         .collect();
     Ok(Instruction::sparse_switch(
         offset,
@@ -282,32 +313,37 @@ fn decode_sparse_switch(code: &[u16], cursor: usize, offset: u32) -> Result<Inst
 
 fn decode_array_data(code: &[u16], cursor: usize, offset: u32) -> Result<Instruction> {
     require_payload_alignment(offset)?;
-    let head = take(code, cursor, 4, offset)?;
-    let element_width = head[1];
-    if element_width == 0 {
+    let head = take(code, cursor, ARRAY_DATA_HEADER_CODE_UNITS, offset)?;
+    let element_width = head[FIRST_OPERAND_WORD];
+    if element_width == INVALID_ARRAY_ELEMENT_WIDTH {
         return Err(Error::invalid_instruction(
             offset,
             "array-data element width is zero",
         ));
     }
-    let element_count = unsigned32(head[2], head[3]);
+    let element_count = unsigned32(head[SECOND_OPERAND_WORD], head[THIRD_OPERAND_WORD]);
     let byte_count = usize::from(element_width)
         .checked_mul(usize::try_from(element_count).map_err(|_| {
             Error::invalid_instruction(offset, "array-data size does not fit this platform")
         })?)
         .ok_or_else(|| Error::invalid_instruction(offset, "array-data size overflowed"))?;
-    let data_words = byte_count.checked_add(1).ok_or_else(|| {
-        Error::invalid_instruction(offset, "array-data padding calculation overflowed")
-    })? / 2;
+    let data_words = byte_count
+        .checked_add(BYTES_PER_CODE_UNIT - 1)
+        .ok_or_else(|| {
+            Error::invalid_instruction(offset, "array-data padding calculation overflowed")
+        })?
+        / BYTES_PER_CODE_UNIT;
     let width = data_words
-        .checked_add(4)
+        .checked_add(ARRAY_DATA_HEADER_CODE_UNITS)
         .ok_or_else(|| Error::invalid_instruction(offset, "array-data size overflowed"))?;
     let words = take(code, cursor, width, offset)?;
     let mut data = Vec::with_capacity(byte_count);
-    for word in &words[4..] {
+    for word in &words[ARRAY_DATA_HEADER_CODE_UNITS..] {
         data.extend_from_slice(&word.to_le_bytes());
     }
-    if byte_count % 2 == 1 && data.get(byte_count).copied() != Some(0) {
+    if byte_count % BYTES_PER_CODE_UNIT == BYTES_PER_CODE_UNIT - 1
+        && data.get(byte_count).copied() != Some(ARRAY_PADDING_VALUE)
+    {
         return Err(Error::invalid_instruction(
             offset,
             "array-data alignment padding is nonzero",
@@ -497,7 +533,7 @@ fn bad_target(source: u32, target: u32, stream_len: u32) -> Error {
 }
 
 fn require_payload_alignment(offset: u32) -> Result<()> {
-    if offset.is_multiple_of(2) {
+    if offset.is_multiple_of(CODE_UNITS_PER_WORD) {
         Ok(())
     } else {
         Err(Error::invalid_instruction(
@@ -508,7 +544,7 @@ fn require_payload_alignment(offset: u32) -> Result<()> {
 }
 
 fn require_zero(value: u8, offset: u32, field: &str) -> Result<()> {
-    if value == 0 {
+    if value == RESERVED_BYTE_VALUE {
         Ok(())
     } else {
         Err(Error::invalid_instruction(
@@ -535,7 +571,7 @@ fn signed16(word: u16) -> i16 {
 }
 
 fn unsigned32(low: u16, high: u16) -> u32 {
-    u32::from(low) | (u32::from(high) << 16)
+    u32::from(low) | (u32::from(high) << CODE_UNIT_BITS)
 }
 
 fn signed32(low: u16, high: u16) -> i32 {
@@ -544,13 +580,13 @@ fn signed32(low: u16, high: u16) -> i32 {
 
 fn signed64(first: u16, second: u16, third: u16, fourth: u16) -> i64 {
     let bits = u64::from(first)
-        | (u64::from(second) << 16)
-        | (u64::from(third) << 32)
-        | (u64::from(fourth) << 48);
+        | (u64::from(second) << CODE_UNIT_BITS)
+        | (u64::from(third) << DOUBLE_CODE_UNIT_BITS)
+        | (u64::from(fourth) << TRIPLE_CODE_UNIT_BITS);
     i64::from_ne_bytes(bits.to_ne_bytes())
 }
 
 const fn sign_nibble(value: u8) -> i8 {
-    let shifted = value << 4;
-    i8::from_ne_bytes([shifted]) >> 4
+    let shifted = value << NIBBLE_BITS;
+    i8::from_ne_bytes([shifted]) >> NIBBLE_BITS
 }

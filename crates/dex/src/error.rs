@@ -76,6 +76,13 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn invalid_dex(offset: usize, message: impl Into<String>) -> Self {
+        Self::InvalidDex {
+            offset,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn invalid_instruction(offset: u32, message: impl Into<String>) -> Self {
         Self::InvalidInstruction {
             offset,
@@ -85,5 +92,19 @@ impl Error {
 
     pub(crate) fn invalid_assembly(message: impl Into<String>) -> Self {
         Self::InvalidAssembly(message.into())
+    }
+
+    pub(crate) fn in_method(
+        self,
+        class: impl Into<String>,
+        method: impl Into<String>,
+        signature: impl Into<String>,
+    ) -> Self {
+        Self::Method {
+            class: class.into(),
+            method: method.into(),
+            signature: signature.into(),
+            source: Box::new(self),
+        }
     }
 }

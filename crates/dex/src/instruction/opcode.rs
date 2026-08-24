@@ -57,12 +57,36 @@ pub enum InstructionFormat {
     F51l,
 }
 
-impl InstructionFormat {
-    /// Returns the fixed encoded width in 16-bit code units.
+/// Fixed code-unit width of an ordinary Dalvik instruction format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum InstructionWidth {
+    /// One 16-bit code unit.
+    One = 1,
+    /// Two 16-bit code units.
+    Two = 2,
+    /// Three 16-bit code units.
+    Three = 3,
+    /// Four 16-bit code units.
+    Four = 4,
+    /// Five 16-bit code units.
+    Five = 5,
+}
+
+impl InstructionWidth {
+    /// Returns this typed width as a code-unit count.
     #[must_use]
     pub const fn code_units(self) -> u32 {
+        self as u32
+    }
+}
+
+impl InstructionFormat {
+    /// Returns the typed fixed width of this instruction format.
+    #[must_use]
+    pub const fn width(self) -> InstructionWidth {
         match self {
-            Self::F10x | Self::F12x | Self::F11n | Self::F11x | Self::F10t => 1,
+            Self::F10x | Self::F12x | Self::F11n | Self::F11x | Self::F10t => InstructionWidth::One,
             Self::F20t
             | Self::F22x
             | Self::F21t
@@ -73,17 +97,23 @@ impl InstructionFormat {
             | Self::F22t
             | Self::F22s
             | Self::F22c
-            | Self::F22b => 2,
+            | Self::F22b => InstructionWidth::Two,
             Self::F30t
             | Self::F32x
             | Self::F31i
             | Self::F31t
             | Self::F31c
             | Self::F35c
-            | Self::F3rc => 3,
-            Self::F45cc | Self::F4rcc => 4,
-            Self::F51l => 5,
+            | Self::F3rc => InstructionWidth::Three,
+            Self::F45cc | Self::F4rcc => InstructionWidth::Four,
+            Self::F51l => InstructionWidth::Five,
         }
+    }
+
+    /// Returns the fixed encoded width in 16-bit code units.
+    #[must_use]
+    pub const fn code_units(self) -> u32 {
+        self.width().code_units()
     }
 }
 
