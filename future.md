@@ -17,6 +17,8 @@ reserving architectural space for, and it remains demand-driven.
 
 ## Development principles
 
+- Keep `cafe` as the only consumer dependency. Every new focused crate and
+  public capability must be re-exported through Cafe in the same change.
 - Add a format only for a concrete consumer and representative input corpus.
 - Do not add speculative `BinaryFormat` variants before their frontend exists.
 - Implement parsing and assembly together. Every decoded structure and opcode
@@ -26,7 +28,8 @@ reserving architectural space for, and it remains demand-driven.
 - Keep native indices, addresses, flags, signatures, references, and exception
   metadata available to downstream consumers.
 - Lower executable bodies into `disassembler` and owned definitions into
-  `cafe`; format-specific structures remain in their frontend crate.
+  `program`; format-specific structures remain in their frontend crate and all
+  consumer access remains rooted at `cafe`.
 - Build and verify control-flow graphs for ordinary, branch, switch,
   exceptional, and legacy control flow.
 
@@ -108,7 +111,8 @@ artifacts:
   provenance, not additional instruction sets.
 - VDEX, ODEX, and OAT are ART runtime containers or optimized artifacts. Keep
   their parsing and dequickening in a separate `crates/art` boundary rather
-  than leaking ART state into the canonical DEX model.
+  than leaking ART state into the canonical DEX model, and expose that boundary
+  through `cafe::art`.
 - Any quickened instruction must be restored to a well-defined canonical form
   before it is lowered into shared disassembly.
 
@@ -117,7 +121,7 @@ artifacts:
 If a real smart-card consumer appears, add a sibling `crates/javacard`
 frontend for CAP components and Java Card VM bytecode. Do not place CAP parsing
 inside `java` or `dex`: its packaging, instruction encoding, linking model, and
-runtime constraints are distinct.
+runtime constraints are distinct. Expose it to consumers as `cafe::javacard`.
 
 Until that consumer exists, Java Card remains a documented extension point,
 not planned implementation work.
@@ -159,7 +163,9 @@ A frontend is ready when all of the following are true:
    fail with contextual errors rather than panics.
 5. Every executable body lowers into verified shared control flow.
 6. Metadata-only loading avoids decoding executable bodies.
-7. Cafe identities remain format-qualified and overload-qualified.
+7. Program identities remain format-qualified and overload-qualified.
 8. Archive discovery and traversal are deterministic and retain exact origins.
 9. Public APIs are documented, source files remain below 1,000 lines, and the
    complete repository verification gate passes.
+10. The frontend and its public capabilities are reachable through `cafe`
+    without another direct dependency.

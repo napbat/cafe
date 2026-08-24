@@ -11,25 +11,30 @@ These rules apply to the entire repository.
   `crates/<concept>` and follow Cargo's conventional project layout.
 - Keep `crates/disassembler` neutral across Java ecosystem formats. It owns raw
   disassembly IR, the `DisassemblySource` adapter contract, and cfglib-backed
-  control-flow graphs. It must not depend on Cafe, Java, or a native binary
-  format.
-- Keep `crates/cafe` neutral across Java ecosystem formats. It owns the
-  editable dnlib-style `Program`/`Module`/definition model, identities, lookup,
-  and resolution. It may depend on the disassembler, but never on Java or
-  another native frontend.
+  control-flow graphs. It must not depend on Cafe, Program, Java, or a native
+  binary format.
+- Keep `crates/program` neutral across Java ecosystem formats. It owns the
+  editable `Program`/`Module`/definition model, identities, indexed lookup, and
+  resolution. It may depend on the disassembler, but never on Cafe or a native
+  frontend.
+- Keep `crates/cafe` the only consumer entry point. It depends on and publicly
+  re-exports every workspace capability under a concept-named namespace, while
+  re-exporting Program's core types at its root. Every new feature crate must
+  be wired into Cafe and its entry-point coverage in the same change. Focused
+  implementation crates must not depend back on Cafe.
 - Keep `crates/java` a library-only JVM frontend. It owns `.class` parsing and
   assembly, bytecode decoding and encoding, JAR utilities, and adapters into
-  the disassembler and Cafe. Do not add `src/main.rs`, Clap, or tool-specific
-  output policy to this crate.
+  the disassembler and Program. It must not depend on Cafe. Do not add
+  `src/main.rs`, Clap, or tool-specific output policy to this crate.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, Dalvik instruction decoding and encoding, APK and multidex
-  provenance, and adapters into the disassembler and Cafe. Do not leak DEX or
-  APK implementation details into another crate.
+  provenance, and adapters into the disassembler and Program. It must not
+  depend on Cafe or leak DEX/APK details into shared lower layers.
 - Keep `crates/jni` a safe, Java-specific linkage-metadata layer. It owns JNI
   descriptor-to-ABI mapping, exact symbol escaping, native declaration sets,
   explicit registration keys, and adapters from Java and DEX artifacts. It
-  must not load native libraries, expose raw pointer APIs, or absorb native
-  instruction decoding.
+  must not depend on Cafe, load native libraries, expose raw pointer APIs, or
+  absorb native instruction decoding.
 - Keep each package name identical to its directory name and declare every
   shared dependency once under `[workspace.dependencies]`.
 
@@ -45,10 +50,14 @@ These rules apply to the entire repository.
 - When a concept needs multiple implementation files, give it a directory
   with a narrow `mod.rs` facade and plainly named child modules. Do not place
   ad-hoc `<concept>_<concern>.rs` siblings beside `<concept>.rs`.
-- In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `cafe/`
+- Keep Cafe's `src/lib.rs` a narrow documented facade. Cross-feature behavior
+  belongs there only when it genuinely coordinates multiple focused crates.
+- In Program, keep definitions, identities, modules, program storage,
+  resolution, and source adapters in their own concept folders.
+- In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `program/`
   independent. Keep descriptors, textual presentation, crate errors, and
   public entry points at the source root.
-- In DEX, keep `file/`, `instruction/`, `apk/`, `disassembly/`, and `cafe/`
+- In DEX, keep `file/`, `instruction/`, `apk/`, `disassembly/`, and `program/`
   independent. Treat APK as a container and provenance boundary, not another
   instruction set.
 - In JNI, keep `descriptor/`, `method/`, `symbol/`, `binding/`, `java/`, and
@@ -77,13 +86,13 @@ These rules apply to the entire repository.
 - Preserve unknown class-file attributes and exact modified UTF-8/UTF-16 data
   so unchanged class files remain lossless through parse/assemble round trips.
 
-## Shared disassembly and Cafe
+## Shared disassembly and Program
 
 - Retain native opcodes, signatures, addresses, table indices, access flags,
   references, and resolved display names needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
   control-flow edges through cfglib for every lowered executable body.
-- Keep Cafe definition identity format-qualified and overload-qualified.
+- Keep Program definition identity format-qualified and overload-qualified.
   Module mutation must preserve indexed lookup invariants; cross-module
   resolution must distinguish missing, unique, and ambiguous results.
 - Adapters may offer explicit body-loading policies. Metadata-only consumers
@@ -91,9 +100,10 @@ These rules apply to the entire repository.
 
 ## Verification
 
-- Add focused tests for shared IR and graphs, Cafe ownership and resolution,
+- Add focused tests for shared IR and graphs, Program ownership and resolution,
   native-format adapters, class parsing and assembly, bytecode, descriptors,
-  JAR traversal, JNI ABI mapping, symbol escaping, and native overload plans.
+  JAR traversal, JNI ABI mapping, symbol escaping, native overload plans, and
+  Cafe-only access to every public workspace capability.
 - Require all of these commands to pass:
 
   ```text

@@ -1,41 +1,47 @@
 # Cafe
 
-Cafe is a Java-specific Rust workspace for lossless JVM class-file tooling and
-shared bytecode analysis across Java ecosystem formats. It separates
-format-specific parsing from shared disassembly and from the editable program
-model, so consumers can use only the layer they need.
+Cafe is the single consumer entry point for Java-specific binary tooling. One
+dependency exposes lossless JVM class files and JARs, Android DEX and APKs,
+shared disassembly and control-flow graphs, an editable program model, and JNI
+linkage metadata through coherent namespaces.
 
-The workspace contains five library crates:
+The workspace contains six library crates. `cafe` is the public umbrella; the
+other five are focused implementation boundaries:
 
-- `disassembler` defines instructions and references shared across Java
-  bytecode formats, executable bodies, and cfglib-backed control-flow graphs.
-- `cafe` provides Cafe's owned, dnlib-style program model: modules,
-  types, fields, methods, editing, indexed lookup, and cross-module resolution.
-- `java` parses and assembles JVM class files, decodes and encodes JVM
-  bytecode, works with JARs, renders javap-like text, and adapts Java classes
-  into the other two crates.
-- `dex` parses, validates, and assembles DEX files, provides a complete
-  standard Dalvik instruction codec, edits APK containers, tracks multidex
-  provenance, and adapts DEX definitions into the shared layers.
-- `jni` models native declarations, JVM descriptors, JNI ABI types, canonical
-  dynamic-link symbols, explicit registration keys, and overload-aware binding
-  plans extracted from class files, DEX files, or APK multidex sets.
+- `cafe` re-exports every supported capability and the complete program model.
+- `program` owns modules, types, fields, methods, editing, indexed lookup, and
+  cross-module resolution.
+- `disassembler` owns shared instructions, references, executable bodies, and
+  cfglib-backed control-flow graphs.
+- `java` owns JVM class-file parsing and assembly, JVM bytecode, JAR utilities,
+  javap-like presentation, and lowering into shared layers.
+- `dex` owns DEX parsing and assembly, Dalvik instructions, APK editing,
+  multidex provenance, and lowering into shared layers.
+- `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
+  registration keys, and Java/DEX extraction.
 
-All five packages are libraries. Tool-specific command-line behavior belongs
-in consuming repositories.
+Tool-specific command-line behavior belongs in consuming repositories.
+Consumers depend on `cafe`, not its implementation crates:
+
+```toml
+[dependencies]
+cafe = { git = "https://github.com/napbat/cafe" }
+```
 
 ```text
-JVM .class / JAR ─────► java ───┬──► disassembler ───► cfglib CFGs
-                               ├──► cafe
-                               └──► jni
-Android DEX / APK ────► dex ────┬──► disassembler ───► cfglib CFGs
-                               ├──► cafe
-                               └──► jni
+consumer
+└── cafe
+    ├── java             JVM .class, bytecode, and JAR
+    ├── dex              Android DEX, Dalvik, and APK
+    ├── jni              native linkage metadata
+    ├── disassembler     shared instruction IR and CFGs
+    │   └── cfglib       graph algorithms
+    └── program          owned definitions and resolution
 ```
 
 ## Capabilities
 
-`java` can discover JARs deterministically, inventory archive entries,
+`cafe::java` can discover JARs deterministically, inventory archive entries,
 parse individual classes, and validate an entire archive. Its full validation
 path parses and reassembles every class, decodes and re-encodes every method
 body, checks descriptors and constant references, and constructs every shared
@@ -57,13 +63,13 @@ Cafe definitions retain format-qualified and overload-qualified identities.
 Java adapters can load complete executable bodies or declarations only, which
 keeps metadata-oriented consumers from paying for bytecode decoding.
 
-`dex` retains native identifier tables, indices, code-unit addresses, encoded
-values, annotations, debug programs, exception handlers, hidden-API data, and
-map provenance. It parses DEX versions 035, 037, 038, 039, 040, and 041, and
-assembles editable standalone versions 035 through 040. Every standard Dalvik
-opcode and payload has matching decoding and encoding, and validation covers
-descriptor, index, register-width, invocation, branch, payload, and exception
-constraints.
+`cafe::dex` retains native identifier tables, indices, code-unit addresses,
+encoded values, annotations, debug programs, exception handlers, hidden-API
+data, and map provenance. It parses DEX versions 035, 037, 038, 039, 040, and
+041, and assembles editable standalone versions 035 through 040. Every standard
+Dalvik opcode and payload has matching decoding and encoding, and validation
+covers descriptor, index, register-width, invocation, branch, payload, and
+exception constraints.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -71,9 +77,9 @@ multidex ordering, exact pristine output, typed signature-block IDs, and
 explicit reject, preserve, or strip policies for signature material during
 rewrites.
 
-`jni` preserves exact Java UTF-16 names while parsing method descriptors into
-typed Java and JNI ABI values. It implements the specification's short and
-long symbol forms, escape-failure rules, and short-then-long lookup order.
+`cafe::jni` preserves exact Java UTF-16 names while parsing method descriptors
+into typed Java and JNI ABI values. It implements the specification's short
+and long symbol forms, escape-failure rules, and short-then-long lookup order.
 Binding plans use long symbols only when native declarations with the same
 owner and name are overloaded; non-native overloads do not affect the plan.
 The crate is a safe metadata boundary and does not load libraries, expose raw
@@ -82,7 +88,8 @@ pointers, or analyze native machine code.
 ## Java and JAR inspection
 
 ```rust
-use java::jar::{JarFile, Traversal, discover_jars};
+use cafe::java;
+use cafe::java::jar::{JarFile, Traversal, discover_jars};
 
 fn inspect(installation: &str) -> Result<(), java::Error> {
     for path in discover_jars(installation, Traversal::Recursive)? {
@@ -104,7 +111,8 @@ entry metadata, archive order, comments, manifests, service configurations,
 and multi-release overlays:
 
 ```rust
-use java::jar::{JarFile, Manifest, SignaturePolicy};
+use cafe::java;
+use cafe::java::jar::{JarFile, Manifest, SignaturePolicy};
 
 fn rewrite(input: &str, output: &str) -> Result<(), java::Error> {
     let mut jar = JarFile::open(input)?;
@@ -129,8 +137,9 @@ and manifest digests explicitly.
 Class-file assembly and bytecode encoding operate on public structured models:
 
 ```rust
-use disassembler::DisassemblySource;
-use java::{bytecode, disassemble, jar::JarFile};
+use cafe::disassembler::DisassemblySource;
+use cafe::java;
+use cafe::java::{bytecode, disassemble, jar::JarFile};
 
 fn inspect_class(jar_path: &str) -> Result<(), java::Error> {
     let mut jar = JarFile::open(jar_path)?;
@@ -163,8 +172,8 @@ Java classes can be lowered into independently owned modules and combined into
 a program for traversal and resolution:
 
 ```rust
-use cafe::{ModuleSource, Program};
-use java::jar::JarFile;
+use cafe::{ModuleSource, Program, java};
+use cafe::java::jar::JarFile;
 
 fn load_program(jar_path: &str) -> Result<Program, java::Error> {
     let mut jar = JarFile::open(jar_path)?;
@@ -175,8 +184,8 @@ fn load_program(jar_path: &str) -> Result<Program, java::Error> {
 ```
 
 For metadata-only tools, use
-`java::cafe::lower_class_with_options` with
-`MethodBodyMode::DeclarationsOnly` to skip method-body decoding.
+`cafe::java::lower_class_with_options` with `cafe::java::ProgramOptions` and
+`cafe::java::MethodBodyMode::DeclarationsOnly` to skip method-body decoding.
 
 ## DEX and APK inspection
 
@@ -184,8 +193,8 @@ APK members retain their exact archive origin when they are parsed, lowered to
 shared disassembly, or converted into Cafe modules:
 
 ```rust
-use dex::apk::ApkFile;
-use dex::cafe::CafeOptions;
+use cafe::dex;
+use cafe::dex::{ProgramOptions, apk::ApkFile};
 
 fn inspect_apk(path: &str) -> Result<(), dex::Error> {
     let apk = ApkFile::open(path)?;
@@ -197,7 +206,7 @@ fn inspect_apk(path: &str) -> Result<(), dex::Error> {
             artifact.file.version()
         );
         let disassembly = artifact.disassemble()?;
-        let module = artifact.to_module(CafeOptions::default())?;
+        let module = artifact.to_module(ProgramOptions::default())?;
         println!(
             "{} functions, {} types",
             disassembly.functions.len(),
@@ -220,13 +229,13 @@ models. Each binding retains its typed Java declaration and selected export
 symbol:
 
 ```rust
-use java::jar::JarFile;
-use jni::java as jni_java;
+use cafe::java::jar::JarFile;
+use cafe::jni;
 
 fn inspect_natives(path: &str) -> Result<(), jni::Error> {
     let jar = JarFile::open(path)?;
     let class = jar.read_class("com.example.NativeCodec")?;
-    let methods = jni_java::native_methods(&class)?;
+    let methods = jni::java::native_methods(&class)?;
 
     for binding in methods.bindings()? {
         let prototype = binding.method().prototype();
@@ -241,8 +250,8 @@ fn inspect_natives(path: &str) -> Result<(), jni::Error> {
 }
 ```
 
-Use `jni::dex::native_methods` for one `DexFile` or
-`jni::dex::native_methods_in_apk` for a complete canonical multidex set.
+Use `cafe::jni::dex::native_methods` for one `DexFile` or
+`cafe::jni::dex::native_methods_in_apk` for a complete canonical multidex set.
 `NativeMethod::registration` exposes the exact name-and-descriptor key needed
 by explicit registration even when the conventional symbol escape is
 unavailable.
@@ -251,25 +260,31 @@ unavailable.
 
 ```text
 crates/
-├── disassembler/       shared disassembly IR and CFG construction
+├── cafe/                single public entry point
+│   ├── src/lib.rs
+│   └── tests/
+├── program/             owned definitions, identities, lookup, and resolution
+│   ├── src/definition/
+│   ├── src/identity/
+│   ├── src/module/
+│   ├── src/program/
+│   └── tests/
+├── disassembler/        shared disassembly IR and CFG construction
 │   ├── src/model/
 │   ├── src/graph/
-│   └── tests/
-├── cafe/                owned definitions, identities, lookup, and resolution
-│   ├── src/
 │   └── tests/
 ├── java/                JVM class files, bytecode, JARs, and adapters
 │   ├── src/bytecode/
 │   ├── src/classfile/
 │   ├── src/disassembly/
-│   ├── src/cafe/
+│   ├── src/program/
 │   ├── src/jar/
 │   └── tests/
 ├── dex/                 DEX files, Dalvik bytecode, APKs, and adapters
 │   ├── src/file/
 │   ├── src/instruction/
 │   ├── src/disassembly/
-│   ├── src/cafe/
+│   ├── src/program/
 │   ├── src/apk/
 │   └── tests/
 └── jni/                 JNI declarations, ABI types, symbols, and adapters
