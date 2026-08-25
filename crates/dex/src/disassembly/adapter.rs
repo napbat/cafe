@@ -121,12 +121,15 @@ pub(crate) fn lower_body(file: &DexFile, code: &CodeItem) -> Result<FunctionBody
 
 #[cfg(test)]
 mod tests {
-    use disassembler::{BinaryFormat, DisassemblySource, InstructionFlow, Operand};
+    use disassembler::{
+        BinaryFormat, CatchAllBehavior, DisassemblySource, HandlerExtentStatus, InstructionFlow,
+        Operand, RecoveredHandlerSemantics, cfglib::HandlerBody,
+    };
 
     use super::lower_file;
     use crate::file::{
-        AccessFlags, AnnotationDirectory, ClassData, ClassDefinition, CodeItem, DexFile, DexString,
-        DexVersion, EncodedMethod, MethodId, PrototypeId, TypeId,
+        AccessFlags, AnnotationDirectory, CatchHandler, ClassData, ClassDefinition, CodeItem,
+        DexFile, DexString, DexVersion, EncodedMethod, MethodId, PrototypeId, TryBlock, TypeId,
     };
     use crate::instruction::{Instruction, Opcode, Operands, PackedSwitchPayload};
 
@@ -181,8 +184,17 @@ mod tests {
                         targets: vec![3],
                     },
                 ),
+                Instruction::operation(10, Opcode::MoveException, Operands::Register(0)),
+                Instruction::operation(11, Opcode::Throw, Operands::Register(0)),
             ],
-            tries: Vec::new(),
+            tries: vec![TryBlock {
+                start_address: 0,
+                instruction_count: 3,
+                handlers: vec![CatchHandler {
+                    exception_type: None,
+                    address: 10,
+                }],
+            }],
             debug_info: None,
             data_offset: 0,
         };
@@ -229,6 +241,26 @@ mod tests {
             Operand::Switch(_)
         ));
         let graph = body.control_flow_graph().unwrap();
-        assert_eq!(graph.cfg().num_edges(), 2);
+        assert_eq!(graph.cfg().edge_count(), 3);
+        let [region] = graph.cfg().regions() else {
+            panic!("expected the DEX try item to produce one region");
+        };
+        assert_eq!(region.protected_blocks.len(), 1);
+        assert_eq!(region.handlers[0].body, HandlerBody::Unknown);
+
+        let recovered = graph.recovered_exception_model();
+        let [handler] = recovered.handlers() else {
+            panic!("expected one recovered DEX handler");
+        };
+        assert_eq!(handler.extent.status(), HandlerExtentStatus::Isolated);
+        assert_eq!(
+            handler.semantics,
+            RecoveredHandlerSemantics::CatchAll(CatchAllBehavior::ThrowingCleanup)
+        );
+        assert_eq!(handler.throw_sites.len(), 1);
+        assert_eq!(
+            graph.exception_handler_ref(handler.index),
+            Some(handler.cfglib_handler)
+        );
     }
 }

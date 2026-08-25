@@ -3,19 +3,25 @@
 mod build;
 mod edge;
 mod error;
+mod exception;
 mod validate;
 
 use std::collections::BTreeMap;
 
-use cfglib::{BlockId, Cfg, Edge, EdgeId, FilteredEdges};
+use cfglib::{BlockId, Cfg, Edge, EdgeId, EhModel, FilteredEdges, HandlerRef};
 
-use crate::{CodeAddress, FunctionBody, Instruction};
+use crate::{CodeAddress, ExceptionHandler, FunctionBody, Instruction};
 
 pub use self::build::build_control_flow_graph;
 pub use self::edge::{
     ControlFlowEdge, ControlFlowEdgeRole, ExceptionHandlerIndex, NormalControlFlow,
 };
 pub use self::error::GraphError;
+pub use self::exception::{
+    CatchAllBehavior, ExceptionThrowSite, HandlerExtentIssue, HandlerExtentStatus,
+    RecoveredExceptionHandler, RecoveredExceptionModel, RecoveredHandlerExtent,
+    RecoveredHandlerSemantics,
+};
 
 use self::edge::is_normal_edge;
 
@@ -24,16 +30,22 @@ use self::edge::is_normal_edge;
 pub struct ControlFlowGraph {
     cfg: Cfg<Instruction, ControlFlowEdge>,
     instruction_blocks: BTreeMap<CodeAddress, BlockId>,
+    exception_handlers: Vec<ExceptionHandler>,
+    handler_refs: Vec<HandlerRef>,
 }
 
 impl ControlFlowGraph {
     pub(crate) const fn new(
         cfg: Cfg<Instruction, ControlFlowEdge>,
         instruction_blocks: BTreeMap<CodeAddress, BlockId>,
+        exception_handlers: Vec<ExceptionHandler>,
+        handler_refs: Vec<HandlerRef>,
     ) -> Self {
         Self {
             cfg,
             instruction_blocks,
+            exception_handlers,
+            handler_refs,
         }
     }
 
@@ -57,6 +69,48 @@ impl ControlFlowGraph {
             &self.cfg,
             is_normal_edge as fn(EdgeId, &Edge<ControlFlowEdge>) -> bool,
         )
+    }
+
+    /// Computes cfglib's generic exception-flow projection.
+    ///
+    /// The projection classifies landing pads and protected source blocks from
+    /// structural edge kinds. Regions retain ordered handler entries and catch
+    /// classifications, with [`cfglib::HandlerBody::Unknown`] recording that
+    /// JVM and DEX exception tables do not encode complete handler extents.
+    /// Exact handler order, catch types, protected ranges, and throw sites
+    /// remain available through each model edge's stable identity and the
+    /// corresponding [`ControlFlowEdge`] payload.
+    #[must_use]
+    pub fn exception_model(&self) -> EhModel {
+        EhModel::compute(&self.cfg)
+    }
+
+    /// Recovers conservative handler extents and catch-all behavior while
+    /// retaining exact native handler and edge identities.
+    #[must_use]
+    pub fn recovered_exception_model(&self) -> RecoveredExceptionModel {
+        RecoveredExceptionModel::compute(self)
+    }
+
+    /// Returns exact handler definitions in native table order.
+    #[must_use]
+    pub fn exception_handlers(&self) -> &[ExceptionHandler] {
+        &self.exception_handlers
+    }
+
+    /// Returns the cfglib handler corresponding to a native table index.
+    #[must_use]
+    pub fn exception_handler_ref(&self, index: ExceptionHandlerIndex) -> Option<HandlerRef> {
+        self.handler_refs.get(index.index()).copied()
+    }
+
+    /// Returns the native table index corresponding to a cfglib handler.
+    #[must_use]
+    pub fn exception_handler_index(&self, handler: HandlerRef) -> Option<ExceptionHandlerIndex> {
+        self.handler_refs
+            .iter()
+            .position(|&candidate| candidate == handler)
+            .map(ExceptionHandlerIndex::from_index)
     }
 
     /// Returns the basic block containing an instruction start address.

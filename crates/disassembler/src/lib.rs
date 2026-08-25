@@ -6,7 +6,10 @@
 //! references, addresses, and signatures while presenting one stable boundary
 //! to graphing and downstream analysis tools. Shared CFG edges retain exact
 //! switch, handler, throw-site, and continuation provenance in caller-owned
-//! cfglib payloads and expose zero-copy normal-only views.
+//! cfglib payloads and expose zero-copy normal-only views. Canonical cfglib
+//! regions keep native handler extents explicitly unknown, while
+//! [`ControlFlowGraph::recovered_exception_model`] provides conservative
+//! handler ownership, boundary, ambiguity, and catch-all behavior evidence.
 
 mod diagnostic;
 pub mod graph;
@@ -20,8 +23,10 @@ pub use diagnostic::{
     Diagnostic, DiagnosticLevel, DiagnosticLocation, DiagnosticNote, Diagnostics,
 };
 pub use graph::{
-    ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph, ExceptionHandlerIndex, GraphError,
-    NormalControlFlow, build_control_flow_graph,
+    CatchAllBehavior, ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph,
+    ExceptionHandlerIndex, ExceptionThrowSite, GraphError, HandlerExtentIssue, HandlerExtentStatus,
+    NormalControlFlow, RecoveredExceptionHandler, RecoveredExceptionModel, RecoveredHandlerExtent,
+    RecoveredHandlerSemantics, build_control_flow_graph,
 };
 pub use model::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, CodeSize, Disassembly,

@@ -1,4 +1,8 @@
 //! JVM stack/local verification, maxima computation, and stack-map generation.
+//!
+//! Native instruction flow implements cfglib's borrowed graph contracts, and
+//! frame propagation uses its seeded fallible edge-sensitive solver so normal
+//! transfers consume post-state while exception handlers consume pre-state.
 
 mod flow;
 mod frame;

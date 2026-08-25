@@ -35,7 +35,7 @@ dex = { version = "0.1.0", path = "crates/dex" }
 jni = { version = "0.1.0", path = "crates/jni" }
 java = { version = "0.1.0", path = "crates/java" }
 program = { version = "0.1.0", path = "crates/program" }
-cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib", rev = "7cc20221e62b5ab929a98ddf50e33721ab1f263f" }
+cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib" }
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 thiserror = "2.0.20"
 sha1 = "0.10.6"

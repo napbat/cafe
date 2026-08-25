@@ -2,9 +2,10 @@
 
 use disassembler::cfglib::{DominatorTree, verify, verify_edge_view};
 use disassembler::{
-    AddressRange, AddressUnit, BinaryFormat, CodeAddress, CodeSize, ControlFlowEdgeRole,
-    Diagnostic, DiagnosticLevel, DiagnosticLocation, Diagnostics, FunctionBody, FunctionCoordinate,
-    FunctionSymbol, Instruction, InstructionFlow, SourceMap,
+    AddressRange, AddressUnit, BinaryFormat, CatchAllBehavior, CatchType, CodeAddress, CodeSize,
+    ControlFlowEdgeRole, Diagnostic, DiagnosticLevel, DiagnosticLocation, Diagnostics,
+    ExceptionHandler, FunctionBody, FunctionCoordinate, FunctionSymbol, HandlerExtentStatus,
+    Instruction, InstructionFlow, RecoveredHandlerSemantics, SourceMap,
 };
 
 const INSTRUCTION_SIZE: CodeSize = CodeSize::new(1);
@@ -82,8 +83,13 @@ fn downstream_consumers_can_use_cfglib_algorithms_on_shared_ir() {
             ),
             instruction(1, InstructionFlow::Return),
             instruction(2, InstructionFlow::Return),
+            instruction(3, InstructionFlow::Throw),
         ],
-        Vec::new(),
+        vec![ExceptionHandler {
+            protected: AddressRange::new(CodeAddress::from(0_u32), CodeAddress::from(1_u32)),
+            handler: CodeAddress::from(3_u32),
+            catch: CatchType::Any,
+        }],
     );
 
     let graph = body.control_flow_graph().unwrap();
@@ -102,4 +108,20 @@ fn downstream_consumers_can_use_cfglib_algorithms_on_shared_ir() {
             .any(|edge| edge.payload().role() == &ControlFlowEdgeRole::ConditionalTaken)
     );
     assert!(graph.to_dot().contains("green4"));
+
+    let recovered = graph.recovered_exception_model();
+    let [handler] = recovered.handlers() else {
+        panic!("expected one public recovered handler");
+    };
+    assert_eq!(handler.definition, graph.exception_handlers()[0]);
+    assert_eq!(handler.extent.status(), HandlerExtentStatus::Isolated);
+    assert_eq!(
+        handler.semantics,
+        RecoveredHandlerSemantics::CatchAll(CatchAllBehavior::ThrowingCleanup)
+    );
+    assert_eq!(handler.throw_sites.len(), 1);
+    assert_eq!(
+        graph.exception_handler_index(handler.cfglib_handler),
+        Some(handler.index)
+    );
 }

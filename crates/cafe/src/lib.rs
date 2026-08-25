@@ -2,8 +2,9 @@
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
 //! under [`java`], [`dex`], [`art`], and [`jni`]; shared instruction and graph
-//! APIs live under [`disassembler`]; and the owned definition model is available
-//! both at this crate's root and under [`program`].
+//! APIs, including exact and conservatively recovered exception structure, live
+//! under [`disassembler`]; and the owned definition model is available both at
+//! this crate's root and under [`program`].
 //!
 //! ```
 //! use cafe::{Program, art, cfglib, dex, disassembler, java, jni, program};

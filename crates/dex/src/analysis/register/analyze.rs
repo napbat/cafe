@@ -1,14 +1,18 @@
 //! Worklist solver, method entry state, and register-lattice merging.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::BTreeMap;
+
+use disassembler::cfglib::{
+    Direction, EdgeRef, RootedGraphView, TryEdgeProblem, TrySolveError, try_solve_edge_problem_from,
+};
 
 use crate::file::{AccessFlags, CodeItem, DexFile, EncodedMethod, PrototypeId};
 use crate::{Error, Result};
 
 use super::super::flow::build_control_flow;
 use super::super::{
-    BodyAnalysis, DexHierarchy, FlowEdgeKind, ReferenceHierarchy, analyze_body,
-    resolve_instruction_references,
+    BodyAnalysis, ControlFlow, DexHierarchy, FlowEdge, FlowEdgeKind, ReferenceHierarchy,
+    analyze_body, resolve_instruction_references,
 };
 use super::model::{ReferenceType, RegisterAnalysis, RegisterFrame, RegisterType};
 use super::transfer::{descriptor_type, transfer};
@@ -107,34 +111,30 @@ fn analyze_inner(
         .iter()
         .map(|instruction| (instruction.offset(), instruction))
         .collect::<BTreeMap<_, _>>();
+    let entry = flow.root();
+    let initial = initial_frame(&context)?;
+    let problem = RegisterProblem {
+        context,
+        instructions,
+        entry,
+        initial,
+    };
+    let facts =
+        try_solve_edge_problem_from(&flow, &problem, &[entry]).map_err(|error| match error {
+            TrySolveError::Problem(error) => error,
+            TrySolveError::Solver(error) => {
+                Error::invalid_instruction(flow.entry(), error.to_string())
+            }
+        })?;
 
     let mut entries = BTreeMap::new();
-    entries.insert(flow.entry(), initial_frame(&context)?);
     let mut exits = BTreeMap::new();
-    let mut worklist = VecDeque::from([flow.entry()]);
-    let mut queued = BTreeSet::from([flow.entry()]);
-
-    while let Some(offset) = worklist.pop_front() {
-        queued.remove(&offset);
-        let entry = entries[&offset].clone();
-        let instruction = instructions[&offset];
-        let normal_exit = transfer(&context, instruction, &entry)?;
-        exits.insert(offset, normal_exit.clone());
-        for edge in flow.successors(offset) {
-            let candidate = if matches!(edge.kind, FlowEdgeKind::Exception(_)) {
-                &entry
-            } else {
-                &normal_exit
-            };
-            let changed = if let Some(existing) = entries.get_mut(&edge.target) {
-                merge_frames(existing, candidate, hierarchy)
-            } else {
-                entries.insert(edge.target, candidate.clone());
-                true
-            };
-            if changed && queued.insert(edge.target) {
-                worklist.push_back(edge.target);
-            }
+    for (node, &offset) in flow.nodes().iter().enumerate() {
+        if let Some(frame) = facts.fact_in(node) {
+            entries.insert(offset, frame.clone());
+        }
+        if let Some(frame) = facts.fact_out(node) {
+            exits.insert(offset, frame.clone());
         }
     }
 
@@ -143,6 +143,75 @@ fn analyze_inner(
         entries,
         exits,
     })
+}
+
+struct RegisterProblem<'method> {
+    context: MethodContext<'method>,
+    instructions: BTreeMap<u32, &'method crate::instruction::Instruction>,
+    entry: usize,
+    initial: RegisterFrame,
+}
+
+impl TryEdgeProblem<ControlFlow> for RegisterProblem<'_> {
+    type Fact = Option<RegisterFrame>;
+    type Error = Error;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn bottom(&self, _graph: &ControlFlow) -> Self::Fact {
+        None
+    }
+
+    fn boundary(&self, _graph: &ControlFlow, node: usize) -> Result<Option<Self::Fact>> {
+        Ok((node == self.entry).then(|| Some(self.initial.clone())))
+    }
+
+    fn meet(
+        &self,
+        _graph: &ControlFlow,
+        _node: usize,
+        left: &Self::Fact,
+        right: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        Ok(match (left, right) {
+            (None, None) => None,
+            (Some(frame), None) | (None, Some(frame)) => Some(frame.clone()),
+            (Some(left), Some(right)) => {
+                let mut merged = left.clone();
+                let _ = merge_frames(&mut merged, right, self.context.hierarchy);
+                Some(merged)
+            }
+        })
+    }
+
+    fn transfer_node(
+        &self,
+        graph: &ControlFlow,
+        node: usize,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        let Some(input) = input else {
+            return Ok(None);
+        };
+        let offset = graph.node_offset(node);
+        transfer(&self.context, self.instructions[&offset], input).map(Some)
+    }
+
+    fn transfer_edge(
+        &self,
+        _graph: &ControlFlow,
+        edge: EdgeRef<'_, usize, usize, FlowEdge>,
+        node_input: &Self::Fact,
+        node_output: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        if matches!(edge.data().kind, FlowEdgeKind::Exception(_)) {
+            Ok(node_input.clone())
+        } else {
+            Ok(node_output.clone())
+        }
+    }
 }
 
 fn initial_frame(context: &MethodContext<'_>) -> Result<RegisterFrame> {

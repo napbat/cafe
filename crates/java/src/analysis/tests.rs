@@ -1,3 +1,6 @@
+use disassembler::cfglib::verify_edge_view;
+
+use crate::Error;
 use crate::analysis::{
     ClassHierarchy, FrameValue, InstructionReference, LoadableConstant, analyze_code,
     analyze_code_with_hierarchy, resolve_instruction_reference,
@@ -61,6 +64,7 @@ fn exception_handlers_receive_a_single_caught_reference() {
         &code,
     )
     .unwrap();
+    assert!(verify_edge_view(analysis.flow()).is_ok());
     assert_eq!(
         analysis.entry_frame(handler_offset).unwrap().stack(),
         &[FrameValue::Reference("java/lang/Throwable".to_owned())]
@@ -73,6 +77,41 @@ fn exception_handlers_receive_a_single_caught_reference() {
             crate::classfile::Attribute::Known(crate::classfile::KnownAttribute::StackMapTable(_))
         )
     }));
+}
+
+#[test]
+fn fallible_cfglib_merge_retains_the_target_bytecode_offset() {
+    let mut builder = CodeBuilder::new();
+    let merge = builder.new_label();
+    let _ = builder.emit(Opcode::IConst0, Operand::None);
+    builder.emit_branch(Opcode::IfEq, merge).unwrap();
+    let _ = builder.emit(Opcode::IConst1, Operand::None);
+    builder.emit_branch(Opcode::Goto, merge).unwrap();
+    builder.bind(merge).unwrap();
+    let _ = builder.emit(Opcode::Return, Operand::None);
+    let built = builder.finish().unwrap();
+    let merge_offset = built.label_offset(merge).unwrap();
+    let mut pool = ConstantPool::new();
+    let code = CodeAttribute::from_built(&mut pool, 0, 0, &built).unwrap();
+
+    let error = analyze_code(
+        &pool,
+        "Example",
+        "badMerge",
+        "()V",
+        MethodAccessFlags::STATIC,
+        &code,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Error::ClassMethod { source, .. }
+                if matches!(source.as_ref(), Error::InvalidBytecode { offset, .. }
+                    if *offset == merge_offset)
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]

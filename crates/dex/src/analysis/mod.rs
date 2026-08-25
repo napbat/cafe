@@ -1,4 +1,8 @@
 //! Semantic analysis utilities over typed Dalvik instructions.
+//!
+//! Native operation flow implements cfglib's borrowed graph contracts, and
+//! register propagation uses its seeded fallible edge-sensitive solver so
+//! exceptional transfers retain instruction pre-state.
 
 mod body;
 mod flow;

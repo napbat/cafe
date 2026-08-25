@@ -236,6 +236,37 @@ flow and post-state for ordinary flow. `ControlFlowGraph::normal_view()` filters
 exception edges without rebuilding or renumbering the graph; the full CFG and
 normal-only view can be passed directly to cfglib algorithms.
 
+The native JVM and DEX analysis graphs implement cfglib's borrowed node, edge,
+and rooted view contracts without replacing their bytecode-offset APIs. JVM
+verification frames and Dalvik register frames now run through cfglib's seeded,
+fallible edge-sensitive solver; format-specific transfer and merge errors retain
+their original locations, ordinary edges propagate post-state, and exception
+edges propagate the required pre-state.
+
+Shared control-flow graphs expose complementary raw and recovered exception
+models. `ControlFlowGraph::exception_model()` derives cfglib landing pads,
+protected sources, and stable exception-edge identities. Each distinct native
+protected range is registered as a cfglib region with exact protected blocks
+and ordered handler entry/kind. Because JVM and DEX tables do not encode
+complete handler-body extents, the canonical region records
+`HandlerBody::Unknown` rather than silently treating a guessed end as native
+metadata.
+
+`ControlFlowGraph::recovered_exception_model()` adds a conservative analysis
+layer without mutating that canonical graph. It retains each exact native
+handler definition in table order, maps its `ExceptionHandlerIndex` directly
+to a cfglib `HandlerRef`, and reports the stable `EdgeId`, source block, and
+native address of every represented exceptional transfer. Handler ownership
+contains only blocks reachable from that entry and unreachable from the method
+entry or another distinct handler entry. Shared continuation blocks remain
+explicit boundaries, while normal entry paths, cross-handler paths, external
+predecessors, indirect transfers, and missing branch arms are reported as
+ambiguities. Catch-all handlers are classified by observable bytecode exits;
+`ThrowingCleanup` means every represented exit from an isolated recovered body
+throws, not that the original exception is proven to be rethrown or that the
+source language used `finally`. Structured cfglib lifting still requires an
+explicit `HandlerBody::Known` producer.
+
 Class-file assembly and bytecode encoding operate on public structured models:
 
 ```rust
@@ -258,7 +289,7 @@ fn inspect_class(jar_path: &str) -> Result<(), java::Error> {
     for function in &shared.functions {
         if let Some(body) = &function.body {
             let graph = body.control_flow_graph()?;
-            println!("{}: {} blocks", function.symbol.name, graph.cfg().num_blocks());
+            println!("{}: {} blocks", function.symbol.name, graph.cfg().block_count());
         }
     }
 

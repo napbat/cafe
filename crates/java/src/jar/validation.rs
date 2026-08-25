@@ -333,8 +333,8 @@ fn validate_control_flow(
                 .control_flow_graph()
                 .map_err(|error| Error::from(error).in_jar_entry(entry))?;
             report.control_flow_graphs += 1;
-            report.basic_blocks += graph.cfg().num_blocks();
-            report.control_flow_edges += graph.cfg().num_edges();
+            report.basic_blocks += graph.cfg().block_count();
+            report.control_flow_edges += graph.cfg().edge_count();
         }
     }
     Ok(())

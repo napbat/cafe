@@ -27,16 +27,20 @@ These rules apply to the entire repository.
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
   disassembler and Program. It also owns symbolic bytecode layout and JVM
-  frame/stack-map analysis. It must not depend on Cafe. Do not add `src/main.rs`,
-  Clap, or tool-specific output policy to this crate.
+  frame/stack-map analysis. Keep its native instruction graph adapted to
+  cfglib's rooted edge view and run frame propagation through the fallible
+  seeded edge solver. It must not depend on Cafe. Do not add `src/main.rs`, Clap,
+  or tool-specific output policy to this crate.
 - Use the JAR entry reader for archive-wide operations. Validation, rewriting,
   and bulk consumers must share one ZIP reader rather than reopening the
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
   encoding, APK/AAB provenance, corpus validation, executable semantics and
-  register analysis, and adapters into the disassembler and Program. It must
-  not depend on Cafe or leak Android-container details into shared lower layers.
+  register analysis, and adapters into the disassembler and Program. Keep its
+  native operation graph adapted to cfglib's rooted edge view and run register
+  propagation through the fallible seeded edge solver. It must not depend on
+  Cafe or leak Android-container details into shared lower layers.
 - Use the APK or AAB entry reader for archive-wide operations. Bulk DEX
   consumers must select and visit artifacts through the single-reader APIs
   instead of reopening the ZIP directory per entry. Non-fail-fast validators
@@ -117,6 +121,15 @@ These rules apply to the entire repository.
   references, and resolved display names needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
   control-flow edges through cfglib for every lowered executable body.
+- Expose cfglib's generic exception-flow model from shared graphs. Register
+  exact protected block sets and ordered handler entry/kind as regions, mark
+  handler extents explicitly unknown when the native format omits them, and
+  keep exact native exception provenance in stable edge payloads.
+- Offer a separate recovered exception model that maps exact native handler
+  indices to cfglib handler identities, claims only blocks exclusive to one
+  handler entry, and reports shared boundaries and ambiguity evidence. Never
+  promote recovered extents to native `HandlerBody::Known` metadata or equate
+  catch-all throwing behavior with a proven rethrow or source-level `finally`.
 - Carry normal-versus-exceptional meaning, native switch keys, ordered catch
   metadata, exact throw sites, and legacy continuation call sites in cfglib
   edge payloads. Offer zero-copy normal-only views over the same stable edge

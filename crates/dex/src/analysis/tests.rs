@@ -1,3 +1,6 @@
+use disassembler::cfglib::verify_edge_view;
+
+use crate::Error;
 use crate::file::{
     AccessFlags, CatchHandler, CodeItem, DexFile, DexString, DexVersion, EncodedMethod, MethodId,
     PrototypeId, TryBlock, TypeId,
@@ -260,6 +263,7 @@ fn control_flow_distinguishes_normal_switch_and_exception_edges() {
         }],
     });
     let flow = control_flow(&exceptional).unwrap();
+    assert!(verify_edge_view(&flow).is_ok());
     assert!(flow.edges().contains(&super::FlowEdge {
         source: 0,
         target: 2,
@@ -550,7 +554,15 @@ fn register_analysis_refines_array_components_and_uses_caller_hierarchy() {
         }),
     };
 
-    assert!(analyze_method_registers(&file, &declaration).is_err());
+    let error = analyze_method_registers(&file, &declaration).unwrap_err();
+    assert!(
+        matches!(
+        &error,
+        Error::Method { source, .. }
+            if matches!(source.as_ref(), Error::InvalidInstruction { offset: 3, .. })
+        ),
+        "{error:?}"
+    );
     let analysis = analyze_method_registers_with_hierarchy(&file, &declaration, &FixtureHierarchy)
         .unwrap()
         .unwrap();

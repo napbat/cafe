@@ -111,13 +111,16 @@ fn lower_body(code: &CodeAttribute, class: &ClassFile) -> Result<FunctionBody> {
 
 #[cfg(test)]
 mod tests {
-    use disassembler::{BinaryFormat, DisassemblySource};
+    use disassembler::{
+        BinaryFormat, CatchAllBehavior, DisassemblySource, HandlerExtentStatus,
+        RecoveredHandlerSemantics, cfglib::HandlerBody,
+    };
 
     use super::lower_class;
     use crate::bytecode::Opcode;
     use crate::classfile::{
         Attribute, ClassAccessFlags, ClassFile, CodeAttribute, Constant, ConstantPool,
-        MethodAccessFlags, MethodInfo,
+        ExceptionHandler, MethodAccessFlags, MethodInfo,
     };
 
     const JAVA_8_CLASS_MAJOR: u16 = 52;
@@ -146,6 +149,7 @@ mod tests {
             4,
             Opcode::Return.byte(),
             Opcode::Return.byte(),
+            Opcode::AThrow.byte(),
         ];
 
         ClassFile {
@@ -166,7 +170,12 @@ mod tests {
                     max_stack: 1,
                     max_locals: 0,
                     code,
-                    exception_table: Vec::new(),
+                    exception_table: vec![ExceptionHandler {
+                        start_pc: 0,
+                        end_pc: 4,
+                        handler_pc: 6,
+                        catch_type: 0,
+                    }],
                     attributes: Vec::new(),
                 })],
             }],
@@ -189,7 +198,27 @@ mod tests {
             .unwrap()
             .control_flow_graph()
             .unwrap();
-        assert_eq!(graph.cfg().num_blocks(), 3);
-        assert_eq!(graph.cfg().num_edges(), 2);
+        assert_eq!(graph.cfg().block_count(), 5);
+        assert_eq!(graph.cfg().edge_count(), 5);
+        let [region] = graph.cfg().regions() else {
+            panic!("expected the JVM exception table to produce one region");
+        };
+        assert_eq!(region.protected_blocks.len(), 2);
+        assert_eq!(region.handlers[0].body, HandlerBody::Unknown);
+
+        let recovered = graph.recovered_exception_model();
+        let [handler] = recovered.handlers() else {
+            panic!("expected one recovered JVM handler");
+        };
+        assert_eq!(handler.extent.status(), HandlerExtentStatus::Isolated);
+        assert_eq!(
+            handler.semantics,
+            RecoveredHandlerSemantics::CatchAll(CatchAllBehavior::ThrowingCleanup)
+        );
+        assert_eq!(handler.throw_sites.len(), 2);
+        assert_eq!(
+            graph.exception_handler_ref(handler.index),
+            Some(handler.cfglib_handler)
+        );
     }
 }

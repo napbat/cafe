@@ -75,6 +75,9 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<cfglib::BlockId>();
     let _ = std::any::type_name::<disassembler::ControlFlowEdge>();
     let _ = std::any::type_name::<disassembler::ControlFlowEdgeRole>();
+    let _ = std::any::type_name::<disassembler::RecoveredExceptionModel>();
+    let _ = std::any::type_name::<disassembler::RecoveredExceptionHandler>();
+    let _ = std::any::type_name::<disassembler::HandlerExtentStatus>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
     Ok(())

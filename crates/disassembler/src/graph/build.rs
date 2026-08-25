@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cfglib::{BlockId, Cfg, EdgeKind, verify_with};
+use cfglib::{
+    BlockId, Cfg, EdgeKind, Handler, HandlerBody, HandlerKind, HandlerRef, Region, RegionId,
+    verify_with,
+};
 
 use super::validate::ControlFlowValidator;
 use super::{
@@ -16,7 +19,8 @@ type SharedCfg = Cfg<Instruction, ControlFlowEdge>;
 ///
 /// Leaders are introduced at the entry, direct branch targets, instructions
 /// following terminators, and exception-range boundaries. Exception handlers
-/// produce `ExceptionUnwind` edges from every protected block.
+/// produce `ExceptionUnwind` edges from every protected block and ordered
+/// region metadata with explicitly unknown handler-body extents.
 ///
 /// # Errors
 ///
@@ -36,6 +40,7 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
     let (mut cfg, instruction_blocks) = populate_blocks(body, &leaders);
     add_normal_edges(&mut cfg, &instruction_blocks);
     add_exception_edges(body, &mut cfg, &instruction_blocks);
+    let handler_refs = add_exception_regions(body, &mut cfg, &instruction_blocks);
 
     let verification = verify_with(&cfg, &ControlFlowValidator::new(body));
     if !verification.is_ok() {
@@ -50,7 +55,12 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
         return Err(GraphError::InvalidGraph { details });
     }
 
-    Ok(ControlFlowGraph::new(cfg, instruction_blocks))
+    Ok(ControlFlowGraph::new(
+        cfg,
+        instruction_blocks,
+        body.exception_handlers.clone(),
+        handler_refs,
+    ))
 }
 
 fn validate_instructions(body: &FunctionBody) -> Result<CodeAddress, GraphError> {
@@ -185,7 +195,7 @@ fn populate_blocks(
     body: &FunctionBody,
     leaders: &BTreeSet<CodeAddress>,
 ) -> (SharedCfg, BTreeMap<CodeAddress, BlockId>) {
-    let mut cfg = SharedCfg::new_with_edge_payload();
+    let mut cfg = SharedCfg::with_edge_payload();
     let mut current = cfg.entry();
     let mut instruction_blocks = BTreeMap::new();
 
@@ -390,11 +400,109 @@ fn add_exception_edges(
     }
 }
 
+#[derive(Debug)]
+struct ExceptionRegionDraft {
+    protected: crate::AddressRange,
+    handler_indices: Vec<usize>,
+}
+
+fn add_exception_regions(
+    body: &FunctionBody,
+    cfg: &mut SharedCfg,
+    instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
+) -> Vec<HandlerRef> {
+    let mut drafts = Vec::<ExceptionRegionDraft>::new();
+    for (index, handler) in body.exception_handlers.iter().enumerate() {
+        if let Some(draft) = drafts
+            .iter_mut()
+            .find(|draft| draft.protected == handler.protected)
+        {
+            draft.handler_indices.push(index);
+        } else {
+            drafts.push(ExceptionRegionDraft {
+                protected: handler.protected,
+                handler_indices: vec![index],
+            });
+        }
+    }
+
+    // cfglib resolves the innermost protecting region by reverse insertion
+    // order, so enclosing ranges must be registered before nested ranges.
+    // Stable sorting preserves native table order for disjoint peers.
+    drafts.sort_by(|left, right| {
+        exception_range_span(right.protected).cmp(&exception_range_span(left.protected))
+    });
+
+    let block_starts = cfg
+        .blocks()
+        .iter()
+        .filter_map(|block| {
+            block
+                .instructions()
+                .first()
+                .map(|instruction| (block.id(), instruction.address))
+        })
+        .collect::<Vec<_>>();
+
+    let mut handler_refs = vec![None; body.exception_handlers.len()];
+    for (index, draft) in drafts.iter().enumerate() {
+        let protected_blocks = block_starts
+            .iter()
+            .filter_map(|&(block, address)| draft.protected.contains(address).then_some(block))
+            .collect();
+        let handlers = draft
+            .handler_indices
+            .iter()
+            .map(|&handler_index| {
+                let handler = &body.exception_handlers[handler_index];
+                Handler {
+                    entry: instruction_blocks[&handler.handler],
+                    body: HandlerBody::unknown(),
+                    kind: match &handler.catch {
+                        crate::CatchType::Any => HandlerKind::CatchAll,
+                        crate::CatchType::Type(_) => HandlerKind::Catch,
+                    },
+                }
+            })
+            .collect();
+        let parent = drafts[..index]
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| strictly_contains(candidate.protected, draft.protected))
+            .min_by_key(|(_, candidate)| exception_range_span(candidate.protected))
+            .map(|(parent_index, _)| RegionId::from_index(parent_index));
+
+        let region = cfg.add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks,
+            handlers,
+            parent,
+        });
+        for (handler_position, &handler_index) in draft.handler_indices.iter().enumerate() {
+            handler_refs[handler_index] = Some(HandlerRef::new(region, handler_position));
+        }
+    }
+    handler_refs
+        .into_iter()
+        .map(|handler| handler.expect("every validated handler is assigned to one region"))
+        .collect()
+}
+
+fn strictly_contains(outer: crate::AddressRange, inner: crate::AddressRange) -> bool {
+    outer != inner && outer.start <= inner.start && inner.end <= outer.end
+}
+
+fn exception_range_span(range: crate::AddressRange) -> u64 {
+    range.end.get() - range.start.get()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use cfglib::{
-        BlockId, Cfg, Direction, DominatorTree, Edge, EdgeKind, EdgeProblem, EdgeRef,
-        solve_edge_problem, verify_edge_view,
+        BlockId, Cfg, Direction, DominatorTree, Edge, EdgeKind, EdgeProblem, EdgeRef, HandlerBody,
+        HandlerKind, HandlerRef, solve_edge_problem, verify_edge_view,
     };
 
     use super::build_control_flow_graph;
@@ -442,8 +550,8 @@ mod tests {
         );
 
         let graph = build_control_flow_graph(&body).unwrap();
-        assert_eq!(graph.cfg().num_blocks(), 4);
-        assert_eq!(graph.cfg().num_edges(), 4);
+        assert_eq!(graph.cfg().block_count(), 4);
+        assert_eq!(graph.cfg().edge_count(), 4);
         assert!(
             graph
                 .cfg()
@@ -491,9 +599,133 @@ mod tests {
         let handler = graph
             .block_for_instruction(CodeAddress::from(2_u32))
             .unwrap();
+        let region = &graph.cfg().regions()[0];
+        assert_eq!(graph.cfg().regions().len(), 1);
+        assert_eq!(
+            region.protected_blocks,
+            exceptional
+                .iter()
+                .map(|edge| edge.source())
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(region.handlers[0].entry, handler);
+        assert_eq!(region.handlers[0].body, HandlerBody::Unknown);
+        assert_eq!(region.handlers[0].kind, HandlerKind::CatchAll);
+
+        let exception_model = graph.exception_model();
+        assert_eq!(exception_model.landing_pads(), [handler]);
+        assert_eq!(exception_model.eh_edges.len(), exceptional.len());
+        assert_eq!(exception_model.protected_by[&handler].len(), 2);
+        assert_eq!(
+            exception_model.handlers[&handler],
+            vec![HandlerRef::new(region.id, 0)]
+        );
+        for modeled in &exception_model.eh_edges {
+            assert!(graph.cfg().edge(modeled.edge_id).payload().is_exceptional());
+        }
         assert!(DominatorTree::compute(graph.cfg()).is_reachable(handler));
         assert!(verify_edge_view(&graph.normal_view()).is_ok());
         assert!(!DominatorTree::compute(&graph.normal_view()).is_reachable(handler));
+    }
+
+    #[test]
+    fn registers_nested_regions_and_ordered_unknown_handlers() {
+        let inner_range = AddressRange::new(CodeAddress::from(1_u32), CodeAddress::from(3_u32));
+        let outer_range = AddressRange::new(CodeAddress::from(0_u32), CodeAddress::from(4_u32));
+        let inner_handler = CodeAddress::from(4_u32);
+        let outer_fallback = CodeAddress::from(5_u32);
+        let body = FunctionBody::new(
+            AddressUnit::Byte,
+            vec![
+                instruction(0, InstructionFlow::FallThrough),
+                instruction(1, InstructionFlow::FallThrough),
+                instruction(2, InstructionFlow::FallThrough),
+                instruction(3, InstructionFlow::Return),
+                instruction(4, InstructionFlow::Return),
+                instruction(5, InstructionFlow::Return),
+            ],
+            vec![
+                ExceptionHandler {
+                    protected: inner_range,
+                    handler: inner_handler,
+                    catch: CatchType::Type("example/Inner".into()),
+                },
+                ExceptionHandler {
+                    protected: outer_range,
+                    handler: inner_handler,
+                    catch: CatchType::Type("example/Outer".into()),
+                },
+                ExceptionHandler {
+                    protected: outer_range,
+                    handler: outer_fallback,
+                    catch: CatchType::Any,
+                },
+            ],
+        );
+
+        let graph = build_control_flow_graph(&body).unwrap();
+        let [outer, inner] = graph.cfg().regions() else {
+            panic!("expected one outer and one inner exception region");
+        };
+        assert_eq!(outer.parent, None);
+        assert_eq!(inner.parent, Some(outer.id));
+        assert_eq!(outer.protected_blocks.len(), 4);
+        assert_eq!(inner.protected_blocks.len(), 2);
+        assert_eq!(
+            outer
+                .handlers
+                .iter()
+                .map(|handler| handler.kind)
+                .collect::<Vec<_>>(),
+            vec![HandlerKind::Catch, HandlerKind::CatchAll]
+        );
+        assert_eq!(inner.handlers[0].kind, HandlerKind::Catch);
+        assert!(
+            outer
+                .handlers
+                .iter()
+                .chain(&inner.handlers)
+                .all(|handler| handler.body == HandlerBody::Unknown)
+        );
+        assert_eq!(
+            outer.handlers[0].entry,
+            graph.block_for_instruction(inner_handler).unwrap()
+        );
+        assert_eq!(
+            outer.handlers[1].entry,
+            graph.block_for_instruction(outer_fallback).unwrap()
+        );
+        assert_eq!(
+            graph.exception_handler_ref(ExceptionHandlerIndex::from_index(0)),
+            Some(HandlerRef::new(inner.id, 0))
+        );
+        assert_eq!(
+            graph.exception_handler_ref(ExceptionHandlerIndex::from_index(1)),
+            Some(HandlerRef::new(outer.id, 0))
+        );
+        assert_eq!(
+            graph.exception_handler_ref(ExceptionHandlerIndex::from_index(2)),
+            Some(HandlerRef::new(outer.id, 1))
+        );
+
+        let entry = graph.block_for_instruction(CodeAddress::ZERO).unwrap();
+        let outer_handler_indices = graph
+            .cfg()
+            .successor_edges(entry)
+            .iter()
+            .filter_map(|&edge| match graph.cfg().edge(edge).payload().role() {
+                ControlFlowEdgeRole::Exception { handler, .. } => Some(*handler),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outer_handler_indices,
+            vec![
+                ExceptionHandlerIndex::from_index(1),
+                ExceptionHandlerIndex::from_index(2),
+            ],
+            "region grouping must not renumber native exception-table entries"
+        );
     }
 
     #[test]

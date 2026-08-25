@@ -1,6 +1,10 @@
 //! Method entry construction and fixed-point JVM frame analysis.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::BTreeMap;
+
+use disassembler::cfglib::{
+    Direction, EdgeRef, RootedGraphView, TryEdgeProblem, TrySolveError, try_solve_edge_problem_from,
+};
 
 use crate::bytecode::{Instruction, Opcode, Operand, decode_code};
 use crate::classfile::{ClassFile, CodeAttribute, ConstantPool, MethodAccessFlags, MethodInfo};
@@ -9,7 +13,7 @@ use crate::{Error, Result};
 
 use super::flow::build_control_flow;
 use super::hierarchy::{ClassHierarchy, JAVA_LANG_OBJECT_NAME, ReferenceHierarchy};
-use super::model::{ControlFlow, FlowEdgeKind, FrameState, FrameValue, MethodAnalysis};
+use super::model::{ControlFlow, FlowEdge, FlowEdgeKind, FrameState, FrameValue, MethodAnalysis};
 use super::reference::resolve_instruction_reference;
 use super::transfer::transfer;
 
@@ -204,39 +208,32 @@ fn solve(
     max_locals: u16,
     flow: ControlFlow,
 ) -> Result<MethodAnalysis> {
-    let mut entries = BTreeMap::new();
-    entries.insert(
-        flow.entry(),
-        initial_frame(context, access_flags, max_locals)?,
-    );
-    let mut exits = BTreeMap::new();
-    let mut worklist = VecDeque::from([flow.entry()]);
-    let mut queued = BTreeSet::from([flow.entry()]);
-    let mut maximum_stack_slots = 0;
-
-    while let Some(offset) = worklist.pop_front() {
-        queued.remove(&offset);
-        let entry = entries[&offset].clone();
-        maximum_stack_slots = maximum_stack_slots.max(entry.stack_slots());
-        let normal_exit = transfer(context, context.instructions[&offset], &entry)?;
-        maximum_stack_slots = maximum_stack_slots.max(normal_exit.stack_slots());
-        exits.insert(offset, normal_exit.clone());
-        for edge in flow.successors(offset) {
-            let candidate = match edge.kind {
-                FlowEdgeKind::Exception { catch_type } => {
-                    exception_frame(context.pool, &entry, catch_type)?
-                }
-                FlowEdgeKind::FallThrough | FlowEdgeKind::Branch => normal_exit.clone(),
-            };
-            let changed = if let Some(existing) = entries.get_mut(&edge.target) {
-                merge_frames(existing, &candidate, edge.target, context.hierarchy)?
-            } else {
-                entries.insert(edge.target, candidate);
-                true
-            };
-            if changed && queued.insert(edge.target) {
-                worklist.push_back(edge.target);
+    let entry = flow.root();
+    let initial = initial_frame(context, access_flags, max_locals)?;
+    let problem = FrameProblem {
+        context,
+        entry,
+        initial,
+    };
+    let facts =
+        try_solve_edge_problem_from(&flow, &problem, &[entry]).map_err(|error| match error {
+            TrySolveError::Problem(error) => error,
+            TrySolveError::Solver(error) => {
+                Error::invalid_bytecode(flow.entry(), error.to_string())
             }
+        })?;
+
+    let mut entries = BTreeMap::new();
+    let mut exits = BTreeMap::new();
+    let mut maximum_stack_slots = 0;
+    for (node, &offset) in flow.nodes().iter().enumerate() {
+        if let Some(frame) = facts.fact_in(node) {
+            maximum_stack_slots = maximum_stack_slots.max(frame.stack_slots());
+            entries.insert(offset, frame.clone());
+        }
+        if let Some(frame) = facts.fact_out(node) {
+            maximum_stack_slots = maximum_stack_slots.max(frame.stack_slots());
+            exits.insert(offset, frame.clone());
         }
     }
 
@@ -260,6 +257,82 @@ fn solve(
         max_stack,
         max_locals,
     })
+}
+
+struct FrameProblem<'context, 'method> {
+    context: &'context MethodContext<'method>,
+    entry: usize,
+    initial: FrameState,
+}
+
+impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
+    type Fact = Option<FrameState>;
+    type Error = Error;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn bottom(&self, _graph: &ControlFlow) -> Self::Fact {
+        None
+    }
+
+    fn boundary(&self, _graph: &ControlFlow, node: usize) -> Result<Option<Self::Fact>> {
+        Ok((node == self.entry).then(|| Some(self.initial.clone())))
+    }
+
+    fn meet(
+        &self,
+        graph: &ControlFlow,
+        node: usize,
+        left: &Self::Fact,
+        right: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        match (left, right) {
+            (None, None) => Ok(None),
+            (Some(frame), None) | (None, Some(frame)) => Ok(Some(frame.clone())),
+            (Some(left), Some(right)) => {
+                let mut merged = left.clone();
+                let _ = merge_frames(
+                    &mut merged,
+                    right,
+                    graph.node_offset(node),
+                    self.context.hierarchy,
+                )?;
+                Ok(Some(merged))
+            }
+        }
+    }
+
+    fn transfer_node(
+        &self,
+        graph: &ControlFlow,
+        node: usize,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        let Some(input) = input else {
+            return Ok(None);
+        };
+        let offset = graph.node_offset(node);
+        transfer(self.context, self.context.instructions[&offset], input).map(Some)
+    }
+
+    fn transfer_edge(
+        &self,
+        _graph: &ControlFlow,
+        edge: EdgeRef<'_, usize, usize, FlowEdge>,
+        node_input: &Self::Fact,
+        node_output: &Self::Fact,
+    ) -> Result<Self::Fact> {
+        match edge.data().kind {
+            FlowEdgeKind::Exception { catch_type } => {
+                node_input.as_ref().map_or(Ok(None), |input| {
+                    exception_frame(self.context.pool, input, catch_type).map(Some)
+                })
+            }
+            FlowEdgeKind::FallThrough | FlowEdgeKind::Branch => Ok(node_output.clone()),
+        }
+    }
 }
 
 fn initial_frame(

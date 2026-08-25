@@ -18,9 +18,20 @@ The shared CFG boundary now retains stable parallel edge identities and typed
 caller payloads for switch arms, ordered handlers, exact instruction throw
 sites, and legacy continuation call sites. Borrowed edge-filtered
 views, edge-sensitive pre/post-state dataflow, semantic validation hooks, and
-explicit rewrite identity maps are supplied by cfglib and exercised through
-Cafe. These are infrastructure for analysis and later transformations; they do
-not implement the deferred DEX-to-JVM translation itself.
+explicit rewrite identity maps are supplied by cfglib. Shared graphs expose its
+generic exception model while retaining exact native exception metadata on
+stable edge payloads. They also register exact protected block sets and ordered
+handler entries/kinds as cfglib regions, explicitly marking handler-body
+extents unknown when JVM or DEX metadata does not encode them. A separate
+recovered exception model maps native table entries to cfglib handler
+identities, retains stable exceptional edge and throw-site evidence, and
+conservatively reports handler-exclusive blocks, shared boundaries, and
+ambiguities. It classifies observable catch-all exit behavior without claiming
+source-level `finally` or a proven rethrow. Its seeded fallible edge solver now
+drives JVM verification-frame and DEX register-frame analysis directly while
+preserving native errors and source locations. These are infrastructure for
+analysis and later transformations; they do not implement the deferred
+DEX-to-JVM translation itself.
 
 ## Development principles
 
