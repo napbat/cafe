@@ -9,11 +9,11 @@ use mlil::{EdgeRole, EntityId, Function, Instruction, InstructionId, Operation};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, MethodIdentity};
 use crate::model::{GeneratedSpan, SourceMapEntry};
-use crate::names::{rust_string_literal, source_type_descriptor};
+use crate::names::{SourceNames, rust_string_literal};
 use crate::options::{ControlFlowPreference, DecompilerOptions};
 use crate::writer::SourceWriter;
 
-use super::constructor::{ConstructorPrelude, recover as recover_constructor};
+use super::constructor::{ConstructorPrelude, fallback_invocation, recover as recover_constructor};
 use super::instruction::{InstructionRenderer, RenderFailure};
 use super::variables::VariableLayout;
 
@@ -23,6 +23,52 @@ pub(crate) struct RenderedBody {
     pub(crate) source_map: Vec<SourceMapEntry>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BodyKind {
+    InstanceMethod,
+    StaticMethod,
+    Constructor,
+    EnumConstructor,
+    ClassInitializer,
+}
+
+impl BodyKind {
+    pub(crate) fn for_method(name: &str, instance: bool, enum_class: bool) -> Self {
+        if name == java::classfile::INSTANCE_INITIALIZER_NAME {
+            if enum_class {
+                Self::EnumConstructor
+            } else {
+                Self::Constructor
+            }
+        } else if name == java::classfile::CLASS_INITIALIZER_NAME {
+            Self::ClassInitializer
+        } else if instance {
+            Self::InstanceMethod
+        } else {
+            Self::StaticMethod
+        }
+    }
+
+    const fn instance(self) -> bool {
+        matches!(
+            self,
+            Self::InstanceMethod | Self::Constructor | Self::EnumConstructor
+        )
+    }
+
+    const fn constructor(self) -> bool {
+        matches!(self, Self::Constructor | Self::EnumConstructor)
+    }
+
+    const fn enum_constructor(self) -> bool {
+        matches!(self, Self::EnumConstructor)
+    }
+
+    const fn class_initializer(self) -> bool {
+        matches!(self, Self::ClassInitializer)
+    }
+}
+
 pub(crate) struct BodyRequest<'a> {
     pub(crate) function: &'a Function,
     pub(crate) owner: &'a str,
@@ -30,11 +76,10 @@ pub(crate) struct BodyRequest<'a> {
     pub(crate) parameters: &'a [JavaType],
     pub(crate) parameter_names: &'a [String],
     pub(crate) return_type: &'a ReturnType,
-    pub(crate) instance: bool,
-    pub(crate) constructor: bool,
-    pub(crate) class_initializer: bool,
+    pub(crate) kind: BodyKind,
     pub(crate) options: &'a DecompilerOptions,
     pub(crate) rethrow: &'a str,
+    pub(crate) names: &'a SourceNames,
 }
 
 pub(crate) fn render(request: &BodyRequest<'_>) -> RenderedBody {
@@ -49,7 +94,7 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         request.function,
         request.parameters,
         request.parameter_names,
-        request.instance,
+        request.kind.instance(),
     );
     let renderer = InstructionRenderer::new(
         request.function,
@@ -57,33 +102,12 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         request.return_type,
         request.owner,
         request.rethrow,
+        request.names,
+        request.kind.class_initializer(),
     );
     preflight(request.function, &renderer)?;
-    let prelude = request
-        .constructor
-        .then(|| {
-            recover_constructor(
-                request.function,
-                request.owner,
-                request.parameters,
-                request.parameter_names,
-            )
-        })
-        .transpose()?;
-    let mut skipped = prelude
-        .as_ref()
-        .map_or_else(BTreeSet::new, |prelude| prelude.skipped.clone());
-    for point in request.function.dead_code().instructions {
-        if let Some(instruction) = request
-            .function
-            .cfg()
-            .blocks()
-            .get(point.block.index())
-            .and_then(|block| block.instructions().get(point.inst_idx))
-        {
-            skipped.insert(instruction.id());
-        }
-    }
+    let prelude = constructor_prelude(request)?;
+    let skipped = skipped_instructions(request.function, prelude.as_ref());
 
     let ast = request.function.structured_control_flow();
     let exceptional = request
@@ -115,6 +139,7 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         writer: SourceWriter::default(),
         source_map: Vec::new(),
         skipped,
+        class_initializer: request.kind.class_initializer(),
     };
     if let Some(prelude) = prelude {
         context.emit_prelude(&prelude);
@@ -125,15 +150,85 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
     if !request.function.variables().is_empty() {
         context.writer.blank();
     }
+    let guarded_result = structured && matches!(request.return_type, ReturnType::Type(_));
+    let guarded_initializer =
+        request.kind.class_initializer() && !has_explicit_return(request.function);
+    let guarded_body = guarded_initializer || guarded_result;
+    if guarded_body {
+        context
+            .writer
+            .line("if (java.lang.Boolean.TRUE.booleanValue()) {");
+        context.writer.indent();
+    }
     if structured {
         context.render_ast(&ast)?;
     } else {
         context.render_state_machine()?;
     }
+    if guarded_body {
+        context.writer.dedent();
+        context.writer.line("}");
+    }
+    if guarded_result {
+        context.writer.line(
+            "throw new java.lang.AssertionError(\"decompiled control flow completed without a result\");",
+        );
+    }
     Ok(RenderedBody {
         source: context.writer.finish(),
         diagnostics,
         source_map: context.source_map,
+    })
+}
+
+fn constructor_prelude(
+    request: &BodyRequest<'_>,
+) -> Result<Option<ConstructorPrelude>, RenderFailure> {
+    request
+        .kind
+        .constructor()
+        .then(|| {
+            recover_constructor(
+                request.function,
+                request.owner,
+                request.parameters,
+                request.parameter_names,
+                request.names,
+            )
+            .map(|mut prelude| {
+                if request.kind.enum_constructor() {
+                    "super();".clone_into(&mut prelude.source);
+                }
+                prelude
+            })
+        })
+        .transpose()
+}
+
+fn skipped_instructions(
+    function: &Function,
+    prelude: Option<&ConstructorPrelude>,
+) -> BTreeSet<InstructionId> {
+    let mut skipped = prelude.map_or_else(BTreeSet::new, |value| value.skipped.clone());
+    for point in function.dead_code().instructions {
+        if let Some(instruction) = function
+            .cfg()
+            .blocks()
+            .get(point.block.index())
+            .and_then(|block| block.instructions().get(point.inst_idx))
+        {
+            skipped.insert(instruction.id());
+        }
+    }
+    skipped
+}
+
+fn has_explicit_return(function: &Function) -> bool {
+    function.cfg().blocks().iter().any(|block| {
+        block
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.operation(), Operation::Return))
     })
 }
 
@@ -172,6 +267,7 @@ struct RenderContext<'a> {
     writer: SourceWriter,
     source_map: Vec<SourceMapEntry>,
     skipped: BTreeSet<InstructionId>,
+    class_initializer: bool,
 }
 
 impl RenderContext<'_> {
@@ -234,7 +330,8 @@ impl RenderContext<'_> {
                 }
             }
             AstNode::Loop { body, .. } => {
-                self.writer.line("while (true) {");
+                self.writer
+                    .line("while (java.lang.Boolean.TRUE.booleanValue()) {");
                 self.writer.indent();
                 for child in body {
                     self.render_ast(child)?;
@@ -305,6 +402,14 @@ impl RenderContext<'_> {
         structured: bool,
     ) -> Result<(), RenderFailure> {
         if self.skipped.contains(&instruction.id()) {
+            return Ok(());
+        }
+        if self.class_initializer && matches!(instruction.operation(), Operation::Return) {
+            if !structured {
+                let start = self.writer.position();
+                self.writer.line("break cafe_dispatch;");
+                self.map(instruction.id(), start, self.writer.position());
+            }
             return Ok(());
         }
         if matches!(
@@ -387,7 +492,10 @@ impl RenderContext<'_> {
                     return Ok(());
                 }
                 CatchType::Type(descriptor) => {
-                    let catch_type = source_type_descriptor(descriptor)
+                    let catch_type = self
+                        .renderer
+                        .names()
+                        .type_descriptor(descriptor)
                         .map_err(|source| RenderFailure::new(source.to_string()))?;
                     self.writer
                         .line(&format!("if ({error} instanceof {catch_type}) {{"));
@@ -529,14 +637,29 @@ impl RenderContext<'_> {
 
 fn stub(request: &BodyRequest<'_>, message: &str) -> RenderedBody {
     let mut writer = SourceWriter::default();
-    if request.constructor {
-        writer.line("super();");
+    if request.kind.constructor() {
+        let prelude = if request.kind.enum_constructor() {
+            "super();".to_owned()
+        } else {
+            recover_constructor(
+                request.function,
+                request.owner,
+                request.parameters,
+                request.parameter_names,
+                request.names,
+            )
+            .map(|prelude| prelude.source)
+            .ok()
+            .or_else(|| fallback_invocation(request.function, request.owner, request.names))
+            .unwrap_or_else(|| "super();".to_owned())
+        };
+        writer.line(&prelude);
     }
     let throwing = format!(
         "throw new java.lang.UnsupportedOperationException({});",
         rust_string_literal(message)
     );
-    if request.class_initializer {
+    if request.kind.class_initializer() {
         // JLS 8.7 rejects a static initializer that cannot complete normally.
         // This runtime-true guard keeps the conservative throwing stub legal
         // Java without pretending that the unsupported bytecode succeeds.

@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disassembler::ReferenceSymbol;
 use java::descriptor::{JavaType, parse_method};
-use mlil::{CallKind, Function, InstructionId, Operation, VariableId, VariableRole};
+use mlil::{CallKind, Function, InstructionId, Operation, ValueType, VariableId, VariableRole};
 
-use crate::names::source_class_name;
+use crate::names::SourceNames;
 
 use super::instruction::{RenderFailure, constant_expression};
 
@@ -22,6 +22,7 @@ pub(super) fn recover(
     owner: &str,
     parameters: &[JavaType],
     parameter_names: &[String],
+    names: &SourceNames,
 ) -> Result<ConstructorPrelude, RenderFailure> {
     let mut values = initial_values(function, parameters, parameter_names);
     let mut skipped = BTreeSet::new();
@@ -29,7 +30,7 @@ pub(super) fn recover(
         for instruction in function.cfg().block(block).instructions() {
             match instruction.operation() {
                 Operation::Constant(constant) => {
-                    values.insert(instruction.defs()[0], constant_expression(constant)?);
+                    values.insert(instruction.defs()[0], constant_expression(constant, names)?);
                 }
                 Operation::Copy => {
                     let value = values.get(&instruction.uses()[0]).cloned().ok_or_else(|| {
@@ -135,6 +136,56 @@ pub(super) fn recover(
     })
 }
 
+pub(super) fn fallback_invocation(
+    function: &Function,
+    owner: &str,
+    names: &SourceNames,
+) -> Option<String> {
+    for block in function.cfg().reverse_postorder() {
+        for instruction in function.cfg().block(block).instructions() {
+            let Operation::Call {
+                kind: CallKind::Direct | CallKind::Super,
+                target,
+                descriptor: Some(descriptor),
+            } = instruction.operation()
+            else {
+                continue;
+            };
+            if !matches!(
+                instruction.use_types().first(),
+                Some(ValueType::UninitializedThis(_))
+            ) {
+                continue;
+            }
+            let Some(ReferenceSymbol::Method {
+                owner: target_owner,
+                name,
+                ..
+            }) = &target.symbol
+            else {
+                continue;
+            };
+            if name.text != "<init>" {
+                continue;
+            }
+            let descriptor = parse_method(descriptor).ok()?;
+            let arguments = descriptor
+                .parameters
+                .iter()
+                .map(|parameter| default_argument(parameter, names))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let invocation = if same_type(target_owner, owner) {
+                "this"
+            } else {
+                "super"
+            };
+            return Some(format!("{invocation}({arguments});"));
+        }
+    }
+    None
+}
+
 fn initial_values(
     function: &Function,
     parameters: &[JavaType],
@@ -173,6 +224,26 @@ fn coerce_parameter(expression: &str, parameter: &JavaType) -> String {
     }
 }
 
+fn default_argument(value: &JavaType, names: &SourceNames) -> String {
+    match value {
+        JavaType::Boolean => "false".to_owned(),
+        JavaType::Byte => "(byte) 0".to_owned(),
+        JavaType::Char => "(char) 0".to_owned(),
+        JavaType::Short => "(short) 0".to_owned(),
+        JavaType::Int => "0".to_owned(),
+        JavaType::Long => "0L".to_owned(),
+        JavaType::Float => "0.0f".to_owned(),
+        JavaType::Double => "0.0d".to_owned(),
+        JavaType::Object(_) | JavaType::Array(_) => {
+            format!("({}) null", names.value_type(value))
+        }
+    }
+}
+
 fn same_type(left: &str, right: &str) -> bool {
-    source_class_name(left) == source_class_name(right)
+    left.bytes()
+        .map(|byte| if byte == b'.' { b'/' } else { byte })
+        .eq(right
+            .bytes()
+            .map(|byte| if byte == b'.' { b'/' } else { byte }))
 }

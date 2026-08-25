@@ -5,7 +5,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use java::bytecode::{Instruction, Opcode, Operand};
 use java::classfile::{
     Attribute, ClassAccessFlags, ClassFile, CodeAttribute, Constant, FieldAccessFlags,
-    IndexAttribute, KnownAttribute, MethodAccessFlags,
+    IndexAttribute, JAVA_6_MAJOR_VERSION, KnownAttribute, MethodAccessFlags,
 };
 use java::jar::JarFile;
 
@@ -36,6 +36,32 @@ fn valid_class() -> ClassFile {
     .unwrap();
     class.methods[method].set_code(code);
     class
+}
+
+#[test]
+fn preserves_the_legacy_vm_rule_for_interface_abstract_flags() {
+    let class = ClassFile::new(
+        JAVA_6_MAJOR_VERSION - 1,
+        "legacy/package-info",
+        Some("java/lang/Object"),
+        ClassAccessFlags::INTERFACE,
+    )
+    .unwrap();
+    let bytes = class.to_bytes().unwrap();
+    let parsed = ClassFile::parse(&bytes).unwrap();
+    assert_eq!(parsed.to_bytes().unwrap(), bytes);
+    assert!(parsed.access_flags.contains(ClassAccessFlags::INTERFACE));
+    assert!(!parsed.access_flags.contains(ClassAccessFlags::ABSTRACT));
+
+    let mut modern = parsed;
+    modern.major_version = JAVA_6_MAJOR_VERSION;
+    assert!(
+        modern
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("invalid interface access-flag combination")
+    );
 }
 
 #[test]

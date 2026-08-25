@@ -297,6 +297,9 @@ provides:
   MLIL instruction identities to all contributing native bytecode ranges;
 - conservative throwing stubs when a method cannot be represented, including
   Java-legal static-initializer stubs, rather than guessed source semantics;
+- canonical `InnerClasses` type names, omission of source-inexpressible bridge
+  duplicates, and diagnosed removal of `final` where bytecode initialization
+  has not yet been reconstructed as Java definite assignment;
 - compile-back and execution coverage through `javac` for arithmetic,
   branching, natural loops, objects, calls, fields, casts, boolean coercions,
   arrays, switches, and ordered handlers.
@@ -304,8 +307,10 @@ provides:
 Dynamic bootstrap reconstruction and synchronized-region formation still
 produce method diagnostics and stubs. Annotation, enum, and record declarations
 are explicitly diagnosed approximations, and `module-info` is a separate source
-artifact rather than a class declaration. These are source-presentation limits,
-not missing JVM parsing, MLIL semantics, or cross-ISA lowering support.
+artifact rather than a class declaration. Class-level decompilation does not yet
+aggregate member-class bodies into their enclosing JAR compilation units. These
+are source-presentation limits, not missing JVM parsing, MLIL semantics, or
+cross-ISA lowering support.
 
 ## Remaining whole-artifact boundary
 

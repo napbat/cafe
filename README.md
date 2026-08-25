@@ -216,6 +216,14 @@ approximation diagnostics, while `module-info` is rejected as a different
 source artifact. This decompiler is independent of the future DEX-to-JAR
 whole-artifact workflow.
 
+`InnerClasses` metadata is used for canonical source type names, and erased
+bridge duplicates are omitted with diagnostics. Fields whose bytecode
+initialization has not yet been reconstructed as Java definite assignment omit
+the `final` source modifier with an explicit approximation diagnostic. The
+entry points above remain class-level: they do not aggregate member-class bodies
+into an enclosing compilation unit, so compiling an outer class that refers to
+its own nested declarations requires a future JAR-level source coordinator.
+
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
 multidex ordering, exact pristine output, typed signature-block IDs, and

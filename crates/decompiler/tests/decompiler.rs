@@ -8,8 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use decompiler::decompile_class;
 use java::bytecode::{CatchTarget, CodeBuilder, LocalKind, Opcode, Operand};
 use java::classfile::{
-    Attribute, ClassAccessFlags, ClassFile, CodeAttribute, FieldAccessFlags, JAVA_8_MAJOR_VERSION,
-    MethodAccessFlags,
+    Attribute, ClassAccessFlags, ClassFile, CodeAttribute, FieldAccessFlags, InnerClass,
+    InnerClassAccessFlags, InnerClassesAttribute, JAVA_8_MAJOR_VERSION, KnownAttribute,
+    KnownAttributeKind, MethodAccessFlags,
 };
 
 const OWNER: &str = "sample/Arithmetic";
@@ -25,6 +26,7 @@ struct FixtureReferences {
     string_class: u16,
     counter_field: u16,
     flag_field: u16,
+    seed_field: u16,
     always_true_method: u16,
 }
 
@@ -39,11 +41,41 @@ fn fixture() -> TestResult<ClassFile> {
     add_construction_methods(&mut class, &references)?;
     add_type_methods(&mut class, &references)?;
     add_field_and_boolean_methods(&mut class, &references)?;
+    add_bridge_methods(&mut class)?;
     add_array_methods(&mut class)?;
     add_exception_and_switch_methods(&mut class)?;
     add_arithmetic_and_control_methods(&mut class)?;
     class.validate()?;
     Ok(class)
+}
+
+fn add_bridge_methods(class: &mut ClassFile) -> TestResult<()> {
+    add_method(
+        class,
+        MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
+        "covariant",
+        "()Ljava/lang/String;",
+        |code| {
+            let _ = code.emit(Opcode::AConstNull, Operand::None);
+            let _ = code.emit(Opcode::AReturn, Operand::None);
+            Ok(())
+        },
+    )?;
+    add_method(
+        class,
+        MethodAccessFlags::PUBLIC
+            | MethodAccessFlags::STATIC
+            | MethodAccessFlags::BRIDGE
+            | MethodAccessFlags::SYNTHETIC,
+        "covariant",
+        "()Ljava/lang/Object;",
+        |code| {
+            let _ = code.emit(Opcode::AConstNull, Operand::None);
+            let _ = code.emit(Opcode::AReturn, Operand::None);
+            Ok(())
+        },
+    )?;
+    Ok(())
 }
 
 fn fixture_references(class: &mut ClassFile) -> TestResult<FixtureReferences> {
@@ -69,10 +101,16 @@ fn fixture_references(class: &mut ClassFile) -> TestResult<FixtureReferences> {
         "flag",
         "Z",
     )?;
+    class.add_field(
+        FieldAccessFlags::PUBLIC | FieldAccessFlags::STATIC | FieldAccessFlags::FINAL,
+        "seed",
+        "I",
+    )?;
     let counter_field = class
         .constant_pool
         .intern_field_ref(OWNER, "counter", "I")?;
     let flag_field = class.constant_pool.intern_field_ref(OWNER, "flag", "Z")?;
+    let seed_field = class.constant_pool.intern_field_ref(OWNER, "seed", "I")?;
     let always_true_method = class
         .constant_pool
         .intern_method_ref(OWNER, "alwaysTrue", "()Z")?;
@@ -85,6 +123,7 @@ fn fixture_references(class: &mut ClassFile) -> TestResult<FixtureReferences> {
         string_class,
         counter_field,
         flag_field,
+        seed_field,
         always_true_method,
     })
 }
@@ -187,6 +226,18 @@ fn add_field_and_boolean_methods(
     class: &mut ClassFile,
     references: &FixtureReferences,
 ) -> TestResult<()> {
+    add_method(
+        class,
+        MethodAccessFlags::STATIC,
+        "<clinit>",
+        "()V",
+        |code| {
+            let _ = code.emit(Opcode::IConst2, Operand::None);
+            let _ = code.emit(Opcode::PutStatic, Operand::Constant(references.seed_field));
+            let _ = code.emit(Opcode::Return, Operand::None);
+            Ok(())
+        },
+    )?;
     add_method(
         class,
         MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
@@ -487,6 +538,90 @@ fn unsupported_initializer_fixture() -> Result<ClassFile, Box<dyn std::error::Er
     Ok(class)
 }
 
+fn interface_initializer_fixture() -> TestResult<ClassFile> {
+    let mut class = ClassFile::new(
+        JAVA_8_MAJOR_VERSION,
+        "sample/InitializedInterface",
+        Some("java/lang/Object"),
+        ClassAccessFlags::PUBLIC | ClassAccessFlags::INTERFACE | ClassAccessFlags::ABSTRACT,
+    )?;
+    class.add_field(
+        FieldAccessFlags::PUBLIC | FieldAccessFlags::STATIC | FieldAccessFlags::FINAL,
+        "value",
+        "I",
+    )?;
+    let field =
+        class
+            .constant_pool
+            .intern_field_ref("sample/InitializedInterface", "value", "I")?;
+    add_method(
+        &mut class,
+        MethodAccessFlags::STATIC,
+        "<clinit>",
+        "()V",
+        |code| {
+            let _ = code.emit(Opcode::IConst2, Operand::None);
+            let _ = code.emit(Opcode::PutStatic, Operand::Constant(field));
+            let _ = code.emit(Opcode::Return, Operand::None);
+            Ok(())
+        },
+    )?;
+    class.validate()?;
+    Ok(class)
+}
+
+fn constructor_fallback_fixture() -> TestResult<ClassFile> {
+    let mut class = ClassFile::new(
+        JAVA_8_MAJOR_VERSION,
+        "sample/Child",
+        Some("java/lang/Object"),
+        ClassAccessFlags::PUBLIC | ClassAccessFlags::SUPER,
+    )?;
+    class.add_field(
+        FieldAccessFlags::PRIVATE | FieldAccessFlags::STATIC,
+        "marker",
+        "I",
+    )?;
+    let marker = class
+        .constant_pool
+        .intern_field_ref("sample/Child", "marker", "I")?;
+    let object = class
+        .constant_pool
+        .intern_method_ref("java/lang/Object", "<init>", "()V")?;
+    let sibling = class
+        .constant_pool
+        .intern_method_ref("sample/Child", "<init>", "(I)V")?;
+    add_method(
+        &mut class,
+        MethodAccessFlags::PRIVATE,
+        "<init>",
+        "(I)V",
+        |code| {
+            let _ = code.emit_load(LocalKind::Reference, 0);
+            let _ = code.emit(Opcode::InvokeSpecial, Operand::Constant(object));
+            let _ = code.emit(Opcode::Return, Operand::None);
+            Ok(())
+        },
+    )?;
+    add_method(
+        &mut class,
+        MethodAccessFlags::PUBLIC,
+        "<init>",
+        "(Ljava/lang/String;)V",
+        |code| {
+            let _ = code.emit(Opcode::GetStatic, Operand::Constant(marker));
+            let _ = code.emit(Opcode::Pop, Operand::None);
+            let _ = code.emit_load(LocalKind::Reference, 0);
+            let _ = code.emit(Opcode::IConst2, Operand::None);
+            let _ = code.emit(Opcode::InvokeSpecial, Operand::Constant(sibling));
+            let _ = code.emit(Opcode::Return, Operand::None);
+            Ok(())
+        },
+    )?;
+    class.validate()?;
+    Ok(class)
+}
+
 #[test]
 fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::error::Error>> {
     let output = decompile_class(&fixture()?)?;
@@ -507,10 +642,103 @@ fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::
     assert!(output.source.contains("while (true)"), "{}", output.source);
     assert!(output.source.contains("new int["), "{}", output.source);
     assert!(output.source.contains("super();"), "{}", output.source);
+    assert!(output.source.contains("seed ="), "{}", output.source);
+    assert!(
+        output.source.contains("public static int seed;"),
+        "{}",
+        output.source
+    );
+    assert!(
+        !output.source.contains("sample.Arithmetic.seed ="),
+        "{}",
+        output.source
+    );
     assert!(output.source.contains("cafe_dispatch"), "{}", output.source);
+    assert_eq!(output.source.matches(" covariant()").count(), 1);
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == decompiler::DiagnosticCode::DeclarationApproximation
+            && diagnostic.message.contains("omits `final`")
+    }));
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == decompiler::DiagnosticCode::DeclarationApproximation
+            && diagnostic.message.contains("bridge method is omitted")
+    }));
     assert!(!output.source_map.is_empty());
     assert!(output.source_map.iter().all(|entry| {
         entry.generated.start < entry.generated.end && entry.generated.end <= output.source.len()
+    }));
+    Ok(())
+}
+
+#[test]
+fn renders_inner_class_metadata_as_java_member_names() -> TestResult<()> {
+    let mut class = ClassFile::new(
+        JAVA_8_MAJOR_VERSION,
+        "sample/Consumer",
+        Some("java/lang/Object"),
+        ClassAccessFlags::PUBLIC | ClassAccessFlags::SUPER,
+    )?;
+    class.add_field(FieldAccessFlags::PUBLIC, "value", "Lsample/Outer$Inner;")?;
+    let name_index = class
+        .constant_pool
+        .intern_utf8(KnownAttributeKind::InnerClasses.name())?;
+    let inner_class_info_index = class.constant_pool.intern_class("sample/Outer$Inner")?;
+    let outer_class_info_index = class.constant_pool.intern_class("sample/Outer")?;
+    let inner_name_index = class.constant_pool.intern_utf8("Inner")?;
+    class
+        .attributes
+        .push(Attribute::Known(KnownAttribute::InnerClasses(
+            InnerClassesAttribute {
+                name_index,
+                classes: vec![InnerClass {
+                    inner_class_info_index,
+                    outer_class_info_index,
+                    inner_name_index,
+                    access_flags: InnerClassAccessFlags::PUBLIC | InnerClassAccessFlags::STATIC,
+                }],
+            },
+        )));
+    let output = decompile_class(&class)?;
+    assert!(
+        output.source.contains("sample.Outer.Inner value;"),
+        "{}",
+        output.source
+    );
+    Ok(())
+}
+
+#[test]
+fn diagnoses_interface_initialization_that_java_source_cannot_declare() -> TestResult<()> {
+    let output = decompile_class(&interface_initializer_fixture()?)?;
+    assert!(
+        output.source.contains("public static final int value = 0;"),
+        "{}",
+        output.source
+    );
+    assert!(
+        !output.source.contains("\n    static {"),
+        "{}",
+        output.source
+    );
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == decompiler::DiagnosticCode::UnsupportedSemantics
+            && diagnostic
+                .message
+                .contains("interface class initialization")
+    }));
+    Ok(())
+}
+
+#[test]
+fn constructor_stub_preserves_the_required_super_signature() -> TestResult<()> {
+    let output = decompile_class(&constructor_fallback_fixture()?)?;
+    assert!(output.source.contains("this(0);"), "{}", output.source);
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == decompiler::DiagnosticCode::UnsupportedSemantics
+            && diagnostic
+                .method
+                .as_ref()
+                .is_some_and(|method| method.name == "<init>")
     }));
     Ok(())
 }

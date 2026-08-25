@@ -1,8 +1,10 @@
 //! Deterministic Java names, types, and literal escaping.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use disassembler::ExactText;
+use java::classfile::{ClassFile, KnownAttribute, KnownAttributeKind};
 use java::descriptor::{JavaType, ReturnType, parse_field};
 
 use crate::Result;
@@ -23,7 +25,7 @@ pub(crate) fn package_and_simple(internal_name: &str) -> (Option<String>, String
     }
 }
 
-pub(crate) fn source_class_name(internal_name: &str) -> String {
+fn source_class_name(internal_name: &str) -> String {
     internal_name
         .split(['/', '.'])
         .map(|segment| identifier(segment).0)
@@ -31,16 +33,87 @@ pub(crate) fn source_class_name(internal_name: &str) -> String {
         .join(".")
 }
 
-pub(crate) fn source_type_descriptor(descriptor: &str) -> Result<String> {
-    Ok(parse_field(descriptor)?.to_string())
+#[derive(Debug, Default)]
+pub(crate) struct SourceNames {
+    nested: BTreeMap<String, NestedName>,
 }
 
-pub(crate) fn source_type(value: &JavaType) -> String {
-    value.to_string()
+#[derive(Debug)]
+struct NestedName {
+    outer: String,
+    simple: String,
 }
 
-pub(crate) fn source_return_type(value: &ReturnType) -> String {
-    value.to_string()
+impl SourceNames {
+    pub(crate) fn from_class(class: &ClassFile) -> Result<Self> {
+        let Some(KnownAttribute::InnerClasses(attribute)) =
+            class.known_attribute(KnownAttributeKind::InnerClasses)
+        else {
+            return Ok(Self::default());
+        };
+        let mut nested = BTreeMap::new();
+        for entry in &attribute.classes {
+            if entry.outer_class_info_index == 0 || entry.inner_name_index == 0 {
+                continue;
+            }
+            let inner = class
+                .constant_pool
+                .class_name(entry.inner_class_info_index)?
+                .to_owned();
+            let outer = class
+                .constant_pool
+                .class_name(entry.outer_class_info_index)?
+                .to_owned();
+            let simple = identifier(class.constant_pool.utf8(entry.inner_name_index)?).0;
+            nested.insert(inner, NestedName { outer, simple });
+        }
+        Ok(Self { nested })
+    }
+
+    pub(crate) fn class_name(&self, internal_name: &str) -> String {
+        let mut current = internal_name;
+        let mut nested_parts = Vec::new();
+        let mut visited = BTreeSet::new();
+        while let Some(entry) = self.nested.get(current) {
+            if !visited.insert(current) {
+                return source_class_name(internal_name);
+            }
+            nested_parts.push(entry.simple.as_str());
+            current = &entry.outer;
+        }
+        let mut rendered = source_class_name(current);
+        for part in nested_parts.into_iter().rev() {
+            rendered.push('.');
+            rendered.push_str(part);
+        }
+        rendered
+    }
+
+    pub(crate) fn type_descriptor(&self, descriptor: &str) -> Result<String> {
+        Ok(self.value_type(&parse_field(descriptor)?))
+    }
+
+    pub(crate) fn value_type(&self, value: &JavaType) -> String {
+        match value {
+            JavaType::Byte => "byte".to_owned(),
+            JavaType::Char => "char".to_owned(),
+            JavaType::Double => "double".to_owned(),
+            JavaType::Float => "float".to_owned(),
+            JavaType::Int => "int".to_owned(),
+            JavaType::Long => "long".to_owned(),
+            JavaType::Short => "short".to_owned(),
+            JavaType::Boolean => "boolean".to_owned(),
+            JavaType::Object(name) => self.class_name(name),
+            JavaType::Array(element) => format!("{}[]", self.value_type(element)),
+        }
+    }
+
+    pub(crate) fn return_type(&self, value: &ReturnType) -> String {
+        match value {
+            ReturnType::Void => "void".to_owned(),
+            ReturnType::Type(value) => self.value_type(value),
+        }
+    }
 }
 
 pub(crate) fn default_value(value: &JavaType) -> &'static str {

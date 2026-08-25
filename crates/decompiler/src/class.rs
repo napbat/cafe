@@ -13,12 +13,9 @@ use java::classfile::{
 use java::descriptor::{JavaType, MethodDescriptor, parse_field, parse_method};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, MethodIdentity};
-use crate::method::{BodyRequest, render};
+use crate::method::{BodyKind, BodyRequest, render};
 use crate::model::{DecompiledClass, GeneratedSpan, SourceMapEntry};
-use crate::names::{
-    identifier, package_and_simple, source_class_name, source_return_type, source_type,
-    string_literal,
-};
+use crate::names::{SourceNames, identifier, package_and_simple, string_literal};
 use crate::options::DecompilerOptions;
 use crate::writer::SourceWriter;
 use crate::{Error, Result};
@@ -90,6 +87,7 @@ fn render_class(
     }
     let (package, raw_simple_name) = package_and_simple(&internal_name);
     let (simple_name, escaped_class_name) = identifier(&raw_simple_name);
+    let names = SourceNames::from_class(class)?;
     let mut diagnostics = Vec::new();
     if escaped_class_name {
         diagnostics.push(Diagnostic::class_warning(
@@ -105,7 +103,12 @@ fn render_class(
         writer.line(&format!("package {package};"));
         writer.blank();
     }
-    writer.line(&class_header(class, declaration_kind, &simple_name)?);
+    writer.line(&class_header(
+        class,
+        declaration_kind,
+        &simple_name,
+        &names,
+    )?);
     writer.indent();
 
     let mut wrote_member = false;
@@ -124,13 +127,14 @@ fn render_class(
             declaration_kind == DeclarationKind::Interface,
             &internal_name,
             &mut diagnostics,
+            &names,
         )?);
         wrote_member = true;
     }
 
     let mut source_map = Vec::new();
     let mut helper_used = false;
-    for method in &class.methods {
+    for (method_index, method) in class.methods.iter().enumerate() {
         if !options.include_synthetic_members
             && method.access_flags.contains(MethodAccessFlags::SYNTHETIC)
         {
@@ -140,6 +144,38 @@ fn render_class(
         let descriptor_text = method.descriptor(&class.constant_pool)?.to_owned();
         let descriptor = parse_method(&descriptor_text)?;
         let identity = MethodIdentity::new(&name, &descriptor_text);
+        if method.access_flags.contains(MethodAccessFlags::BRIDGE)
+            && class
+                .methods
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    other_index != method_index
+                        && other
+                            .name(&class.constant_pool)
+                            .is_ok_and(|other_name| other_name == name)
+                        && other.descriptor(&class.constant_pool).is_ok_and(|other| {
+                            parameter_descriptor(other) == parameter_descriptor(&descriptor_text)
+                        })
+                })
+        {
+            diagnostics.push(Diagnostic::method_warning(
+                DiagnosticCode::DeclarationApproximation,
+                &internal_name,
+                identity,
+                "bridge method is omitted because Java source cannot declare its erased duplicate",
+            ));
+            continue;
+        }
+        if declaration_kind == DeclarationKind::Interface && name == CLASS_INITIALIZER_NAME {
+            diagnostics.push(Diagnostic::method_error(
+                DiagnosticCode::UnsupportedSemantics,
+                &internal_name,
+                identity,
+                "interface class initialization cannot be represented by a Java initializer block",
+            ));
+            continue;
+        }
         let parameter_names = parameter_names(
             class,
             method,
@@ -164,6 +200,7 @@ fn render_class(
                 declaration_kind,
                 &internal_name,
                 &mut diagnostics,
+                &names,
             )?);
         }
         let has_body = method.code().is_some()
@@ -183,11 +220,14 @@ fn render_class(
                     parameters: &descriptor.parameters,
                     parameter_names: &parameter_names,
                     return_type: &descriptor.return_type,
-                    instance: !method.access_flags.contains(MethodAccessFlags::STATIC),
-                    constructor: name == java::classfile::INSTANCE_INITIALIZER_NAME,
-                    class_initializer: name == CLASS_INITIALIZER_NAME,
+                    kind: BodyKind::for_method(
+                        &name,
+                        !method.access_flags.contains(MethodAccessFlags::STATIC),
+                        class.access_flags.contains(ClassAccessFlags::ENUM),
+                    ),
                     options,
                     rethrow: &helper,
+                    names: &names,
                 };
                 let rendered = render(&request);
                 helper_used |= rendered.source.contains(&helper);
@@ -263,6 +303,12 @@ fn render_class(
     })
 }
 
+fn parameter_descriptor(descriptor: &str) -> &str {
+    descriptor
+        .split_once(')')
+        .map_or(descriptor, |(parameters, _)| parameters)
+}
+
 fn emit_throwing_stub(writer: &mut SourceWriter, message: &str, class_initializer: bool) {
     let throwing = format!(
         "throw new java.lang.UnsupportedOperationException({});",
@@ -318,7 +364,12 @@ fn declaration_kind(
     }
 }
 
-fn class_header(class: &ClassFile, kind: DeclarationKind, simple_name: &str) -> Result<String> {
+fn class_header(
+    class: &ClassFile,
+    kind: DeclarationKind,
+    simple_name: &str,
+    names: &SourceNames,
+) -> Result<String> {
     let mut parts = Vec::new();
     if class.access_flags.contains(ClassAccessFlags::PUBLIC) {
         parts.push("public".to_owned());
@@ -340,7 +391,7 @@ fn class_header(class: &ClassFile, kind: DeclarationKind, simple_name: &str) -> 
         && super_name != java::classfile::JAVA_LANG_OBJECT_NAME
     {
         parts.push("extends".to_owned());
-        parts.push(source_class_name(super_name));
+        parts.push(names.class_name(super_name));
     }
     if !class.interfaces.is_empty() {
         parts.push(if kind == DeclarationKind::Interface {
@@ -352,7 +403,12 @@ fn class_header(class: &ClassFile, kind: DeclarationKind, simple_name: &str) -> 
             class
                 .interfaces
                 .iter()
-                .map(|&index| class.constant_pool.class_name(index).map(source_class_name))
+                .map(|&index| {
+                    class
+                        .constant_pool
+                        .class_name(index)
+                        .map(|name| names.class_name(name))
+                })
                 .collect::<java::Result<Vec<_>>>()?
                 .join(", "),
         );
@@ -366,6 +422,7 @@ fn field_source(
     interface: bool,
     class_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    names: &SourceNames,
 ) -> Result<String> {
     let raw_name = field.name(&class.constant_pool)?;
     let (name, changed) = identifier(raw_name);
@@ -378,13 +435,26 @@ fn field_source(
     }
     let descriptor = field.descriptor(&class.constant_pool)?;
     let field_type = parse_field(descriptor)?;
+    let constant_initializer = constant_value(&class.constant_pool, field, descriptor)?;
     let mut modifiers = field_modifiers(field.access_flags);
     if interface {
         ensure_modifier(&mut modifiers, "public");
         ensure_modifier(&mut modifiers, "static");
         ensure_modifier(&mut modifiers, "final");
+    } else if field.access_flags.contains(FieldAccessFlags::FINAL)
+        && (!field.access_flags.contains(FieldAccessFlags::STATIC)
+            || constant_initializer.is_none())
+    {
+        modifiers.retain(|modifier| *modifier != "final");
+        diagnostics.push(Diagnostic::class_warning(
+            DiagnosticCode::DeclarationApproximation,
+            class_name,
+            format!(
+                "field `{raw_name}` omits `final` until source-level definite assignment is reconstructed"
+            ),
+        ));
     }
-    let initializer = constant_value(&class.constant_pool, field, descriptor)?
+    let initializer = constant_initializer
         .or_else(|| interface.then(|| crate::names::default_value(&field_type).to_owned()));
     Ok(format!(
         "{}{} {name}{};",
@@ -393,7 +463,7 @@ fn field_source(
         } else {
             format!("{} ", modifiers.join(" "))
         },
-        source_type(&field_type),
+        names.value_type(&field_type),
         initializer.map_or_else(String::new, |value| format!(" = {value}"))
     ))
 }
@@ -409,6 +479,7 @@ fn method_header(
     declaration_kind: DeclarationKind,
     class_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    names: &SourceNames,
 ) -> Result<String> {
     let constructor = raw_name == java::classfile::INSTANCE_INITIALIZER_NAME;
     let (name, changed) = if constructor {
@@ -443,19 +514,19 @@ fn method_header(
                 && index + 1 == descriptor.parameters.len()
                 && let JavaType::Array(element) = value_type
             {
-                return format!("{}... {name}", source_type(element));
+                return format!("{}... {name}", names.value_type(element));
             }
-            format!("{} {name}", source_type(value_type))
+            format!("{} {name}", names.value_type(value_type))
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let throws = throws_clause(class, method)?;
+    let throws = throws_clause(class, method, names)?;
     let declaration = if constructor {
         format!("{name}({parameters}){throws}")
     } else {
         format!(
             "{} {name}({parameters}){throws}",
-            source_return_type(&descriptor.return_type)
+            names.return_type(&descriptor.return_type)
         )
     };
     let prefix = if modifiers.is_empty() {
@@ -515,7 +586,7 @@ fn parameter_names(
         .collect()
 }
 
-fn throws_clause(class: &ClassFile, method: &MethodInfo) -> Result<String> {
+fn throws_clause(class: &ClassFile, method: &MethodInfo, names: &SourceNames) -> Result<String> {
     let Some(KnownAttribute::Exceptions(attribute)) =
         method.known_attribute(KnownAttributeKind::Exceptions)
     else {
@@ -524,7 +595,12 @@ fn throws_clause(class: &ClassFile, method: &MethodInfo) -> Result<String> {
     let exceptions = attribute
         .indices
         .iter()
-        .map(|&index| class.constant_pool.class_name(index).map(source_class_name))
+        .map(|&index| {
+            class
+                .constant_pool
+                .class_name(index)
+                .map(|name| names.class_name(name))
+        })
         .collect::<java::Result<Vec<_>>>()?;
     Ok(if exceptions.is_empty() {
         String::new()

@@ -12,7 +12,7 @@ use crate::diagnostic::MethodIdentity;
 use crate::model::DecompiledBody;
 use crate::options::DecompilerOptions;
 
-pub(crate) use self::control::{BodyRequest, render};
+pub(crate) use self::control::{BodyKind, BodyRequest, render};
 
 /// Decompiles one verified MLIL function into Java body statements.
 ///
@@ -42,6 +42,7 @@ pub fn decompile_function(function: &Function, options: &DecompilerOptions) -> D
             };
         }
     };
+    let names = crate::names::SourceNames::default();
     let parameter_names = (0..descriptor.parameters.len())
         .map(|index| format!("parameter{index}"))
         .collect::<Vec<_>>();
@@ -68,11 +69,10 @@ pub fn decompile_function(function: &Function, options: &DecompilerOptions) -> D
         parameters: &descriptor.parameters,
         parameter_names: &parameter_names,
         return_type: &descriptor.return_type,
-        instance,
-        constructor: function.source().symbol.name == java::classfile::INSTANCE_INITIALIZER_NAME,
-        class_initializer: function.source().symbol.name == java::classfile::CLASS_INITIALIZER_NAME,
+        kind: BodyKind::for_method(&function.source().symbol.name, instance, false),
         options,
         rethrow: "cafe_rethrow",
+        names: &names,
     };
     let rendered = render(&request);
     DecompiledBody {

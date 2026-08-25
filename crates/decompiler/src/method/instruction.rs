@@ -12,10 +12,7 @@ use mlil::{
     VariableId,
 };
 
-use crate::names::{
-    identifier, rust_string_literal, source_class_name, source_type, source_type_descriptor,
-    string_literal,
-};
+use crate::names::{SourceNames, identifier, rust_string_literal, string_literal};
 
 use super::variables::{SlotKind, VariableLayout, java_kind};
 
@@ -38,6 +35,8 @@ pub(super) struct InstructionRenderer<'a> {
     return_type: &'a ReturnType,
     owner: &'a str,
     rethrow: &'a str,
+    names: &'a SourceNames,
+    class_initializer: bool,
     allocation_aliases: BTreeMap<AllocationSite, BTreeSet<VariableId>>,
 }
 
@@ -48,6 +47,8 @@ impl<'a> InstructionRenderer<'a> {
         return_type: &'a ReturnType,
         owner: &'a str,
         rethrow: &'a str,
+        names: &'a SourceNames,
+        class_initializer: bool,
     ) -> Self {
         Self {
             function,
@@ -55,6 +56,8 @@ impl<'a> InstructionRenderer<'a> {
             return_type,
             owner,
             rethrow,
+            names,
+            class_initializer,
             allocation_aliases: allocation_aliases(function),
         }
     }
@@ -111,14 +114,14 @@ impl<'a> InstructionRenderer<'a> {
             Operation::CheckCast(reference) => vec![format!(
                 "{} = ({}) {};",
                 self.definition(instruction, 0)?,
-                reference_type(reference)?,
+                reference_type(reference, self.names)?,
                 self.object_use(instruction, 0)?
             )],
             Operation::InstanceOf(reference) => vec![format!(
                 "{} = ({} instanceof {} ? 1 : 0);",
                 self.definition(instruction, 0)?,
                 self.object_use(instruction, 0)?,
-                reference_type(reference)?
+                reference_type(reference, self.names)?
             )],
             Operation::CaughtException(_) => vec![format!(
                 "{} = cafe_caught;",
@@ -172,6 +175,10 @@ impl<'a> InstructionRenderer<'a> {
 
     pub(super) const fn rethrow_name(&self) -> &str {
         self.rethrow
+    }
+
+    pub(super) const fn names(&self) -> &SourceNames {
+        self.names
     }
 
     fn assignment(
@@ -247,7 +254,7 @@ impl<'a> InstructionRenderer<'a> {
         Ok(vec![format!(
             "{} = {};",
             self.definition(instruction, 0)?,
-            constant_expression(constant)?
+            constant_expression(constant, self.names)?
         )])
     }
 
@@ -329,7 +336,9 @@ impl<'a> InstructionRenderer<'a> {
             }
             _ => element_array_descriptor(element),
         };
-        let array_type = source_type_descriptor(descriptor)
+        let array_type = self
+            .names
+            .type_descriptor(descriptor)
             .map_err(|error| RenderFailure::new(error.to_string()))?;
         let JavaType::Array(element_type) =
             parse_field(descriptor).map_err(|error| RenderFailure::new(error.to_string()))?
@@ -359,24 +368,29 @@ impl<'a> InstructionRenderer<'a> {
         access: FieldAccess,
         field: &Reference,
     ) -> Result<String, RenderFailure> {
-        let (owner, name, descriptor) = field_symbol(field)?;
+        let (raw_owner, name, descriptor) = field_symbol(field)?;
         let (name, changed) = identifier(&name.text);
         if changed {
             return Err(RenderFailure::new(
                 "field name is not expressible as a Java identifier",
             ));
         }
-        let owner = source_class_name(owner);
+        let owner = self.names.class_name(raw_owner);
+        let static_field = if raw_owner == self.owner && self.class_initializer {
+            name.clone()
+        } else {
+            format!("{owner}.{name}")
+        };
         let field_type =
             parse_field(descriptor).map_err(|error| RenderFailure::new(error.to_string()))?;
         Ok(match access {
             FieldAccess::GetStatic => format!(
                 "{} = {};",
                 self.definition(instruction, 0)?,
-                java_value_to_slot(&format!("{owner}.{name}"), &field_type)
+                java_value_to_slot(&static_field, &field_type)
             ),
             FieldAccess::PutStatic => format!(
-                "{owner}.{name} = {};",
+                "{static_field} = {};",
                 self.use_as_java_type(instruction, 0, &field_type)?
             ),
             FieldAccess::GetInstance => format!(
@@ -408,6 +422,7 @@ impl<'a> InstructionRenderer<'a> {
             ));
         }
         let (owner, name, _) = method_symbol(target)?;
+        let source_owner = reference_type_name(owner, self.names)?;
         let descriptor =
             descriptor.ok_or_else(|| RenderFailure::new("call has no effective descriptor"))?;
         let parsed =
@@ -439,7 +454,7 @@ impl<'a> InstructionRenderer<'a> {
             let mut lines = vec![format!(
                 "{} = new {}({arguments});",
                 self.variables.object(receiver),
-                source_class_name(owner)
+                source_owner
             )];
             if let Some(aliases) = self.allocation_aliases.get(site) {
                 for &alias in aliases {
@@ -462,13 +477,13 @@ impl<'a> InstructionRenderer<'a> {
         }
         let invocation = match kind {
             CallKind::Static => {
-                format!("{}.{}({arguments})", source_class_name(owner), method_name)
+                format!("{source_owner}.{method_name}({arguments})")
             }
             CallKind::Super => format!("super.{method_name}({arguments})"),
             CallKind::Virtual | CallKind::Interface | CallKind::Direct | CallKind::Polymorphic => {
                 format!(
                     "(({}) {}).{}({arguments})",
-                    source_class_name(owner),
+                    source_owner,
                     self.object_use(instruction, 0)?,
                     method_name
                 )
@@ -513,7 +528,7 @@ impl<'a> InstructionRenderer<'a> {
                 Ok(vec![format!(
                     "{} = {};",
                     self.definition(instruction, 0)?,
-                    new_array(array_type.descriptor(), &lengths)?
+                    new_array(array_type.descriptor(), &lengths, self.names)?
                 )])
             }
             AllocationKind::InitializedArray { array_type } => {
@@ -534,7 +549,7 @@ impl<'a> InstructionRenderer<'a> {
                 Ok(vec![format!(
                     "{} = new {}[] {{{values}}};",
                     self.definition(instruction, 0)?,
-                    source_type(&element)
+                    self.names.value_type(&element)
                 )])
             }
         }
@@ -546,7 +561,9 @@ impl<'a> InstructionRenderer<'a> {
         descriptor: &str,
         values: &[Constant],
     ) -> Result<Vec<String>, RenderFailure> {
-        let array_type = source_type_descriptor(descriptor)
+        let array_type = self
+            .names
+            .type_descriptor(descriptor)
             .map_err(|error| RenderFailure::new(error.to_string()))?;
         let JavaType::Array(element_type) =
             parse_field(descriptor).map_err(|error| RenderFailure::new(error.to_string()))?
@@ -562,7 +579,7 @@ impl<'a> InstructionRenderer<'a> {
             .map(|(index, value)| {
                 Ok(format!(
                     "{array}[{index}] = {};",
-                    constant_as_java_type(value, &element_type)?
+                    constant_as_java_type(value, &element_type, self.names)?
                 ))
             })
             .collect()
@@ -646,7 +663,7 @@ impl<'a> InstructionRenderer<'a> {
             }
             JavaType::Object(_) | JavaType::Array(_) => format!(
                 "({}) {}",
-                source_type(target),
+                self.names.value_type(target),
                 self.variables.object(variable)
             ),
         })
@@ -675,7 +692,10 @@ fn allocation_aliases(function: &Function) -> BTreeMap<AllocationSite, BTreeSet<
     aliases
 }
 
-pub(super) fn constant_expression(value: &Constant) -> Result<String, RenderFailure> {
+pub(super) fn constant_expression(
+    value: &Constant,
+    names: &SourceNames,
+) -> Result<String, RenderFailure> {
     Ok(match value {
         Constant::Null => "null".to_owned(),
         Constant::Integer(value) => value.to_string(),
@@ -684,7 +704,9 @@ pub(super) fn constant_expression(value: &Constant) -> Result<String, RenderFail
         Constant::Double(bits) => format!("java.lang.Double.longBitsToDouble(0x{bits:016x}L)"),
         Constant::Reference(reference) => match &reference.symbol {
             Some(ReferenceSymbol::String(value)) => string_literal(value),
-            Some(ReferenceSymbol::Type(value)) => format!("{}.class", reference_type_name(value)?),
+            Some(ReferenceSymbol::Type(value)) => {
+                format!("{}.class", reference_type_name(value, names)?)
+            }
             Some(ReferenceSymbol::Integer(value)) => value.to_string(),
             Some(ReferenceSymbol::Long(value)) => format!("{value}L"),
             Some(ReferenceSymbol::Float(value)) => {
@@ -707,23 +729,25 @@ pub(super) fn constant_expression(value: &Constant) -> Result<String, RenderFail
     })
 }
 
-fn reference_type(reference: &Reference) -> Result<String, RenderFailure> {
+fn reference_type(reference: &Reference, names: &SourceNames) -> Result<String, RenderFailure> {
     let Some(ReferenceSymbol::Type(value)) = &reference.symbol else {
         return Err(RenderFailure::new(
             "type reference lacks a structured symbol",
         ));
     };
-    reference_type_name(value)
+    reference_type_name(value, names)
 }
 
-fn reference_type_name(value: &str) -> Result<String, RenderFailure> {
+fn reference_type_name(value: &str, names: &SourceNames) -> Result<String, RenderFailure> {
     if value.starts_with('[')
         || (value.starts_with('L') && value.ends_with(';'))
         || matches!(value, "Z" | "B" | "C" | "S" | "I" | "J" | "F" | "D")
     {
-        source_type_descriptor(value).map_err(|error| RenderFailure::new(error.to_string()))
+        names
+            .type_descriptor(value)
+            .map_err(|error| RenderFailure::new(error.to_string()))
     } else {
-        Ok(source_class_name(value))
+        Ok(names.class_name(value))
     }
 }
 
@@ -738,8 +762,9 @@ fn java_value_to_slot(expression: &str, value_type: &JavaType) -> String {
 fn constant_as_java_type(
     constant: &Constant,
     value_type: &JavaType,
+    names: &SourceNames,
 ) -> Result<String, RenderFailure> {
-    let expression = constant_expression(constant)?;
+    let expression = constant_expression(constant, names)?;
     Ok(match value_type {
         JavaType::Boolean => match constant {
             Constant::Integer(value) => (*value != 0).to_string(),
@@ -783,7 +808,11 @@ fn method_symbol(reference: &Reference) -> Result<(&str, &ExactText, &str), Rend
     }
 }
 
-fn new_array(descriptor: &str, lengths: &[String]) -> Result<String, RenderFailure> {
+fn new_array(
+    descriptor: &str,
+    lengths: &[String],
+    names: &SourceNames,
+) -> Result<String, RenderFailure> {
     let mut dimensions = 0usize;
     let mut component = descriptor;
     while let Some(rest) = component.strip_prefix('[') {
@@ -795,8 +824,9 @@ fn new_array(descriptor: &str, lengths: &[String]) -> Result<String, RenderFailu
             "invalid multidimensional array allocation",
         ));
     }
-    let base =
-        source_type_descriptor(component).map_err(|error| RenderFailure::new(error.to_string()))?;
+    let base = names
+        .type_descriptor(component)
+        .map_err(|error| RenderFailure::new(error.to_string()))?;
     let mut expression = format!("new {base}");
     for length in lengths {
         write!(expression, "[{length}]").expect("writing to a String cannot fail");

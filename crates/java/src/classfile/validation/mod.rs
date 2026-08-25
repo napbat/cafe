@@ -17,11 +17,11 @@ use super::attribute::validate_known_model;
 use super::{
     Attribute, AttributeLocation, CLASS_INITIALIZER_DESCRIPTOR, CLASS_INITIALIZER_NAME,
     CODE_ATTRIBUTE_NAME, ClassAccessFlags, ClassFile, CodeAttribute, Constant, ConstantPool,
-    FieldAccessFlags, INSTANCE_INITIALIZER_NAME, JAVA_1_1_MAJOR_VERSION, JAVA_9_MAJOR_VERSION,
-    JAVA_12_MAJOR_VERSION, JAVA_26_MAJOR_VERSION, JAVA_LANG_OBJECT_NAME, KnownAttribute,
-    KnownAttributeKind, MODEL_VALIDATION_OFFSET, MODULE_INFO_CLASS_NAME, MethodAccessFlags,
-    NO_SUPER_CLASS_INDEX, PREVIEW_CLASS_MINOR_VERSION, STANDARD_CLASS_MINOR_VERSION, StackMapFrame,
-    TypeAnnotationTarget, VerificationType,
+    FieldAccessFlags, INSTANCE_INITIALIZER_NAME, JAVA_1_1_MAJOR_VERSION, JAVA_6_MAJOR_VERSION,
+    JAVA_9_MAJOR_VERSION, JAVA_12_MAJOR_VERSION, JAVA_26_MAJOR_VERSION, JAVA_LANG_OBJECT_NAME,
+    KnownAttribute, KnownAttributeKind, MODEL_VALIDATION_OFFSET, MODULE_INFO_CLASS_NAME,
+    MethodAccessFlags, NO_SUPER_CLASS_INDEX, PREVIEW_CLASS_MINOR_VERSION,
+    STANDARD_CLASS_MINOR_VERSION, StackMapFrame, TypeAnnotationTarget, VerificationType,
 };
 
 /// Oldest supported class-file major version (Java 1.1).
@@ -124,7 +124,11 @@ fn validate_class_header(class: &ClassFile) -> Result<()> {
     }
     let flags = class.access_flags;
     if flags.contains(ClassAccessFlags::INTERFACE) {
-        if !flags.contains(ClassAccessFlags::ABSTRACT)
+        // HotSpot supplies ACC_ABSTRACT for legacy interface files before
+        // version 50, preserving compatibility with historical producers.
+        let effectively_abstract = flags.contains(ClassAccessFlags::ABSTRACT)
+            || class.major_version < JAVA_6_MAJOR_VERSION;
+        if !effectively_abstract
             || flags.contains(ClassAccessFlags::FINAL)
             || flags.contains(ClassAccessFlags::SUPER)
             || flags.contains(ClassAccessFlags::ENUM)
