@@ -19,8 +19,10 @@ pub use self::lift::{
     lift_body, lift_body_with_hierarchy, lift_method, lift_method_with_hierarchy,
 };
 pub use self::lower::{
-    DexMlilReferenceResolver, LoweredBody, SourceDexReferenceResolver, TargetDexReferenceResolver,
-    lower_body, lower_body_from_source, lower_body_with_resolver,
+    DexIntrinsicInstruction, DexIntrinsicLoweringError, DexIntrinsicRequest,
+    DexMlilIntrinsicLowerer, DexMlilReferenceResolver, LoweredBody, RejectDexIntrinsics,
+    SourceDexReferenceResolver, TargetDexReferenceResolver, lower_body, lower_body_from_source,
+    lower_body_with_resolver, lower_body_with_resolver_and_intrinsics,
 };
 
 #[cfg(test)]

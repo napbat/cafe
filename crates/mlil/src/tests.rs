@@ -4,7 +4,7 @@ use disassembler::{
 };
 
 use crate::{
-    BranchOperandKind, BranchPredicate, CallKind, Constant, EdgeMetadata, EdgeRole,
+    BinaryOperator, BranchOperandKind, BranchPredicate, CallKind, Constant, EdgeMetadata, EdgeRole,
     FunctionBuilder, Operation, Relation, TypedVariable, ValueType, VariableRole,
 };
 
@@ -129,6 +129,169 @@ fn diamond_verifies_and_exposes_a_phi_in_derived_ssa() {
     let ssa = function.ssa().unwrap();
     assert_eq!(ssa.block(merge).phis.len(), 1);
     assert_eq!(ssa.block(merge).phis[0].result.variable, value);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn semantic_analyses_run_on_the_canonical_payload_bearing_graph() {
+    use disassembler::cfglib::{ConstValue, ProgramPoint};
+
+    let mut builder = FunctionBuilder::new(coordinate());
+    let left = builder
+        .declare_variable(VariableRole::Temporary, None)
+        .unwrap();
+    let right = builder
+        .declare_variable(VariableRole::Temporary, None)
+        .unwrap();
+    let sum = builder
+        .declare_variable(VariableRole::Temporary, None)
+        .unwrap();
+    let copied = builder.declare_variable(VariableRole::Local, None).unwrap();
+    let dead = builder
+        .declare_variable(VariableRole::Temporary, None)
+        .unwrap();
+    let body = builder.new_block("body");
+    let exit = builder.new_block("exit");
+    builder
+        .add_edge(
+            builder.entry(),
+            body,
+            EdgeMetadata::ordinary(EdgeRole::Entry),
+            None,
+        )
+        .unwrap();
+    for (value, variable, address) in [(4, left, 0), (5, right, 1)] {
+        builder
+            .append_instruction(
+                body,
+                Operation::Constant(Constant::Integer(value)),
+                vec![],
+                vec![TypedVariable::new(variable, ValueType::Integer)],
+                false,
+                Some(range(address)),
+            )
+            .unwrap();
+    }
+    builder
+        .append_instruction(
+            body,
+            Operation::Binary(BinaryOperator::Add),
+            vec![
+                TypedVariable::new(left, ValueType::Integer),
+                TypedVariable::new(right, ValueType::Integer),
+            ],
+            vec![TypedVariable::new(sum, ValueType::Integer)],
+            false,
+            Some(range(2)),
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Copy,
+            vec![TypedVariable::new(sum, ValueType::Integer)],
+            vec![TypedVariable::new(copied, ValueType::Integer)],
+            false,
+            Some(range(3)),
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Constant(Constant::Integer(99)),
+            vec![],
+            vec![TypedVariable::new(dead, ValueType::Integer)],
+            false,
+            Some(range(4)),
+        )
+        .unwrap();
+    builder
+        .add_edge(
+            body,
+            exit,
+            EdgeMetadata::ordinary(EdgeRole::FallThrough),
+            Some(range(5)),
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            exit,
+            Operation::Return,
+            vec![TypedVariable::new(copied, ValueType::Integer)],
+            vec![],
+            false,
+            Some(range(5)),
+        )
+        .unwrap();
+
+    let function = builder.finish().unwrap();
+    let copy_site = ProgramPoint {
+        block: body,
+        inst_idx: 3,
+    };
+    let return_site = ProgramPoint {
+        block: exit,
+        inst_idx: 0,
+    };
+    let chains = function.def_use();
+    assert!(chains.uses_of(copy_site).contains(&return_site));
+
+    let liveness = function.liveness();
+    assert!(liveness.is_live_out(&copied, body));
+    assert!(liveness.is_live_in(&copied, exit));
+    assert!(
+        liveness
+            .all_live_variables(function.cfg())
+            .contains(&copied)
+    );
+
+    let constants = function.constants();
+    assert_eq!(
+        constants.fact_out(body).get(&copied),
+        Some(&ConstValue::Const(Constant::Integer(9)))
+    );
+    assert_eq!(
+        constants.fact_out(body).get(&dead),
+        Some(&ConstValue::Const(Constant::Integer(99)))
+    );
+    let sparse = function.sparse_constants().unwrap();
+    assert!(
+        sparse
+            .values
+            .values()
+            .any(|value| value == &ConstValue::Const(Constant::Integer(9)))
+    );
+
+    let expressions = function.expressions();
+    let body_expressions = expressions
+        .iter()
+        .find(|expressions| expressions.block == body)
+        .unwrap();
+    let copied_expression = body_expressions
+        .roots
+        .iter()
+        .find(|(variable, _)| *variable == copied)
+        .unwrap();
+    assert!(copied_expression.1.depth() >= 3);
+
+    let dead_code = function.dead_code();
+    assert_eq!(
+        dead_code.instructions,
+        vec![ProgramPoint {
+            block: body,
+            inst_idx: 4,
+        }]
+    );
+    assert!(dead_code.unreachable_blocks.is_empty());
+    let (without_dead_code, removed) = function.dead_code_eliminated_cfg();
+    assert_eq!(removed, 1);
+    assert_eq!(without_dead_code.block(body).instructions().len(), 4);
+
+    let (rewritten, statistics) = function.copy_propagated_cfg();
+    assert_eq!(statistics.uses_rewritten, 1);
+    assert_eq!(statistics.copies_removed, 1);
+    assert_eq!(rewritten.block(exit).instructions()[0].uses(), &[sum]);
+    assert_eq!(function.cfg().block(body).instructions().len(), 5);
 }
 
 #[test]

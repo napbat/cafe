@@ -3,6 +3,7 @@ members = [
     "crates/art",
     "crates/cafe",
     "crates/classpath",
+    "crates/decompiler",
     "crates/dex",
     "crates/disassembler",
     "crates/java",
@@ -14,6 +15,7 @@ default-members = [
     "crates/art",
     "crates/cafe",
     "crates/classpath",
+    "crates/decompiler",
     "crates/dex",
     "crates/disassembler",
     "crates/java",
@@ -35,6 +37,7 @@ homepage = "https://github.com/napbat/cafe"
 art = { version = "0.1.0", path = "crates/art" }
 cafe = { version = "0.1.0", path = "crates/cafe" }
 classpath = { version = "0.1.0", path = "crates/classpath" }
+decompiler = { version = "0.1.0", path = "crates/decompiler" }
 disassembler = { version = "0.1.0", path = "crates/disassembler" }
 dex = { version = "0.1.0", path = "crates/dex" }
 jni = { version = "0.1.0", path = "crates/jni" }

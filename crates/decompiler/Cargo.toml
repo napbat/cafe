@@ -1,26 +1,21 @@
 [package]
-name = "cafe"
+name = "decompiler"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Complete entry point for Java bytecode analysis, editing, and source decompilation"
+description = "Verified MLIL-backed Java source decompiler for JVM class files"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
-keywords = ["java", "jvm", "dex", "jni", "bytecode"]
+keywords = ["java", "jvm", "decompiler", "bytecode", "analysis"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
-art.workspace = true
-classpath.workspace = true
-decompiler.workspace = true
-dex.workspace = true
 disassembler.workspace = true
 java.workspace = true
-jni.workspace = true
 mlil.workspace = true
-program.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

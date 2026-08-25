@@ -1,6 +1,8 @@
 //! Checked canonical lowering from shared MLIL to Dalvik LLIL.
 
+mod arrays;
 mod instruction;
+mod intrinsic;
 mod layout;
 mod opcodes;
 mod registers;
@@ -24,6 +26,10 @@ use crate::instruction::IndexKind;
 use crate::llil;
 
 use self::instruction::{Emission, emit_instruction};
+pub use self::intrinsic::{
+    DexIntrinsicInstruction, DexIntrinsicLoweringError, DexIntrinsicRequest,
+    DexMlilIntrinsicLowerer, RejectDexIntrinsics,
+};
 use self::layout::Planner;
 use self::registers::RegisterAllocation;
 use super::{Error, Result};
@@ -212,6 +218,24 @@ pub fn lower_body_with_resolver<R: DexMlilReferenceResolver>(
     function: &Function,
     resolver: &mut R,
 ) -> Result<LoweredBody> {
+    lower_body_with_resolver_and_intrinsics(file, function, resolver, &mut RejectDexIntrinsics)
+}
+
+/// Lowers verified MLIL with explicit target reference and intrinsic policies.
+///
+/// # Errors
+///
+/// Returns the same failures as [`lower_body_with_resolver`] plus a contextual
+/// failure from `intrinsics` when it declines or mis-encodes an operation.
+pub fn lower_body_with_resolver_and_intrinsics<
+    R: DexMlilReferenceResolver,
+    I: DexMlilIntrinsicLowerer,
+>(
+    file: &DexFile,
+    function: &Function,
+    resolver: &mut R,
+    intrinsics: &mut I,
+) -> Result<LoweredBody> {
     verify_function(function)?;
     let allocation = RegisterAllocation::compute(function)?;
     let mut planner = Planner::new();
@@ -230,6 +254,7 @@ pub fn lower_body_with_resolver<R: DexMlilReferenceResolver>(
                 &allocation,
                 file,
                 resolver,
+                intrinsics,
                 function,
                 block.id(),
             )?;

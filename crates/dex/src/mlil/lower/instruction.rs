@@ -10,6 +10,10 @@ use disassembler::{AddressRange, CodeAddress, ReferenceKind};
 use crate::file::{DexFile, MethodIndex};
 use crate::instruction::{ArrayDataPayload, IndexKind, Opcode, Operands};
 
+use super::arrays::{
+    emit_initialized_array, emit_multidimensional_array, initialized_array_needs_expansion,
+};
+use super::intrinsic::{DexIntrinsicRequest, DexMlilIntrinsicLowerer};
 use super::opcodes::{
     array_opcode, binary_opcode, branch_opcode, call_opcode, comparison_opcode, conversion_opcode,
     field_opcode, inverted_branch, return_opcode, unary_opcode,
@@ -25,19 +29,20 @@ pub(super) struct Emission {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MoveKind {
+pub(super) enum MoveKind {
     Narrow,
     Wide,
     Object,
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) fn emit_instruction<R: DexMlilReferenceResolver>(
+pub(super) fn emit_instruction<R: DexMlilReferenceResolver, I: DexMlilIntrinsicLowerer>(
     planner: &mut Planner,
     instruction: &Instruction,
     allocation: &RegisterAllocation,
     file: &DexFile,
     resolver: &mut R,
+    intrinsics: &mut I,
     function: &Function,
     block: BlockId,
 ) -> Result<Emission> {
@@ -396,10 +401,61 @@ pub(super) fn emit_instruction<R: DexMlilReferenceResolver>(
             store_single(planner, instruction, allocation, 0)?;
         }
         Operation::Intrinsic(name) => {
-            return Err(Error::lowering(
-                instruction.id(),
-                format!("Dalvik backend does not encode MLIL intrinsic `{name}`"),
-            ));
+            let use_registers = instruction
+                .uses()
+                .iter()
+                .map(|&variable| allocation.register(variable))
+                .collect::<Vec<_>>();
+            let definition_registers = instruction
+                .defs()
+                .iter()
+                .map(|&variable| allocation.register(variable))
+                .collect::<Vec<_>>();
+            let expansion = intrinsics
+                .lower(
+                    DexIntrinsicRequest {
+                        instruction: instruction.id(),
+                        name,
+                        use_registers: &use_registers,
+                        use_types: instruction.use_types(),
+                        definition_registers: &definition_registers,
+                        definition_types: instruction.def_types(),
+                        scratch_registers: 0..super::registers::MINIMUM_SCRATCH_WORDS,
+                    },
+                    file,
+                )
+                .map_err(|error| Error::lowering(instruction.id(), error.to_string()))?;
+            if expansion.is_empty() && instruction.may_throw() {
+                return Err(Error::lowering(
+                    instruction.id(),
+                    "may-throw Dalvik intrinsic policy returned an empty expansion",
+                ));
+            }
+            if let Some(operation) = expansion.iter().find(|operation| {
+                operation.opcode.is_conditional_branch()
+                    || operation.opcode.is_unconditional_branch()
+                    || operation.opcode.is_return()
+                    || operation.opcode.is_switch()
+                    || operation.opcode == Opcode::Throw
+            }) {
+                return Err(Error::lowering(
+                    instruction.id(),
+                    format!(
+                        "Dalvik intrinsic policy returned non-straight-line opcode `{}`",
+                        operation.opcode.mnemonic()
+                    ),
+                ));
+            }
+            let intrinsic_start = planner.cursor();
+            for operation in expansion {
+                plain(planner, operation.opcode, operation.operands)?;
+            }
+            throw_range = instruction.may_throw().then(|| {
+                AddressRange::new(
+                    CodeAddress::from(intrinsic_start),
+                    CodeAddress::from(planner.cursor()),
+                )
+            });
         }
     }
     Ok(Emission {
@@ -472,7 +528,12 @@ fn emit_result(
     store_single(planner, instruction, allocation, 0)
 }
 
-fn move_value(planner: &mut Planner, destination: u16, source: u16, kind: MoveKind) -> Result<()> {
+pub(super) fn move_value(
+    planner: &mut Planner,
+    destination: u16,
+    source: u16,
+    kind: MoveKind,
+) -> Result<()> {
     if destination == source {
         return Ok(());
     }
@@ -644,7 +705,6 @@ fn emit_allocation<R: DexMlilReferenceResolver>(
     kind: &AllocationKind,
     throw_range: &mut Option<AddressRange>,
 ) -> Result<()> {
-    let staged = stage_uses(planner, instruction, allocation)?;
     match kind {
         AllocationKind::Object(reference) => {
             let index = resolve(file, resolver, reference, IndexKind::Type, instruction.id())?;
@@ -662,6 +722,7 @@ fn emit_allocation<R: DexMlilReferenceResolver>(
             array_type,
             dimensions: 1,
         } => {
+            let staged = stage_uses(planner, instruction, allocation)?;
             let descriptor = array_type.descriptor();
             let index = resolver
                 .resolve_type(file, descriptor)
@@ -684,44 +745,40 @@ fn emit_allocation<R: DexMlilReferenceResolver>(
             })?;
             store_single(planner, instruction, allocation, 0)?;
         }
+        AllocationKind::Array {
+            array_type,
+            dimensions,
+        } if *dimensions > 1 => {
+            *throw_range = emit_multidimensional_array(
+                planner,
+                instruction,
+                allocation,
+                file,
+                resolver,
+                array_type,
+                *dimensions,
+            )?;
+        }
         AllocationKind::InitializedArray { array_type } => {
-            let descriptor = array_type.descriptor();
-            if matches!(
-                descriptor
-                    .strip_prefix('[')
-                    .and_then(|value| value.as_bytes().first()),
-                Some(b'J' | b'D')
-            ) {
-                return Err(Error::lowering(
-                    instruction.id(),
-                    "Dalvik filled-new-array cannot contain wide primitive elements",
-                ));
-            }
-            let index = resolver
-                .resolve_type(file, descriptor)
-                .map_err(|source| Error::Reference {
-                    instruction: instruction.id(),
-                    source,
-                })?
-                .get();
-            require_u16_index(index, instruction.id(), "array type")?;
-            let count =
-                u8::try_from(words(instruction.use_types(), instruction.id())?).map_err(|_| {
-                    Error::lowering(instruction.id(), "filled-array operand width exceeds 255")
-                })?;
-            *throw_range = primary(planner, instruction, |planner| {
-                plain(
+            if initialized_array_needs_expansion(instruction) {
+                *throw_range = emit_initialized_array(
                     planner,
-                    Opcode::FilledNewArrayRange,
-                    Operands::RegisterRangeIndex {
-                        start: 0,
-                        count,
-                        index,
-                        secondary_index: None,
-                    },
-                )
-            })?;
-            emit_result(planner, instruction, allocation)?;
+                    instruction,
+                    allocation,
+                    file,
+                    resolver,
+                    array_type,
+                )?;
+                return Ok(());
+            }
+            *throw_range = emit_direct_initialized_array(
+                planner,
+                instruction,
+                allocation,
+                file,
+                resolver,
+                array_type,
+            )?;
         }
         AllocationKind::Array { .. } => {
             return Err(Error::lowering(
@@ -731,6 +788,41 @@ fn emit_allocation<R: DexMlilReferenceResolver>(
         }
     }
     Ok(())
+}
+
+fn emit_direct_initialized_array<R: DexMlilReferenceResolver>(
+    planner: &mut Planner,
+    instruction: &Instruction,
+    allocation: &RegisterAllocation,
+    file: &DexFile,
+    resolver: &mut R,
+    array_type: &::mlil::ArrayType,
+) -> Result<Option<AddressRange>> {
+    stage_uses(planner, instruction, allocation)?;
+    let index = resolver
+        .resolve_type(file, array_type.descriptor())
+        .map_err(|source| Error::Reference {
+            instruction: instruction.id(),
+            source,
+        })?
+        .get();
+    require_u16_index(index, instruction.id(), "array type")?;
+    let count = u8::try_from(words(instruction.use_types(), instruction.id())?)
+        .map_err(|_| Error::lowering(instruction.id(), "filled-array operand width exceeds 255"))?;
+    let throw_range = primary(planner, instruction, |planner| {
+        plain(
+            planner,
+            Opcode::FilledNewArrayRange,
+            Operands::RegisterRangeIndex {
+                start: 0,
+                count,
+                index,
+                secondary_index: None,
+            },
+        )
+    })?;
+    emit_result(planner, instruction, allocation)?;
+    Ok(throw_range)
 }
 
 fn resolve<R: DexMlilReferenceResolver>(
@@ -748,7 +840,7 @@ fn resolve<R: DexMlilReferenceResolver>(
         })
 }
 
-fn require_u16_index(index: u32, instruction: InstructionId, kind: &str) -> Result<()> {
+pub(super) fn require_u16_index(index: u32, instruction: InstructionId, kind: &str) -> Result<()> {
     u16::try_from(index)
         .map(drop)
         .map_err(|_| Error::lowering(instruction, format!("Dalvik {kind} index exceeds u16")))
@@ -828,6 +920,6 @@ fn move_kind(value_type: &ValueType, instruction: InstructionId) -> Result<MoveK
     }
 }
 
-fn plain(planner: &mut Planner, opcode: Opcode, operands: Operands) -> Result<()> {
+pub(super) fn plain(planner: &mut Planner, opcode: Opcode, operands: Operands) -> Result<()> {
     planner.plain(opcode, operands).map(drop)
 }

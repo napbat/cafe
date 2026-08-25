@@ -2,6 +2,7 @@
 
 mod arrays;
 mod instruction;
+mod intrinsic;
 mod locals;
 mod typing;
 
@@ -17,6 +18,10 @@ use crate::llil;
 use crate::{DisplayJavaReferenceResolver, JavaReferenceResolutionError, JavaReferenceResolver};
 
 use self::instruction::{Emission, emit_instruction};
+pub use self::intrinsic::{
+    JavaIntrinsicInstruction, JavaIntrinsicLoweringError, JavaIntrinsicRequest,
+    JavaMlilIntrinsicLowerer, RejectJavaIntrinsics,
+};
 use self::locals::LocalAllocation;
 use super::{Error, Result};
 
@@ -127,6 +132,24 @@ pub fn lower_body_with_resolver<R: JavaReferenceResolver>(
     pool: &mut ConstantPool,
     resolver: &mut R,
 ) -> Result<LoweredBody> {
+    lower_body_with_resolver_and_intrinsics(function, pool, resolver, &mut RejectJavaIntrinsics)
+}
+
+/// Lowers verified MLIL with explicit target reference and intrinsic policies.
+///
+/// # Errors
+///
+/// Returns the same failures as [`lower_body_with_resolver`] plus a contextual
+/// failure from `intrinsics` when it declines or mis-encodes an operation.
+pub fn lower_body_with_resolver_and_intrinsics<
+    R: JavaReferenceResolver,
+    I: JavaMlilIntrinsicLowerer,
+>(
+    function: &Function,
+    pool: &mut ConstantPool,
+    resolver: &mut R,
+    intrinsics: &mut I,
+) -> Result<LoweredBody> {
     verify_function(function)?;
     let allocation = LocalAllocation::compute(function)?;
     let mut builder = CodeBuilder::new();
@@ -154,6 +177,7 @@ pub fn lower_body_with_resolver<R: JavaReferenceResolver>(
                 &allocation,
                 pool,
                 resolver,
+                intrinsics,
                 function,
                 &labels,
                 block.id(),

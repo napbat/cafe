@@ -1,7 +1,8 @@
 //! Proof that a consumer can reach every Cafe capability through one crate.
 
 use cafe::{
-    ModuleSource, Program, art, cfglib, classpath, dex, disassembler, java, jni, mlil, program,
+    ModuleSource, Program, art, cfglib, classpath, decompiler, dex, disassembler, java, jni, mlil,
+    program,
 };
 
 #[test]
@@ -22,6 +23,9 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
         "transform",
         "([B)Ljava/lang/String;",
     )?;
+    let recovered_source = decompiler::decompile_class(&class)?;
+    assert!(recovered_source.source.contains("class Native"));
+    assert!(recovered_source.source.contains("native"));
 
     let module = class.to_module()?;
     let emitted_classes = java::emit_module(&module)?;
@@ -107,6 +111,7 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<mlil::Function>();
     let _ = std::any::type_name::<mlil::ArrayType>();
     let _ = std::any::type_name::<mlil::EdgeMetadata>();
+    let _ = std::any::type_name::<decompiler::DecompiledClass>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
     let _: fn(

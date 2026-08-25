@@ -20,8 +20,9 @@ These rules apply to the entire repository.
   on the disassembler, but never on Cafe or a native frontend.
 - Keep `crates/mlil` neutral across Java ecosystem formats. It owns the typed
   semantic value and operation model, verified cfglib-backed functions, exact
-  semantic edge payloads, format-qualified native provenance, dominance, and
-  SSA entry points. It may depend on the disassembler, but never on Cafe or a
+  semantic edge payloads, format-qualified native provenance, dominance, SSA,
+  data-flow, expression, dead-code, and structured-control entry points. It may
+  depend on the disassembler, but never on Cafe or a
   native frontend. It must not own native instruction decoding, LLIL encoding,
   whole-artifact DEX-to-JVM policy, or source-decompiler presentation.
 - Keep `crates/classpath` as the cross-format Java type-world aggregator. It
@@ -29,6 +30,13 @@ These rules apply to the entire repository.
   declarations, diagnoses conflicting declarations, and supplies explicit JVM
   and DEX hierarchy views. It may depend on Java, DEX, and Program, but never
   on Cafe or container-specific policy.
+- Keep `crates/decompiler` as the focused JVM-class-to-Java-source presentation
+  layer. It lifts executable methods through verified MLIL, owns Java source
+  rendering policies, structured recovery diagnostics, and generated-source
+  provenance, and may depend on Java, MLIL, and the disassembler. It must not
+  depend on Cafe, mutate input class files, absorb DEX-to-JAR coordination, or
+  guess unsupported semantics without an explicit diagnostic and conservative
+  stub.
 - Keep `crates/cafe` the only consumer entry point. It depends on and publicly
   re-exports every workspace capability under a concept-named namespace, while
   re-exporting Program's core types at its root. Every new feature crate must
@@ -98,6 +106,9 @@ These rules apply to the entire repository.
   Keep the crate's root a narrow re-export facade.
 - In Classpath, keep canonical declaration models, hierarchy queries, native
   views, ingestion, and errors independent.
+- In Decompiler, keep class declarations, method control recovery, instruction
+  rendering, variable layout, Java naming, diagnostics, and generated source
+  maps independent. Keep the crate root a narrow documented facade.
 - In Java, keep `classfile/`, `bytecode/`, `llil/`, `mlil/`, `jar/`,
   `disassembly/`, and `program/` independent. Keep frame analysis under
   `analysis/`, corpus
@@ -177,6 +188,12 @@ These rules apply to the entire repository.
   LLIL encoding provenance.
 - Preserve unknown class-file attributes and exact modified UTF-8/UTF-16 data
   so unchanged class files remain lossless through parse/assemble round trips.
+- Recover Java source only from verified MLIL. Structure dominance-proven
+  reducible flow, retain exact ordered exception dispatch through a Java-valid
+  state machine when necessary, and map generated spans through stable MLIL
+  identities to native provenance. Unsupported dynamic linkage,
+  synchronization structure, or declaration sugar must produce deterministic
+  diagnostics rather than invented source semantics.
 
 ## Shared disassembly and Program
 
@@ -236,7 +253,12 @@ These rules apply to the entire repository.
   implicit DEX results and exceptions, dominance and SSA, both frontend
   lift/lower adapters, same-ISA LLIL-to-MLIL-to-LLIL relifting, and cross-ISA
   MLIL-to-target-LLIL-to-MLIL relifting through Cafe, including references,
-  arrays, calls, and exceptional control flow.
+  arrays, calls, and exceptional control flow. Cover MLIL definition/use,
+  liveness, constant, expression, copy, dead-code, and structured-control
+  analyses on payload-bearing graphs. Compile generated Java source with
+  `javac` and execute fixtures covering arithmetic, branches, loops, objects,
+  fields, calls, casts, boolean coercion, arrays, switches, ordered exception
+  handlers, source maps, diagnostics, and conservative unsupported stubs.
 - Require all of these commands to pass:
 
   ```text

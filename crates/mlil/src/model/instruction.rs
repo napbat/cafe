@@ -138,6 +138,14 @@ impl Instruction {
     pub fn may_throw(&self) -> bool {
         self.effects.contains(&Effect::Throw)
     }
+
+    pub(crate) fn rewrite_use(&mut self, old: VariableId, new: VariableId) {
+        for variable in &mut self.uses {
+            if *variable == old {
+                *variable = new;
+            }
+        }
+    }
 }
 
 impl InstrInfo for Instruction {

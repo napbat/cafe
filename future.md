@@ -13,9 +13,10 @@ Both families now have parsing, assembly, executable analysis, ISA-specific
 reversible LLIL, bidirectional adaptation through a shared typed MLIL, corpus,
 archive, provenance, shared adapters, unified classpath aggregation, and
 verified Program-to-native emission. They intentionally do not share one
-low-level instruction model.
-Higher-level analysis and function-body retargeting now converge above MLIL.
-Whole-artifact DEX-to-class/JAR translation remains a separate future boundary.
+low-level instruction model. Higher-level data-flow and structured-control
+analysis converge above MLIL, and JVM class files can be recovered as Java
+source through a focused decompiler. Whole-artifact DEX-to-class/JAR
+translation remains a separate future boundary.
 
 The shared CFG boundary now retains stable parallel edge identities and typed
 caller payloads for switch arms, ordered handlers, exact instruction throw
@@ -171,7 +172,11 @@ The `mlil` crate now provides:
 - deterministic many-to-many native provenance for instruction expansion,
   synthetic semantics, and DEX payload fusion;
 - strict structural, typing, terminator, edge, exception, identity, and
-  provenance verification, followed by dominance and SSA construction.
+  provenance verification, followed by dominance and SSA construction;
+- definition/use chains, liveness, forward and sparse constants, block-local
+  expression recovery, copy-propagated views, effect-aware dead-code analysis
+  and elimination, and conservative cfglib structured-control recovery over
+  the canonical payload-bearing graph.
 
 The JVM adapter consumes verified frame states and preserves constructor alias
 initialization through explicit type refinement. The DEX adapter consumes
@@ -200,7 +205,9 @@ The neutral layers and focused frontends now provide:
   exposes borrowed JVM and DEX analysis views;
 - exact cfglib handler-type identities, native opcode throwability, recovered
   exception ownership evidence, and a conservative derived structured-lifting
-  path.
+  path;
+- reusable MLIL data-flow, expression, dead-code, and control-structure
+  analyses that retain caller-owned edge payloads.
 
 These capabilities support native editing, shared semantic analysis,
 same-family rebuilds, and cross-ISA function retargeting. MLIL-to-LLIL lowering
@@ -224,9 +231,17 @@ format is provenance, not lowering eligibility:
   tables, and reconstructs ordered try handlers;
 - MLIL array types use exact semantic descriptors, and array initialization
   uses typed constants rather than JVM allocation-form flags or raw DEX payload
-  bytes; each backend selects or expands its native form;
+  bytes; each backend selects or expands its native form, including wide and
+  oversized Dalvik initialized arrays;
+- JVM multi-dimensional allocation is legalized into checked nested Dalvik
+  allocation loops with Java-compatible negative-dimension exception order,
+  while primitive DEX class literals become the corresponding JVM wrapper
+  `TYPE` field;
 - calls retain semantic dispatch plus separate declared-target and effective
   descriptors for signature-polymorphic invocation;
+- implementation-defined intrinsics require explicit target policies; policy
+  expansions are verified, may not hide control flow, and may not erase a
+  potentially throwing native interval;
 - both return deterministic source maps from original native provenance to
   generated ranges, reject only invalid or target-unencodable semantics, omit
   stale offset-based metadata, validate the generated LLIL, and pass
@@ -238,33 +253,68 @@ pool. The default Dalvik lowerer symbolically resolves them against explicit
 target identifier tables, which can be prepared with `DexBuilder`. Separate
 `lower_body_from_source` entry points reuse checked native indices only when the
 caller intentionally supplies the original source tables. Recursive bootstrap,
-call-site, and method-handle metadata still requires a richer caller-provided
-resolver. These are linkage requirements, not MLIL source-origin restrictions.
+call-site, and method-handle metadata requires a caller-provided target resolver
+with access to the destination artifact's tables. This is deliberately target
+linkage policy rather than source-ISA mechanics or a reason to make MLIL
+recursive constant-pool storage.
 
 Function-level retargeting is deliberately checked rather than approximate.
-The Dalvik backend still reports JVM multi-dimensional single-operation array
-allocation until a control-flow expansion preserves allocation order and
-exception behavior; the JVM backend still reports primitive DEX class constants
-until wrapper `TYPE` field legalization is modeled. MLIL intrinsics require an
-explicit target policy. These are target legalization gaps, not reasons to put
-stack, register, or payload encoding mechanics back into MLIL.
+Every currently modeled cross-ISA semantic operation either has a verified
+target form, uses explicit caller linkage or intrinsic policy, or returns a
+structured target-encoding error. Stack, register, constant-pool, identifier,
+and payload mechanics remain in their owning lowerers rather than leaking into
+MLIL.
 
-## Remaining generic-analysis and whole-artifact boundary
+## Completed generic analysis and Java source decompilation
 
-The next decompiler layer belongs above MLIL. It should add reusable definition
-and use chains, sparse constant and copy propagation, liveness, alias-aware dead
-code elimination, expression formation, and conservative structured-control
-recovery. Exception-aware analyses must retain exact edge identities and must
-not turn catch-all handlers into invented `finally` constructs. A later
-high-level IL may represent recovered expressions and statements, but it must
-keep a traceable mapping to MLIL and native provenance.
+The neutral `mlil` API exposes reusable definition/use chains, liveness,
+forward and sparse constants, expression trees, copy propagation, effect-aware
+dead-code reporting and elimination, and structured-control recovery. cfglib's
+solvers and AST lifter accept caller-owned edge payloads directly, and natural
+loops are detected by dominance even when a frontend correctly retains the
+native edge as an ordinary jump. Memory reads, writes, allocation, calls,
+synchronization, throwing operations, and control flow remain observable during
+dead-code elimination; Cafe does not speculate about heap aliases to erase
+source-visible operations.
+
+The focused `decompiler` crate, publicly available as `cafe::decompiler`, now
+provides:
+
+- parsed-class and raw-byte JVM class-file entry points plus a hierarchy-aware
+  variant for strict frame merging;
+- per-method lifting through verified MLIL and reusable analysis over the same
+  exact payload-bearing graph;
+- Java declarations for ordinary classes and interfaces, fields, methods,
+  constructors, static initializers, parameters, constants, and declared
+  exceptions;
+- structured Java branches and natural loops when cfglib proves a reducible
+  representation, with an exact Java-valid state machine for switches,
+  irreducible flow, and ordered exception dispatch;
+- typed rendering for constants, arithmetic, conversions, comparisons,
+  arrays, fields, calls, allocation and constructor aliases, casts,
+  `instanceof`, returns, throws, and caught exceptions;
+- deterministic diagnostics and UTF-8 generated spans mapped through stable
+  MLIL instruction identities to all contributing native bytecode ranges;
+- conservative throwing stubs when a method cannot be represented, including
+  Java-legal static-initializer stubs, rather than guessed source semantics;
+- compile-back and execution coverage through `javac` for arithmetic,
+  branching, natural loops, objects, calls, fields, casts, boolean coercions,
+  arrays, switches, and ordered handlers.
+
+Dynamic bootstrap reconstruction and synchronized-region formation still
+produce method diagnostics and stubs. Annotation, enum, and record declarations
+are explicitly diagnosed approximations, and `module-info` is a separate source
+artifact rather than a class declaration. These are source-presentation limits,
+not missing JVM parsing, MLIL semantics, or cross-ISA lowering support.
+
+## Remaining whole-artifact boundary
 
 Cafe now has cross-ISA function-body retargeting: typed DEX/JVM analysis lifts
 to verified shared MLIL, then either frontend lowers the same function into its
 own independently verified LLIL. It intentionally does not yet implement
 whole-program class and member synthesis, runtime-library mapping, manifest and
 resource policy, dex2jar-equivalent packaging, a DEX-to-JAR workflow, or a
-source decompiler.
+DEX-oriented source frontend.
 
 If a whole-artifact DEX-to-JVM workflow is added later, keep its coordination
 and policy in another focused feature crate over Program, MLIL, and the JVM

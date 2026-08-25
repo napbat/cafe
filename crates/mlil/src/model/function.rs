@@ -1,11 +1,16 @@
 //! Verified MLIL function storage and derived analyses.
 
 use disassembler::FunctionCoordinate;
-use disassembler::cfglib::{Cfg, DominatorTree, ProgramPoint, SsaForm};
+use disassembler::cfglib::{
+    AstNode, BlockExprTrees, Cfg, ConstFact, DefUseChains, DominatorTree, Facts, Liveness,
+    ProgramPoint, SccpAnalysis, SsaForm,
+};
 
 use crate::{Result, VerificationReport, verify::verify_function};
 
-use super::{EdgeMetadata, Instruction, InstructionId, ProvenanceMap, Variable, VariableId};
+use super::{
+    Constant, EdgeMetadata, Instruction, InstructionId, ProvenanceMap, Variable, VariableId,
+};
 
 /// One verified semantic function backed by a cfglib control-flow graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,5 +93,83 @@ impl Function {
         }
         let dominators = self.dominators();
         Ok(SsaForm::compute(&self.cfg, &dominators))
+    }
+
+    /// Computes definition-to-use and use-to-definition chains.
+    #[must_use]
+    pub fn def_use(&self) -> DefUseChains {
+        DefUseChains::compute(&self.cfg)
+    }
+
+    /// Computes block-entry and block-exit liveness.
+    #[must_use]
+    pub fn liveness(&self) -> Liveness<VariableId> {
+        Liveness::compute(&self.cfg)
+    }
+
+    /// Computes conservative forward constant facts without changing the function.
+    #[must_use]
+    pub fn constants(&self) -> Facts<ConstFact<VariableId, Constant>> {
+        disassembler::cfglib::constant_propagation(&self.cfg)
+    }
+
+    /// Computes sparse constants over the derived SSA view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a verification report if the stored function is invalid.
+    pub fn sparse_constants(&self) -> Result<SccpAnalysis<VariableId, Constant>> {
+        let ssa = self.ssa()?;
+        Ok(SccpAnalysis::compute(&self.cfg, &ssa))
+    }
+
+    /// Recovers pure, single-use expression trees independently in each block.
+    #[must_use]
+    pub fn expressions(
+        &self,
+    ) -> Vec<BlockExprTrees<VariableId, crate::ExpressionOperator, Constant>> {
+        disassembler::cfglib::recover_expressions(&self.cfg)
+    }
+
+    /// Recovers structured control flow, retaining explicit labels and gotos
+    /// when the graph is irreducible.
+    #[must_use]
+    pub fn structured_control_flow(&self) -> AstNode<Instruction> {
+        disassembler::cfglib::lift(&self.cfg)
+    }
+
+    /// Returns a copy-propagated graph for presentation and downstream analysis.
+    ///
+    /// The canonical function and its identity-indexed provenance are not
+    /// mutated. Removed copies retain no graph position in the returned view.
+    #[must_use]
+    pub fn copy_propagated_cfg(
+        &self,
+    ) -> (
+        Cfg<Instruction, EdgeMetadata>,
+        disassembler::cfglib::CopyPropagationStats,
+    ) {
+        let mut cfg = self.cfg.clone();
+        let statistics = disassembler::cfglib::copy_propagation(&mut cfg);
+        (cfg, statistics)
+    }
+
+    /// Reports effect-aware dead definitions and unreachable blocks.
+    #[must_use]
+    pub fn dead_code(&self) -> disassembler::cfglib::DeadCode {
+        disassembler::cfglib::DeadCode::compute(&self.cfg)
+    }
+
+    /// Returns a graph with effect-free dead definitions removed.
+    ///
+    /// Managed-memory reads and writes, allocation, calls, synchronization,
+    /// throwing operations, and control flow remain observable and are never
+    /// removed. The canonical function and its stable provenance are not
+    /// mutated; instruction positions in the returned view are derived data.
+    #[must_use]
+    pub fn dead_code_eliminated_cfg(&self) -> (Cfg<Instruction, EdgeMetadata>, usize) {
+        let mut cfg = self.cfg.clone();
+        let removed = disassembler::cfglib::dead_code_elimination(&mut cfg);
+        (cfg, removed)
     }
 }

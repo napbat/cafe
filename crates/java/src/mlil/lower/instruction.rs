@@ -16,6 +16,7 @@ use crate::classfile::{Constant as NativeConstant, ConstantPool};
 
 use super::super::{Error, Result};
 use super::arrays::{emit_allocation, emit_array_initialization};
+use super::intrinsic::{JavaIntrinsicRequest, JavaMlilIntrinsicLowerer};
 use super::locals::{LocalAllocation, width};
 use super::typing::{method_return_is_reference, zero_use_is_reference};
 
@@ -28,12 +29,13 @@ pub(super) struct Emission {
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) fn emit_instruction<R: JavaReferenceResolver>(
+pub(super) fn emit_instruction<R: JavaReferenceResolver, I: JavaMlilIntrinsicLowerer>(
     builder: &mut CodeBuilder,
     instruction: &Instruction,
     allocation: &LocalAllocation,
     pool: &mut ConstantPool,
     resolver: &mut R,
+    intrinsics: &mut I,
     function: &Function,
     labels: &BTreeMap<BlockId, Label>,
     block: BlockId,
@@ -287,10 +289,45 @@ pub(super) fn emit_instruction<R: JavaReferenceResolver>(
             );
         }
         Operation::Intrinsic(name) => {
-            return Err(Error::lowering(
-                instruction.id(),
-                format!("JVM backend does not encode MLIL intrinsic `{name}`"),
-            ));
+            load_uses(builder, instruction, allocation, function)?;
+            let expansion = intrinsics
+                .lower(
+                    JavaIntrinsicRequest {
+                        name,
+                        use_types: instruction.use_types(),
+                        definition_types: instruction.def_types(),
+                    },
+                    pool,
+                )
+                .map_err(|error| Error::lowering(instruction.id(), error.to_string()))?;
+            if expansion.is_empty() && instruction.may_throw() {
+                return Err(Error::lowering(
+                    instruction.id(),
+                    "may-throw JVM intrinsic policy returned an empty expansion",
+                ));
+            }
+            if let Some(operation) = expansion.iter().find(|operation| {
+                operation.opcode.is_conditional_branch()
+                    || operation.opcode.is_unconditional_branch()
+                    || operation.opcode.is_return()
+                    || operation.opcode.is_switch()
+                    || matches!(operation.opcode, Opcode::AThrow | Opcode::Ret)
+            }) {
+                return Err(Error::lowering(
+                    instruction.id(),
+                    format!(
+                        "JVM intrinsic policy returned non-straight-line opcode `{}`",
+                        operation.opcode.mnemonic()
+                    ),
+                ));
+            }
+            throw_range = primary(builder, instruction, |builder| {
+                for operation in expansion {
+                    plain(builder, operation.opcode, operation.operand);
+                }
+                Ok(())
+            })?;
+            store_definitions(builder, instruction, allocation)?;
         }
     }
     let end = builder.new_label();
@@ -549,6 +586,15 @@ pub(super) fn emit_constant<R: JavaReferenceResolver>(
             }
         }
         Constant::Reference(reference) => {
+            if let Some(wrapper) = primitive_class_wrapper(reference) {
+                let index = pool.intern_field_ref(
+                    wrapper,
+                    PRIMITIVE_CLASS_FIELD,
+                    PRIMITIVE_CLASS_DESCRIPTOR,
+                )?;
+                plain(builder, Opcode::GetStatic, Operand::Constant(index));
+                return Ok(());
+            }
             let index = resolve(reference, instruction.id(), pool, resolver)?;
             if matches!(
                 instruction.def_types().first(),
@@ -561,6 +607,27 @@ pub(super) fn emit_constant<R: JavaReferenceResolver>(
         }
     }
     Ok(())
+}
+
+const PRIMITIVE_CLASS_FIELD: &str = "TYPE";
+const PRIMITIVE_CLASS_DESCRIPTOR: &str = "Ljava/lang/Class;";
+
+fn primitive_class_wrapper(reference: &Reference) -> Option<&'static str> {
+    let ReferenceSymbol::Type(descriptor) = reference.symbol.as_ref()? else {
+        return None;
+    };
+    Some(match descriptor.as_str() {
+        "V" => "java/lang/Void",
+        "Z" => "java/lang/Boolean",
+        "B" => "java/lang/Byte",
+        "C" => "java/lang/Character",
+        "S" => "java/lang/Short",
+        "I" => "java/lang/Integer",
+        "J" => "java/lang/Long",
+        "F" => "java/lang/Float",
+        "D" => "java/lang/Double",
+        _ => return None,
+    })
 }
 
 pub(super) fn emit_integer(

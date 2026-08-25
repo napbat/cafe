@@ -7,12 +7,14 @@
 //! in those frontends so this neutral boundary never owns stack or register
 //! allocation, native reference tables, or encoding policy.
 
+mod analysis;
 mod builder;
 mod descriptor;
 mod error;
 mod model;
 mod verify;
 
+pub use self::analysis::ExpressionOperator;
 pub use self::builder::FunctionBuilder;
 pub use self::error::{Error, Result, VerificationIssue, VerificationReport};
 pub use self::model::{

@@ -3,14 +3,15 @@
 Cafe is the single consumer entry point for Java-specific binary tooling. One
 dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
-control-flow graphs, a typed cross-ISA semantic IL, an editable program model,
-and JNI linkage metadata through coherent namespaces. The JVM and Dalvik
+control-flow graphs, a typed cross-ISA semantic IL, verified Java source
+recovery, an editable program model, and JNI linkage metadata through coherent
+namespaces. The JVM and Dalvik
 frontends retain reversible native LLILs, lift them into one shared MLIL for
 analysis, and canonically lower any target-representable verified MLIL into
 either JVM or Dalvik LLIL.
 
-The workspace contains nine library crates. `cafe` is the public umbrella; the
-other eight are focused implementation boundaries:
+The workspace contains ten library crates. `cafe` is the public umbrella; the
+other nine are focused implementation boundaries:
 
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
@@ -21,7 +22,10 @@ other eight are focused implementation boundaries:
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
 - `mlil` owns typed cross-ISA operations and variables, exact control-flow edge
-  meaning, native provenance, verification, dominance, and SSA views.
+  meaning, native provenance, verification, dominance, SSA, data-flow,
+  expression, dead-code, and structured-control views.
+- `decompiler` lifts JVM methods through verified MLIL and renders Java source,
+  structured diagnostics, and generated-source-to-native provenance.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
   construction, JVM-specific LLIL, bidirectional MLIL adaptation, frame and
   stack-map analysis,
@@ -54,6 +58,7 @@ consumer
     ├── jni              native linkage metadata
     ├── classpath        unified JVM/DEX declaration hierarchy
     ├── mlil             shared typed semantic IL, provenance, and SSA
+    ├── decompiler       verified JVM class-file to Java source recovery
     ├── disassembler     shared instruction IR and CFGs
     │   └── cfglib       graph algorithms
     └── program          owned definitions and resolution
@@ -174,6 +179,13 @@ instruction expansion and payload fusion. Checked construction verifies types,
 terminators, edge roles, exception evidence, identities, and provenance before
 dominance or SSA is exposed.
 
+Verified MLIL functions also expose definition/use chains, liveness, forward
+and sparse constants, block-local expression recovery, copy-propagated views,
+effect-aware dead-code reports, and cfglib structured control flow. Every
+analysis consumes the same canonical payload-bearing graph; none discards
+ordered handler, native switch, or exact throw-site identities to build an
+analysis-only CFG.
+
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
 bytecode. JVM lowering allocates locals, schedules operand-stack operations,
@@ -185,6 +197,24 @@ debug or verification metadata and return original-native to generated-native
 source maps. Together they provide verified JVM-to-Dalvik and Dalvik-to-JVM
 LLIL retargeting through MLIL. Whole-artifact class/module synthesis, Android
 runtime API policy, and a DEX-to-JAR workflow remain outside this capability.
+
+`cafe::decompiler` recovers a complete Java compilation unit from a parsed JVM
+class file or raw class bytes. It lifts every executable method to verified
+MLIL, reconstructs ordinary reducible branches and natural loops, and uses a
+Java-valid state machine when exact switches, exception dispatch, or
+irreducible flow cannot be represented safely with structured statements.
+State-machine exception paths preserve native handler order, catch types, and
+instruction-specific throw sites. Generated spans map through stable MLIL
+instruction identities to every contributing native bytecode range.
+
+Source recovery is conservative. A method that contains unsupported semantics
+is replaced by an explicit throwing stub and a structured diagnostic rather
+than guessed behavior. Dynamic bootstrap calls, synchronized-region recovery,
+module declarations, and exact annotation/enum/record declaration sugar are
+not reconstructed yet; annotation, enum, and record declarations carry
+approximation diagnostics, while `module-info` is rejected as a different
+source artifact. This decompiler is independent of the future DEX-to-JAR
+whole-artifact workflow.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -219,6 +249,27 @@ class/JAR/DEX/APK/AAB origins in aggregate reports, selects effective
 multi-release JAR classes for a target release, and reports Java 24-and-later
 module native-access requirements. It remains a safe metadata boundary and
 does not load libraries, expose raw pointers, or analyze native machine code.
+
+## Java source decompilation
+
+```rust
+use cafe::decompiler::{self, decompile_class_bytes};
+
+fn recover(bytes: &[u8]) -> Result<String, decompiler::Error> {
+    let recovered = decompile_class_bytes(bytes)?;
+    for diagnostic in &recovered.diagnostics {
+        eprintln!("{:?}: {}", diagnostic.code, diagnostic.message);
+    }
+    Ok(recovered.source)
+}
+```
+
+Use `decompile_class_with_hierarchy` when frame merging needs declarations not
+present in the class itself, or `decompile_function` when a consumer already
+owns a verified MLIL function and needs only body statements. The returned
+source map uses UTF-8 byte spans in the generated source and retains the
+overload-qualified native coordinate, MLIL instruction identity, and all
+contributing bytecode ranges.
 
 ## Java and JAR inspection
 
@@ -574,6 +625,9 @@ crates/
 │   └── tests/
 ├── mlil/                 typed semantic operations, verification, and SSA
 │   └── src/model/
+├── decompiler/           verified MLIL-backed Java source recovery
+│   ├── src/method/
+│   └── tests/
 ├── classpath/           unified JVM/DEX declarations and hierarchy views
 │   └── src/
 ├── java/                JVM class files, bytecode, JARs, and adapters
@@ -623,9 +677,9 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for the completed hardening, LLIL, shared-MLIL, and
-cross-ISA lowering baseline; the remaining generic-analysis, decompiler, and
-whole-artifact translation boundaries; conditional Java Card support; and
+See [future.md](future.md) for the completed hardening, LLIL, shared-MLIL,
+cross-ISA lowering, analysis, and Java decompiler baselines; the remaining
+whole-artifact translation boundary; conditional Java Card support; and
 Java-specific non-goals.
 
 ## Build and verify

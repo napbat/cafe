@@ -4,7 +4,7 @@ use ::mlil::{Function, Operation, ValueType, VariableId, VariableRole};
 
 use super::super::{Error, Result};
 
-const MINIMUM_SCRATCH_WORDS: u16 = 8;
+pub(super) const MINIMUM_SCRATCH_WORDS: u16 = 8;
 
 pub(super) struct RegisterAllocation {
     registers: Vec<u16>,
@@ -16,37 +16,7 @@ pub(super) struct RegisterAllocation {
 impl RegisterAllocation {
     pub(super) fn compute(function: &Function) -> Result<Self> {
         let mut widths = vec![1u16; function.variables().len()];
-        let mut scratch_words = MINIMUM_SCRATCH_WORDS;
-        let mut outs_size = 0u16;
-        for block in function.cfg().blocks() {
-            for instruction in block.instructions() {
-                for (&variable, value_type) in instruction
-                    .uses()
-                    .iter()
-                    .zip(instruction.use_types())
-                    .chain(instruction.defs().iter().zip(instruction.def_types()))
-                {
-                    widths[variable.index()] = widths[variable.index()].max(width(value_type));
-                }
-                let use_words = words(instruction.use_types(), instruction.id())?;
-                if matches!(
-                    instruction.operation(),
-                    Operation::ParallelCopy | Operation::TypeRefine
-                ) {
-                    scratch_words = scratch_words.max(use_words);
-                }
-                if matches!(instruction.operation(), Operation::Call { .. }) {
-                    outs_size = outs_size.max(use_words);
-                    scratch_words = scratch_words.max(use_words);
-                }
-                if matches!(
-                    instruction.operation(),
-                    Operation::Allocate(::mlil::AllocationKind::InitializedArray { .. })
-                ) {
-                    scratch_words = scratch_words.max(use_words);
-                }
-            }
-        }
+        let (scratch_words, outs_size) = measure_frame(function, &mut widths)?;
         u8::try_from(outs_size).map_err(|_| {
             Error::lowering(
                 ::mlil::InstructionId::from_raw(0),
@@ -118,6 +88,58 @@ impl RegisterAllocation {
     pub(super) const fn outs_size(&self) -> u16 {
         self.outs_size
     }
+}
+
+fn measure_frame(function: &Function, widths: &mut [u16]) -> Result<(u16, u16)> {
+    let mut scratch_words = MINIMUM_SCRATCH_WORDS;
+    let mut outs_size = 0u16;
+    for block in function.cfg().blocks() {
+        for instruction in block.instructions() {
+            for (&variable, value_type) in instruction
+                .uses()
+                .iter()
+                .zip(instruction.use_types())
+                .chain(instruction.defs().iter().zip(instruction.def_types()))
+            {
+                widths[variable.index()] = widths[variable.index()].max(width(value_type));
+            }
+            let use_words = words(instruction.use_types(), instruction.id())?;
+            if matches!(
+                instruction.operation(),
+                Operation::ParallelCopy | Operation::TypeRefine
+            ) {
+                scratch_words = scratch_words.max(use_words);
+            }
+            if matches!(instruction.operation(), Operation::Call { .. }) {
+                outs_size = outs_size.max(use_words);
+                scratch_words = scratch_words.max(use_words);
+            }
+            if matches!(
+                instruction.operation(),
+                Operation::Allocate(::mlil::AllocationKind::InitializedArray { .. })
+            ) {
+                scratch_words = scratch_words.max(use_words);
+            }
+            if let Operation::Allocate(::mlil::AllocationKind::Array { dimensions, .. }) =
+                instruction.operation()
+            {
+                let dimensions = u16::from(*dimensions);
+                if dimensions > 1 {
+                    let persistent = dimensions
+                        .checked_mul(3)
+                        .and_then(|words| words.checked_add(MINIMUM_SCRATCH_WORDS - 2))
+                        .ok_or_else(|| {
+                            Error::lowering(
+                                instruction.id(),
+                                "Dalvik multidimensional-array scratch size overflowed",
+                            )
+                        })?;
+                    scratch_words = scratch_words.max(persistent);
+                }
+            }
+        }
+    }
+    Ok((scratch_words, outs_size))
 }
 
 pub(super) const fn width(value_type: &ValueType) -> u16 {

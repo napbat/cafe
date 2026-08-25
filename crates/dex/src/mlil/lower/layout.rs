@@ -8,10 +8,19 @@ use crate::instruction::{ArrayDataPayload, Instruction, Opcode, Operands, Sparse
 
 use super::super::{Error, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct LocalLabel(u32);
+
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    Block(BlockId),
+    Local(LocalLabel),
+}
+
 #[derive(Debug, Clone)]
 enum Planned {
     Plain(Opcode, Operands),
-    Goto(BlockId),
+    Goto(Target),
     ConditionalSkip {
         opcode: Opcode,
         first: u16,
@@ -61,6 +70,8 @@ pub(super) struct Planner {
     items: Vec<Planned>,
     offsets: Vec<u32>,
     blocks: BTreeMap<BlockId, u32>,
+    labels: BTreeMap<LocalLabel, u32>,
+    next_label: u32,
     payloads: Vec<PayloadRequest>,
     payload_offsets: Vec<u32>,
     cursor: u32,
@@ -72,6 +83,8 @@ impl Planner {
             items: Vec::new(),
             offsets: Vec::new(),
             blocks: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            next_label: 0,
             payloads: Vec::new(),
             payload_offsets: Vec::new(),
             cursor: 0,
@@ -91,7 +104,32 @@ impl Planner {
     }
 
     pub(super) fn goto(&mut self, target: BlockId) -> Result<u32> {
-        self.push(Planned::Goto(target))
+        self.push(Planned::Goto(Target::Block(target)))
+    }
+
+    pub(super) fn new_label(&mut self) -> Result<LocalLabel> {
+        let label = LocalLabel(self.next_label);
+        self.next_label = self.next_label.checked_add(1).ok_or_else(|| {
+            Error::lowering(
+                ::mlil::InstructionId::from_raw(0),
+                "Dalvik local label identity overflowed",
+            )
+        })?;
+        Ok(label)
+    }
+
+    pub(super) fn bind_label(&mut self, label: LocalLabel) -> Result<()> {
+        if self.labels.insert(label, self.cursor).is_some() {
+            return Err(Error::lowering(
+                ::mlil::InstructionId::from_raw(0),
+                "Dalvik local label was bound more than once",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn goto_label(&mut self, target: LocalLabel) -> Result<u32> {
+        self.push(Planned::Goto(Target::Local(target)))
     }
 
     pub(super) fn conditional_skip(
@@ -141,7 +179,7 @@ impl Planner {
                         "Dalvik payload alignment has no executable target",
                     )
                 })?;
-                self.push(Planned::Goto(safe_target))?;
+                self.push(Planned::Goto(Target::Block(safe_target)))?;
             }
             self.payload_offsets.push(self.cursor);
             match payload {
@@ -188,7 +226,7 @@ impl Planner {
                 offset,
                 Opcode::Goto32,
                 Operands::Branch {
-                    target: self.require_block(*target)?,
+                    target: self.require_target(*target)?,
                 },
             ),
             Planned::ConditionalSkip {
@@ -253,5 +291,17 @@ impl Planner {
                 format!("Dalvik target block {block} has no generated offset"),
             )
         })
+    }
+
+    fn require_target(&self, target: Target) -> Result<u32> {
+        match target {
+            Target::Block(block) => self.require_block(block),
+            Target::Local(label) => self.labels.get(&label).copied().ok_or_else(|| {
+                Error::lowering(
+                    ::mlil::InstructionId::from_raw(0),
+                    format!("Dalvik local label {} has no generated offset", label.0),
+                )
+            }),
+        }
     }
 }
