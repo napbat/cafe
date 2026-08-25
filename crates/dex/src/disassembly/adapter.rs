@@ -1,4 +1,4 @@
-//! DEX file, class, method, and exception lowering.
+//! DEX file, class, method, and exception lifting.
 
 use disassembler::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, Disassembly,
@@ -6,34 +6,34 @@ use disassembler::{
     FunctionSymbol, RawAccessFlags, RegisterResources,
 };
 
-use super::instruction::{Payloads, lower_instruction};
+use super::instruction::{Payloads, lift_instruction};
 use crate::file::{CodeItem, DexFile, EncodedMethod};
 use crate::{DEFAULT_DEX_FILE_NAME, Error, Result};
 
-/// Lowers a parsed DEX file using [`DEFAULT_DEX_FILE_NAME`] as its artifact name.
+/// Lifts a parsed DEX file using [`DEFAULT_DEX_FILE_NAME`] as its artifact name.
 ///
 /// # Errors
 ///
 /// Returns an error when identifiers, instructions, switch payloads, exception
 /// metadata, or the resulting control-flow graph cannot be resolved.
-pub fn lower_file(file: &DexFile) -> Result<Disassembly> {
-    lower_file_named(file, DEFAULT_DEX_FILE_NAME)
+pub fn lift_file(file: &DexFile) -> Result<Disassembly> {
+    lift_file_named(file, DEFAULT_DEX_FILE_NAME)
 }
 
-/// Lowers a parsed DEX file using an explicit artifact name.
+/// Lifts a parsed DEX file using an explicit artifact name.
 ///
 /// # Errors
 ///
 /// Returns an error when identifiers, instructions, switch payloads, exception
 /// metadata, or the resulting control-flow graph cannot be resolved.
-pub fn lower_file_named(file: &DexFile, name: impl Into<String>) -> Result<Disassembly> {
+pub fn lift_file_named(file: &DexFile, name: impl Into<String>) -> Result<Disassembly> {
     let mut functions = Vec::new();
     for class in file.classes() {
         let Some(data) = &class.class_data else {
             continue;
         };
         for method in data.direct_methods.iter().chain(&data.virtual_methods) {
-            functions.push(lower_method(file, method)?);
+            functions.push(lift_method(file, method)?);
         }
     }
     Ok(Disassembly {
@@ -47,22 +47,22 @@ impl DisassemblySource for DexFile {
     type Error = Error;
 
     fn disassemble(&self) -> Result<Disassembly> {
-        lower_file(self)
+        lift_file(self)
     }
 }
 
-/// Lowers one DEX method declaration with its overload-qualified identity.
+/// Lifts one DEX method declaration with its overload-qualified identity.
 ///
 /// # Errors
 ///
 /// Returns an error when the method identity, instruction references, exception
 /// metadata, or resulting control-flow graph is invalid.
-pub fn lower_method(file: &DexFile, declaration: &EncodedMethod) -> Result<Function> {
+pub fn lift_method(file: &DexFile, declaration: &EncodedMethod) -> Result<Function> {
     let identity = file.resolve_method(declaration.method)?;
     let body = declaration
         .code
         .as_ref()
-        .map(|code| lower_body(file, code))
+        .map(|code| lift_body(file, code))
         .transpose()
         .map_err(|error| {
             error.in_method(identity.owner, identity.name, identity.signature.clone())
@@ -78,12 +78,12 @@ pub fn lower_method(file: &DexFile, declaration: &EncodedMethod) -> Result<Funct
     })
 }
 
-pub(crate) fn lower_body(file: &DexFile, code: &CodeItem) -> Result<FunctionBody> {
+pub(crate) fn lift_body(file: &DexFile, code: &CodeItem) -> Result<FunctionBody> {
     let payloads = Payloads::new(&code.instructions)?;
     let instructions = code
         .instructions
         .iter()
-        .map(|instruction| lower_instruction(instruction, file, &payloads))
+        .map(|instruction| lift_instruction(instruction, file, &payloads))
         .collect::<Result<Vec<_>>>()?;
     let mut exception_handlers = Vec::new();
     for protected in &code.tries {
@@ -131,7 +131,7 @@ mod tests {
         Operand, RecoveredHandlerSemantics, cfglib::HandlerBody,
     };
 
-    use super::lower_file;
+    use super::lift_file;
     use crate::file::{
         AccessFlags, AnnotationDirectory, CatchHandler, ClassData, ClassDefinition, CodeItem,
         DexFile, DexString, DexVersion, EncodedMethod, MethodId, PrototypeId, TryBlock, TypeId,
@@ -229,9 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn lowers_switches_payloads_and_verified_graphs() {
+    fn lifts_switches_payloads_and_verified_graphs() {
         let file = branching_file();
-        let direct = lower_file(&file).unwrap();
+        let direct = lift_file(&file).unwrap();
         let through_trait = file.disassemble().unwrap();
 
         assert_eq!(direct, through_trait);

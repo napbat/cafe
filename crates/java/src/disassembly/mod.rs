@@ -3,4 +3,4 @@
 mod adapter;
 mod instruction;
 
-pub use self::adapter::{lower_class, lower_method};
+pub use self::adapter::{lift_class, lift_method};

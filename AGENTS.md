@@ -18,6 +18,12 @@ These rules apply to the entire repository.
   editable `Program`/`Module`/definition model, identities, indexed lookup, and
   resolution, plus the format-neutral `ModuleEmitter` contract. It may depend
   on the disassembler, but never on Cafe or a native frontend.
+- Keep `crates/mlil` neutral across Java ecosystem formats. It owns the typed
+  semantic value and operation model, verified cfglib-backed functions, exact
+  semantic edge payloads, format-qualified native provenance, dominance, and
+  SSA entry points. It may depend on the disassembler, but never on Cafe or a
+  native frontend. It must not own native instruction decoding, LLIL encoding,
+  DEX-to-JVM policy, or source-decompiler presentation.
 - Keep `crates/classpath` as the cross-format Java type-world aggregator. It
   normalizes JVM internal names and DEX object descriptors, merges equivalent
   declarations, diagnoses conflicting declarations, and supplies explicit JVM
@@ -32,8 +38,9 @@ These rules apply to the entire repository.
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
   disassembler and Program. It also owns symbolic bytecode layout,
-  JVM-specific LLIL and checked native round trips, JVM frame/stack-map
-  analysis, and verified canonical Program-to-class-file emission. Keep its
+  JVM-specific LLIL and checked native round trips, JVM-LLIL-to-MLIL lifting,
+  JVM frame/stack-map analysis, and verified canonical Program-to-class-file
+  emission. Keep its
   native instruction graph adapted to cfglib's rooted edge view and run frame
   propagation through the fallible seeded edge solver. It must not depend on
   Cafe. Do not add `src/main.rs`, Clap, or tool-specific output policy to this
@@ -43,10 +50,11 @@ These rules apply to the entire repository.
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
-  encoding, Dalvik-specific LLIL and checked native round trips, APK/AAB
-  provenance, corpus validation, executable semantics and register analysis,
-  and adapters into the disassembler and Program, including verified canonical
-  Program-to-DEX emission. Keep its native operation graph adapted to cfglib's
+  encoding, Dalvik-specific LLIL and checked native round trips,
+  Dalvik-LLIL-to-MLIL lifting, APK/AAB provenance, corpus validation,
+  executable semantics and register analysis, and adapters into the
+  disassembler and Program, including verified canonical Program-to-DEX
+  emission. Keep its native operation graph adapted to cfglib's
   rooted edge view and run register propagation through the fallible seeded
   edge solver. It must not depend on Cafe or leak Android-container details
   into shared lower layers.
@@ -56,7 +64,7 @@ These rules apply to the entire repository.
   should use raw-byte visitors so one malformed member does not stop traversal.
 - Keep `crates/art` a library-only Android runtime boundary. It owns VDEX, ODEX,
   stable OAT metadata, quickening restoration, and adapters that canonicalize
-  standard DEX before lowering. It may depend on DEX, disassembler, and Program,
+  standard DEX before lifting. It may depend on DEX, disassembler, and Program,
   but never on Cafe. It must preserve CompactDex source identity and keep ELF,
   native instructions, architecture state, and runtime loading opaque.
 - Keep `crates/jni` a safe, Java-specific linkage-metadata layer. It owns JNI
@@ -84,18 +92,22 @@ These rules apply to the entire repository.
   belongs there only when it genuinely coordinates multiple focused crates.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
+- In MLIL, keep variables and types, operations, instructions, edges,
+  provenance, functions, checked construction, and verification independent.
+  Keep the crate's root a narrow re-export facade.
 - In Classpath, keep canonical declaration models, hierarchy queries, native
   views, ingestion, and errors independent.
-- In Java, keep `classfile/`, `bytecode/`, `llil/`, `jar/`, `disassembly/`, and
-  `program/` independent. Keep frame analysis under `analysis/`, corpus
+- In Java, keep `classfile/`, `bytecode/`, `llil/`, `mlil/`, `jar/`,
+  `disassembly/`, and `program/` independent. Keep frame analysis under
+  `analysis/`, corpus
   reporting under `corpus/`, and JDK containers under `jmod/` and `jimage/`.
   Keep descriptors, textual presentation, crate errors, and public entry points
   at the source root.
 - In DEX, keep `file/`, `instruction/`, `apk/`, `aab/`, `corpus/`,
-  `disassembly/`, `llil/`, and `program/` independent. Keep CompactDex and DEX
-  041 physical models under `file/`, and executable/register analysis under
-  `analysis/`. Treat APK and AAB as container and provenance boundaries, not
-  instruction sets.
+  `disassembly/`, `llil/`, `mlil/`, and `program/` independent. Keep CompactDex
+  and DEX 041 physical models under `file/`, and executable/register analysis
+  under `analysis/`. Treat APK and AAB as container and provenance boundaries,
+  not instruction sets.
 - In ART, keep `vdex/`, `odex/`, `oat/`, and `quickening/` independent. Restore
   quickened standard DEX to canonical opcodes before using DEX adapters; retain
   CompactDex main/shared sections when complete canonicalization metadata is
@@ -125,13 +137,34 @@ These rules apply to the entire repository.
   have a matching encoding path.
 - Keep JVM LLIL in Java and Dalvik LLIL in DEX. Do not make either frontend's
   stack or register mechanics the shared semantic model, and do not translate
-  directly between the two LLILs; a future MLIL is their generic convergence
-  layer.
+  directly between the two LLILs; lift both into MLIL as their generic
+  convergence layer.
+- Name representation transformations by direction: `lift` means moving from
+  native bytecode into shared disassembly, Program, LLIL, or from LLIL into MLIL;
+  `lower` means moving back toward native encodings. Helpers, diagnostics, and
+  documentation must use the same convention.
 - Separate every LLIL instruction's normalized semantic operation from its
   exact native encoding provenance. Native lifting must validate the complete
   stream, reverse conversion must reject stale semantic/encoding pairs and run
   the native codec, and complete-body adapters must retain and revalidate exact
   handler, debug, stack-map, register-resource, and source-offset metadata.
+- Keep MLIL operand order canonical and independent of native evaluation or
+  encoding order: receivers precede field values, while arrays and indices
+  precede array values. Derive point-specific types from verified JVM frames or
+  DEX register states rather than guessing from opcodes alone.
+- Canonicalize exact MLIL object and array value types to JVM-compatible
+  descriptors across all frontends. Preserve Dalvik's exact zero/null lattice
+  value rather than forcing it prematurely into either integer or reference
+  semantics.
+- Model definitions produced by protected throwing operations through explicit
+  normal-flow commit blocks. Exceptional edges must retain the pre-instruction
+  native state, ordered catch metadata, protected ranges, and exact MLIL throw
+  sites. Materialize delivered exceptions at synthetic handler landings; do not
+  infer handler-body extents or source-level `finally`.
+- Keep MLIL provenance deterministic, many-to-many, format-qualified, and able
+  to represent native instruction expansion and payload fusion. Verify every
+  function before exposing dominance or SSA. MLIL-to-LLIL lowering belongs in
+  an explicit future backend and must not be implied by frontend lifting.
 - Preserve unknown class-file attributes and exact modified UTF-8/UTF-16 data
   so unchanged class files remain lossless through parse/assemble round trips.
 
@@ -141,7 +174,7 @@ These rules apply to the entire repository.
   references, reconstructable structured symbols, resolved display names, and
   exact register-frame resources needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
-  control-flow edges through cfglib for every lowered executable body.
+  control-flow edges through cfglib for every lifted executable body.
 - Expose cfglib's generic exception-flow model from shared graphs. Register
   exact protected block sets and ordered handler entry/kind as regions, mark
   handler extents explicitly unknown when the native format omits them, and
@@ -187,7 +220,11 @@ These rules apply to the entire repository.
   and Program-to-DEX emission, exact reference rebuilding, register-resource
   retention, recovered structured lifting, unified classpath views, every
   supported JVM and Dalvik LLIL operation, encoding-alias normalization, stale
-  provenance rejection, and exact complete-body LLIL round trips.
+  provenance rejection, and exact complete-body LLIL round trips. Cover MLIL
+  construction and rejection, typed operation signatures, provenance expansion
+  and fusion, exceptional pre-state commits, constructor alias refinement,
+  implicit DEX results and exceptions, dominance and SSA, both frontend
+  adapters, and cross-ISA semantic equivalence through Cafe.
 - Require all of these commands to pass:
 
   ```text

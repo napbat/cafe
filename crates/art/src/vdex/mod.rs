@@ -233,7 +233,7 @@ impl VdexFile {
         canonical::quickening_info(self, dex_index, method_index)
     }
 
-    /// Lowers every standard DEX member into Program modules after canonicalization.
+    /// Lifts every standard DEX member into Program modules after canonicalization.
     ///
     /// # Errors
     ///
@@ -254,7 +254,7 @@ impl VdexFile {
                 });
             }
             let file = self.canonical_standard_dex(member.index)?;
-            modules.push(dex::program::lower_file_named_with_options(
+            modules.push(dex::program::lift_file_named_with_options(
                 &file,
                 format!("vdex!classes{}.dex", member.index + 1),
                 dex::program::ProgramOptions { method_bodies },
@@ -263,7 +263,7 @@ impl VdexFile {
         Ok(modules)
     }
 
-    /// Lowers every standard member into verified shared disassembly after
+    /// Lifts every standard member into verified shared disassembly after
     /// canonicalization.
     ///
     /// # Errors
@@ -282,7 +282,7 @@ impl VdexFile {
                 });
             }
             let file = self.canonical_standard_dex(member.index)?;
-            output.push(dex::disassembly::lower_file_named(
+            output.push(dex::disassembly::lift_file_named(
                 &file,
                 format!("vdex!classes{}.dex", member.index + 1),
             )?);

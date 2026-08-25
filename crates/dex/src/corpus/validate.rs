@@ -3,9 +3,9 @@
 use crate::aab::{AabDexVisitControl, AabFile};
 use crate::analysis::analyze_method_registers;
 use crate::apk::{ApkFile, DexVisitControl};
-use crate::disassembly::lower_method;
+use crate::disassembly::lift_method;
 use crate::file::{DexContainer, DexFile, EncodedMethod};
-use crate::program::{MethodBodyMode, ProgramOptions, lower_file_named_with_options};
+use crate::program::{MethodBodyMode, ProgramOptions, lift_file_named_with_options};
 use crate::{Error, instruction};
 
 use super::model::{
@@ -305,7 +305,7 @@ fn validate_file(
         MethodBodyMode::DeclarationsOnly,
         MethodBodyMode::Disassemble,
     ] {
-        match lower_file_named_with_options(
+        match lift_file_named_with_options(
             file,
             entry.unwrap_or(artifact.name()),
             ProgramOptions { method_bodies },
@@ -372,7 +372,7 @@ fn validate_method(
             &error,
         );
     }
-    match lower_method(file, method) {
+    match lift_method(file, method) {
         Ok(function) if function.body.is_some() => report.control_flow_graphs += 1,
         Ok(_) => {}
         Err(error) => failure(

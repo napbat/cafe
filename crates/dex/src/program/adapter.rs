@@ -1,4 +1,4 @@
-//! DEX hierarchy, member, and executable-body lowering into the program model.
+//! DEX hierarchy, member, and executable-body lifting into the program model.
 
 use ::program::{
     FieldDefinition, FieldId, MethodDefinition, MethodId, Module, ModuleId, ModuleSource,
@@ -13,14 +13,14 @@ use crate::{DEFAULT_DEX_FILE_NAME, Result};
 /// Controls whether program method definitions retain decoded DEX bodies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MethodBodyMode {
-    /// Lower every available DEX `code_item` into shared disassembly.
+    /// Lift every available DEX `code_item` into shared disassembly.
     #[default]
     Disassemble,
     /// Retain declarations without constructing shared instruction bodies.
     DeclarationsOnly,
 }
 
-/// Configuration for lowering a DEX file into the shared program model.
+/// Configuration for lifting a DEX file into the shared program model.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ProgramOptions {
     /// Method-body loading behavior.
@@ -33,8 +33,8 @@ pub struct ProgramOptions {
 ///
 /// Returns an error when identifiers, definitions, or executable bodies cannot
 /// be represented by the shared model.
-pub fn lower_file(file: &DexFile) -> Result<Module> {
-    lower_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, ProgramOptions::default())
+pub fn lift_file(file: &DexFile) -> Result<Module> {
+    lift_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, ProgramOptions::default())
 }
 
 /// Builds a shared module using the default artifact name and explicit options.
@@ -43,8 +43,8 @@ pub fn lower_file(file: &DexFile) -> Result<Module> {
 ///
 /// Returns an error when identifiers, definitions, or requested executable
 /// bodies cannot be represented by the shared model.
-pub fn lower_file_with_options(file: &DexFile, options: ProgramOptions) -> Result<Module> {
-    lower_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, options)
+pub fn lift_file_with_options(file: &DexFile, options: ProgramOptions) -> Result<Module> {
+    lift_file_named_with_options(file, DEFAULT_DEX_FILE_NAME, options)
 }
 
 /// Builds a shared module using an explicit artifact name and default options.
@@ -53,8 +53,8 @@ pub fn lower_file_with_options(file: &DexFile, options: ProgramOptions) -> Resul
 ///
 /// Returns an error when identifiers, definitions, or executable bodies cannot
 /// be represented by the shared model.
-pub fn lower_file_named(file: &DexFile, name: impl Into<String>) -> Result<Module> {
-    lower_file_named_with_options(file, name, ProgramOptions::default())
+pub fn lift_file_named(file: &DexFile, name: impl Into<String>) -> Result<Module> {
+    lift_file_named_with_options(file, name, ProgramOptions::default())
 }
 
 /// Builds a shared module using an explicit artifact name and body policy.
@@ -63,7 +63,7 @@ pub fn lower_file_named(file: &DexFile, name: impl Into<String>) -> Result<Modul
 ///
 /// Returns an error when identifiers, definitions, or requested executable
 /// bodies cannot be represented by the shared model.
-pub fn lower_file_named_with_options(
+pub fn lift_file_named_with_options(
     file: &DexFile,
     name: impl Into<String>,
     options: ProgramOptions,
@@ -71,7 +71,7 @@ pub fn lower_file_named_with_options(
     let format = BinaryFormat::Dex;
     let mut module = Module::new(ModuleId::new(format, name))?;
     for class in file.classes() {
-        module.insert_type(lower_class(file, class, options)?)?;
+        module.insert_type(lift_class(file, class, options)?)?;
     }
     Ok(module)
 }
@@ -80,11 +80,11 @@ impl ModuleSource for DexFile {
     type Error = crate::Error;
 
     fn to_module(&self) -> Result<Module> {
-        lower_file(self)
+        lift_file(self)
     }
 }
 
-fn lower_class(
+fn lift_class(
     file: &DexFile,
     class: &ClassDefinition,
     options: ProgramOptions,
@@ -117,12 +117,12 @@ fn lower_class(
         )?)?;
     }
     for method in data.direct_methods.iter().chain(&data.virtual_methods) {
-        definition.insert_method(lower_method(file, method, options.method_bodies)?)?;
+        definition.insert_method(lift_method(file, method, options.method_bodies)?)?;
     }
     Ok(definition)
 }
 
-fn lower_method(
+fn lift_method(
     file: &DexFile,
     method: &EncodedMethod,
     body_mode: MethodBodyMode,
@@ -132,7 +132,7 @@ fn lower_method(
         MethodBodyMode::Disassemble => method
             .code
             .as_ref()
-            .map(|code| disassembly::lower_body(file, code))
+            .map(|code| disassembly::lift_body(file, code))
             .transpose()
             .map_err(|error| {
                 error.in_method(identity.owner, identity.name, identity.signature.clone())
@@ -151,7 +151,7 @@ mod tests {
     use ::program::{ModuleSource, TypeId as ProgramTypeId};
     use disassembler::BinaryFormat;
 
-    use super::{MethodBodyMode, ProgramOptions, lower_file, lower_file_with_options};
+    use super::{MethodBodyMode, ProgramOptions, lift_file, lift_file_with_options};
     use crate::file::{
         AccessFlags, AnnotationDirectory, ClassData, ClassDefinition, DexFile, DexString,
         DexVersion, EncodedField, FieldId, TypeId,
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn retains_dex_hierarchy_fields_and_format_identity() {
         let file = metadata_file();
-        let direct = lower_file(&file).unwrap();
+        let direct = lift_file(&file).unwrap();
         let through_trait = file.to_module().unwrap();
         assert_eq!(direct, through_trait);
 
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(definition.superclass().unwrap().name, "LParent;");
         assert_eq!(definition.field_count(), 1);
 
-        let declarations = lower_file_with_options(
+        let declarations = lift_file_with_options(
             &file,
             ProgramOptions {
                 method_bodies: MethodBodyMode::DeclarationsOnly,

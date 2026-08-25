@@ -14,6 +14,7 @@ mod error;
 pub mod file;
 pub mod instruction;
 pub mod llil;
+pub mod mlil;
 pub mod program;
 
 pub use self::error::{Error, IdentifierTable, Result};
@@ -21,8 +22,8 @@ pub use self::file::{CompactDexFile, CompactDexVersion, DexFile, DexSourceFormat
 pub use self::program::{
     DexEmissionError, DexEmissionOptions, DexEmitter, DexReferenceHandle,
     DexReferenceResolutionError, DexReferenceResolver, MethodBodyMode, ProgramOptions,
-    SymbolicDexReferenceResolver, emit_module, lower_file, lower_file_named,
-    lower_file_named_with_options, lower_file_with_options,
+    SymbolicDexReferenceResolver, emit_module, lift_file, lift_file_named,
+    lift_file_named_with_options, lift_file_with_options,
 };
 
 /// Conventional name of the primary DEX artifact in an Android archive.

@@ -326,7 +326,7 @@ fn validate_control_flow(
     report: &mut ValidationReport,
 ) -> Result<()> {
     let disassembly =
-        crate::disassembly::lower_class(class).map_err(|error| error.in_jar_entry(entry))?;
+        crate::disassembly::lift_class(class).map_err(|error| error.in_jar_entry(entry))?;
     for function in disassembly.functions {
         if let Some(body) = function.body {
             let graph = body

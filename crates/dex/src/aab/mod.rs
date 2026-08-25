@@ -17,8 +17,8 @@ use program::Module;
 use zip::ZipArchive;
 
 use crate::apk::{DexOrdinal, parse_dex_entry_name};
-use crate::disassembly::lower_file_named;
-use crate::program::{ProgramOptions, lower_file_named_with_options};
+use crate::disassembly::lift_file_named;
+use crate::program::{ProgramOptions, lift_file_named_with_options};
 use crate::{DexFile, Error, Result};
 
 pub use self::discovery::{AAB_EXTENSION, Traversal, discover_aabs, is_aab_path};
@@ -61,13 +61,13 @@ pub struct AabDexArtifact {
 }
 
 impl AabDexArtifact {
-    /// Lowers this artifact using its exact bundle entry path.
+    /// Lifts this artifact using its exact bundle entry path.
     ///
     /// # Errors
     ///
     /// Returns an entry-scoped DEX or disassembly error.
     pub fn disassemble(&self) -> Result<Disassembly> {
-        lower_file_named(&self.file, &self.origin.entry_name)
+        lift_file_named(&self.file, &self.origin.entry_name)
             .map_err(|error| error.in_aab_entry(self.origin.entry_name.clone()))
     }
 
@@ -77,7 +77,7 @@ impl AabDexArtifact {
     ///
     /// Returns an entry-scoped definition or body-loading error.
     pub fn to_module(&self, options: ProgramOptions) -> Result<Module> {
-        lower_file_named_with_options(&self.file, &self.origin.entry_name, options)
+        lift_file_named_with_options(&self.file, &self.origin.entry_name, options)
             .map_err(|error| error.in_aab_entry(self.origin.entry_name.clone()))
     }
 }

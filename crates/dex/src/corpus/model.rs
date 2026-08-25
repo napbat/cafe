@@ -32,11 +32,11 @@ pub enum CorpusStage {
     Resolution,
     /// Encoding a decoded Dalvik instruction stream.
     InstructionEncode,
-    /// Lowering and verifying shared control flow.
+    /// Lifting and verifying shared control flow.
     ControlFlow,
     /// Running fixed-point register analysis.
     RegisterAnalysis,
-    /// Lowering declarations or bodies into Program.
+    /// Lifting declarations or bodies into Program.
     Program,
 }
 

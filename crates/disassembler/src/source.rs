@@ -2,12 +2,12 @@
 
 use crate::Disassembly;
 
-/// A decoded format-specific value that can lower into shared disassembly IR.
+/// A decoded format-specific value that can lift into shared disassembly IR.
 pub trait DisassemblySource {
-    /// Error produced while resolving or lowering the source representation.
+    /// Error produced while resolving or lifting the source representation.
     type Error;
 
-    /// Lowers this source into the format-neutral disassembly boundary.
+    /// Lifts this source into the format-neutral disassembly boundary.
     ///
     /// # Errors
     ///

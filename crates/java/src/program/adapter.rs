@@ -1,4 +1,4 @@
-//! JVM class metadata and disassembled-body lowering into a shared module.
+//! JVM class metadata and disassembled-body lifting into a shared module.
 
 use disassembler::BinaryFormat;
 use program::{
@@ -12,14 +12,14 @@ use crate::{Result, disassembly};
 /// Controls whether program method definitions retain decoded instruction bodies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MethodBodyMode {
-    /// Decode and lower every available JVM `Code` attribute.
+    /// Decode and lift every available JVM `Code` attribute.
     #[default]
     Disassemble,
     /// Retain declarations only, avoiding bytecode decoding for metadata tools.
     DeclarationsOnly,
 }
 
-/// Configuration for lowering a JVM class into the shared program model.
+/// Configuration for lifting a JVM class into the shared program model.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ProgramOptions {
     /// Method-body loading behavior.
@@ -35,8 +35,8 @@ pub struct ProgramOptions {
 ///
 /// Returns an error if class metadata or bytecode cannot be resolved, decoded,
 /// or represented by the shared model.
-pub fn lower_class(class: &ClassFile) -> Result<Module> {
-    lower_class_with_options(class, ProgramOptions::default())
+pub fn lift_class(class: &ClassFile) -> Result<Module> {
+    lift_class_with_options(class, ProgramOptions::default())
 }
 
 /// Builds a shared program module using explicit body-loading options.
@@ -45,7 +45,7 @@ pub fn lower_class(class: &ClassFile) -> Result<Module> {
 ///
 /// Returns an error if class metadata or requested bytecode bodies cannot be
 /// resolved, decoded, or represented by the shared model.
-pub fn lower_class_with_options(class: &ClassFile, options: ProgramOptions) -> Result<Module> {
+pub fn lift_class_with_options(class: &ClassFile, options: ProgramOptions) -> Result<Module> {
     let format = BinaryFormat::JavaClass;
     let owner = class.class_name()?.to_owned();
     let type_id = TypeId::new(format, &owner);
@@ -79,7 +79,7 @@ pub fn lower_class_with_options(class: &ClassFile, options: ProgramOptions) -> R
 }
 
 fn add_disassembled_methods(definition: &mut TypeDefinition, class: &ClassFile) -> Result<()> {
-    for function in disassembly::lower_class(class)?.functions {
+    for function in disassembly::lift_class(class)?.functions {
         definition.insert_method(MethodDefinition::new(
             MethodId::new(function.symbol.name, function.symbol.signature),
             function.access_flags,
@@ -107,7 +107,7 @@ impl ModuleSource for ClassFile {
     type Error = crate::Error;
 
     fn to_module(&self) -> Result<Module> {
-        lower_class(self)
+        lift_class(self)
     }
 }
 
@@ -115,7 +115,7 @@ impl ModuleSource for ClassFile {
 mod tests {
     use program::{ModuleSource, TypeId};
 
-    use super::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};
+    use super::{MethodBodyMode, ProgramOptions, lift_class, lift_class_with_options};
     use crate::classfile::{
         ClassAccessFlags, ClassFile, Constant, ConstantPool, FieldAccessFlags, FieldInfo,
     };
@@ -164,7 +164,7 @@ mod tests {
             attributes: Vec::new(),
         };
 
-        let direct = lower_class(&class).unwrap();
+        let direct = lift_class(&class).unwrap();
         let through_trait = class.to_module().unwrap();
         assert_eq!(direct, through_trait);
         let id = TypeId::new(disassembler::BinaryFormat::JavaClass, "sample/Child");
@@ -177,7 +177,7 @@ mod tests {
             u32::from(ClassAccessFlags::PUBLIC.bits())
         );
 
-        let declarations = lower_class_with_options(
+        let declarations = lift_class_with_options(
             &class,
             ProgramOptions {
                 method_bodies: MethodBodyMode::DeclarationsOnly,

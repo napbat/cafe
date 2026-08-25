@@ -1,4 +1,4 @@
-//! JVM class-file assembly, reversible JVM LLIL, shared disassembly lowering,
+//! JVM class-file assembly, reversible JVM LLIL, shared disassembly lifting,
 //! and JAR utilities.
 
 mod error;
@@ -14,13 +14,14 @@ pub mod jar;
 pub mod jimage;
 pub mod jmod;
 pub mod llil;
+pub mod mlil;
 pub mod program;
 
 pub use self::program::{
     DisplayJavaReferenceResolver, JavaEmissionError, JavaEmissionOptions, JavaEmitter,
     JavaReferenceResolutionError, JavaReferenceResolver, emit_module,
 };
-pub use self::program::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};
+pub use self::program::{MethodBodyMode, ProgramOptions, lift_class, lift_class_with_options};
 
 /// Compatibility facade for JVM class-file assembly.
 pub mod assemble {

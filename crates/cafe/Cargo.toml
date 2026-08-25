@@ -18,6 +18,7 @@ dex.workspace = true
 disassembler.workspace = true
 java.workspace = true
 jni.workspace = true
+mlil.workspace = true
 program.workspace = true
 
 [lints]

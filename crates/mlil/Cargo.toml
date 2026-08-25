@@ -1,0 +1,19 @@
+[package]
+name = "mlil"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Shared typed semantic MLIL for Java-ecosystem bytecode"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["java", "jvm", "dex", "bytecode", "analysis"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+disassembler.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

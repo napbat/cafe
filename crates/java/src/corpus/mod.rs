@@ -46,7 +46,7 @@ pub enum CorpusStage {
     BytecodeEncode,
     /// Resolving an instruction's constant-pool reference.
     ConstantReference,
-    /// Lowering or verifying shared control flow.
+    /// Lifting or verifying shared control flow.
     ControlFlow,
 }
 
@@ -610,7 +610,7 @@ fn validate_method_code(
         }
     }
     if let Some(owner) = class_name {
-        match crate::disassembly::lower_method(class, method, owner) {
+        match crate::disassembly::lift_method(class, method, owner) {
             Ok(function) => {
                 if let Some(body) = function.body {
                     match body.control_flow_graph() {

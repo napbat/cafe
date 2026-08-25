@@ -52,7 +52,7 @@ pub enum Error {
     #[error(transparent)]
     Dex(#[from] dex::Error),
 
-    /// Shared program lowering failed.
+    /// Shared program lifting failed.
     #[error(transparent)]
     Program(#[from] program::Error),
 }

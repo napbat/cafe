@@ -3,5 +3,5 @@
 mod adapter;
 mod instruction;
 
-pub(crate) use self::adapter::lower_body;
-pub use self::adapter::{lower_file, lower_file_named, lower_method};
+pub(crate) use self::adapter::lift_body;
+pub use self::adapter::{lift_file, lift_file_named, lift_method};

@@ -3,12 +3,13 @@
 Cafe is the single consumer entry point for Java-specific binary tooling. One
 dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
-control-flow graphs, an editable program model, and JNI linkage metadata
-through coherent namespaces. The JVM and Dalvik frontends each expose their own
-reversible low-level intermediate language (LLIL) for native semantic analysis.
+control-flow graphs, a typed cross-ISA semantic IL, an editable program model,
+and JNI linkage metadata through coherent namespaces. The JVM and Dalvik
+frontends retain reversible native LLILs and lift them into one shared MLIL for
+analysis.
 
-The workspace contains eight library crates. `cafe` is the public umbrella; the
-other seven are focused implementation boundaries:
+The workspace contains nine library crates. `cafe` is the public umbrella; the
+other eight are focused implementation boundaries:
 
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
@@ -18,14 +19,17 @@ other seven are focused implementation boundaries:
 - `disassembler` owns shared instructions, references, executable bodies,
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
+- `mlil` owns typed cross-ISA operations and variables, exact control-flow edge
+  meaning, native provenance, verification, dominance, and SSA views.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
-  construction, JVM-specific LLIL, frame and stack-map analysis,
+  construction, JVM-specific LLIL and LLIL-to-MLIL lifting, frame and stack-map
+  analysis,
   JAR/JMOD/JIMAGE utilities, corpus validation, javap-like presentation,
-  lowering into Program, and verified canonical emission back to class files.
+  lifting into Program, and verified canonical emission back to class files.
 - `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
-  Dalvik instructions and LLIL, executable-body and register analysis, APK/AAB
-  handling, corpus validation, provenance, lowering into Program, and verified
-  canonical emission back to DEX.
+  Dalvik instructions, LLIL and LLIL-to-MLIL lifting, executable-body and register
+  analysis, APK/AAB handling, corpus validation, provenance, lifting into
+  Program, and verified canonical emission back to DEX.
 - `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
   and canonical DEX adapters without interpreting native code.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
@@ -48,6 +52,7 @@ consumer
     ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
     ├── classpath        unified JVM/DEX declaration hierarchy
+    ├── mlil             shared typed semantic IL, provenance, and SSA
     ├── disassembler     shared instruction IR and CFGs
     │   └── cfglib       graph algorithms
     └── program          owned definitions and resolution
@@ -142,13 +147,29 @@ maps and nested code attributes, and DEX register-frame declarations. Native to
 LLIL to native reconstruction is exact. Reverse conversion first rejects stale
 semantic/encoding pairs, then runs the existing native layout, operand,
 control-flow, handler, payload, and body validators. The two LLILs do not
-translate directly into one another; a future shared semantic MLIL is the
-intended convergence layer for cross-ISA analysis and later decompilation.
+translate directly into one another; `java::mlil` and `dex::mlil` instead lift
+their verified bodies into the shared `cafe::mlil` value and operation model.
+
+MLIL makes JVM stack positions, JVM locals, Dalvik registers, DEX implicit
+results, and delivered exceptions explicit variables with point-specific
+types. Exact object and array types use JVM-compatible descriptors in both
+frontends, and Dalvik's verifier-polymorphic zero remains distinct so numeric
+zero and null uses are both sound. Its cfglib graph retains canonical branch
+and switch roles, ordered catch metadata, protected native ranges, and exact
+throw-site identities.
+Throwing definitions in protected code commit only along normal flow, so an
+exception handler observes the verified pre-instruction state. Synthetic
+handler landings model caught exceptions without guessing handler-body extents
+or source-level `finally`. Deterministic many-to-many provenance records native
+instruction expansion and payload fusion. Checked construction verifies types,
+terminators, edge roles, exception evidence, identities, and provenance before
+dominance or SSA is exposed.
 
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
-bytecode. These are infrastructure APIs only: Cafe does not currently include
-shared MLIL, a DEX-to-JVM instruction translator, or a DEX-to-JAR workflow.
+bytecode. MLIL is currently an analysis sink: Cafe lifts LLIL into MLIL but does
+not yet lower MLIL to native LLIL, translate DEX instructions to JVM
+instructions, or provide a DEX-to-JAR workflow.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -167,7 +188,7 @@ artifact, entry, method, code-unit offset, and stage diagnostics.
 
 `cafe::art` handles runtime-produced Android artifacts without leaking ART
 state into canonical DEX. It validates VDEX 009, 012, 020, 021, and sectioned
-027, restores quickened standard opcodes before shared lowering, preserves
+027, restores quickened standard opcodes before shared lifting, preserves
 CompactDex split sections explicitly, and parses/preserves ODEX 036. OAT
 support discovers the stable metadata prefix in direct or ELF-contained input;
 architecture-specific fields and native instructions remain opaque.
@@ -387,7 +408,7 @@ external types.
 
 ## Cafe object model
 
-Java classes can be lowered into independently owned modules and combined into
+Java classes can be lifted into independently owned modules and combined into
 a program for traversal and resolution:
 
 ```rust
@@ -403,7 +424,7 @@ fn load_program(jar_path: &str) -> Result<Program, java::Error> {
 ```
 
 For metadata-only tools, use
-`cafe::java::lower_class_with_options` with `cafe::java::ProgramOptions` and
+`cafe::java::lift_class_with_options` with `cafe::java::ProgramOptions` and
 `cafe::java::MethodBodyMode::DeclarationsOnly` to skip method-body decoding.
 
 The same owned module can feed a unified hierarchy and a native backend:
@@ -430,7 +451,7 @@ explicitly instead of being guessed.
 
 ## DEX and APK inspection
 
-APK members retain their exact archive origin when they are parsed, lowered to
+APK members retain their exact archive origin when they are parsed, lifted to
 shared disassembly, or converted into Cafe modules:
 
 ```rust
@@ -536,6 +557,8 @@ crates/
 │   ├── src/source_map.rs
 │   ├── src/diagnostic.rs
 │   └── tests/
+├── mlil/                 typed semantic operations, verification, and SSA
+│   └── src/model/
 ├── classpath/           unified JVM/DEX declarations and hierarchy views
 │   └── src/
 ├── java/                JVM class files, bytecode, JARs, and adapters
@@ -548,6 +571,7 @@ crates/
 │   ├── src/jimage/
 │   ├── src/jmod/
 │   ├── src/llil/
+│   ├── src/mlil/
 │   ├── src/program/
 │   └── tests/
 ├── dex/                 DEX/CompactDex, Android archives, and adapters
@@ -559,6 +583,7 @@ crates/
 │   ├── src/file/
 │   ├── src/instruction/
 │   ├── src/llil/
+│   ├── src/mlil/
 │   ├── src/program/
 │   └── tests/
 ├── art/                 VDEX, ODEX, OAT metadata, and quickening
@@ -583,9 +608,9 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for the completed hardening and ISA-specific LLIL
-baseline, the deferred shared-MLIL and DEX-to-JVM boundaries, conditional Java
-Card support, and Java-specific non-goals.
+See [future.md](future.md) for the completed hardening, LLIL, and shared-MLIL
+baseline; the remaining generic-analysis, decompiler, and DEX-to-JVM boundaries;
+conditional Java Card support; and Java-specific non-goals.
 
 ## Build and verify
 

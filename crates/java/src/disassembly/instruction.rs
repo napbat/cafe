@@ -1,4 +1,4 @@
-//! JVM instruction and operand lowering into shared disassembly IR.
+//! JVM instruction and operand lifting into shared disassembly IR.
 
 use disassembler::{
     CodeAddress, CodeSize, ExactText, ExceptionBehavior, Immediate,
@@ -10,14 +10,14 @@ use crate::bytecode::{Instruction, Operand};
 use crate::classfile::{Constant, ConstantPool};
 use crate::{Error, Result};
 
-pub(super) fn lower_instruction(
+pub(super) fn lift_instruction(
     instruction: &Instruction,
     pool: &ConstantPool,
 ) -> Result<SharedInstruction> {
     let address = address_from_usize(instruction.offset)?;
     let size = size_from_usize(instruction.size, instruction.offset)?;
-    let operands = lower_operand(instruction, pool)?;
-    let flow = lower_flow(instruction)?;
+    let operands = lift_operand(instruction, pool)?;
+    let flow = lift_flow(instruction)?;
 
     Ok(SharedInstruction::new(
         address,
@@ -92,13 +92,13 @@ fn exception_behavior(opcode: crate::bytecode::Opcode) -> ExceptionBehavior {
     ))
 }
 
-fn lower_operand(instruction: &Instruction, pool: &ConstantPool) -> Result<Vec<SharedOperand>> {
+fn lift_operand(instruction: &Instruction, pool: &ConstantPool) -> Result<Vec<SharedOperand>> {
     let operands = match &instruction.operand {
         Operand::None => Vec::new(),
         Operand::Byte(value) => vec![signed(i64::from(*value))],
         Operand::Short(value) => vec![signed(i64::from(*value))],
         Operand::Constant(index) | Operand::InvokeDynamic(index) => {
-            vec![lower_reference(*index, pool)?]
+            vec![lift_reference(*index, pool)?]
         }
         Operand::Local(index) => vec![SharedOperand::Local(u32::from(*index))],
         Operand::Increment { index, value } => vec![
@@ -110,7 +110,7 @@ fn lower_operand(instruction: &Instruction, pool: &ConstantPool) -> Result<Vec<S
             instruction.offset,
         )?)],
         Operand::TableSwitch { .. } | Operand::LookupSwitch { .. } => {
-            vec![SharedOperand::Switch(lower_switch(
+            vec![SharedOperand::Switch(lift_switch(
                 &instruction.operand,
                 instruction.offset,
             )?)]
@@ -119,17 +119,17 @@ fn lower_operand(instruction: &Instruction, pool: &ConstantPool) -> Result<Vec<S
             vec![SharedOperand::TypeName(array_type.name().to_owned())]
         }
         Operand::InvokeInterface { index, count } => {
-            vec![lower_reference(*index, pool)?, unsigned(u64::from(*count))]
+            vec![lift_reference(*index, pool)?, unsigned(u64::from(*count))]
         }
         Operand::MultiArray { index, dimensions } => vec![
-            lower_reference(*index, pool)?,
+            lift_reference(*index, pool)?,
             unsigned(u64::from(*dimensions)),
         ],
     };
     Ok(operands)
 }
 
-fn lower_flow(instruction: &Instruction) -> Result<InstructionFlow> {
+fn lift_flow(instruction: &Instruction) -> Result<InstructionFlow> {
     use crate::bytecode::Opcode;
 
     let flow = match instruction.opcode {
@@ -159,7 +159,7 @@ fn lower_flow(instruction: &Instruction) -> Result<InstructionFlow> {
         },
         Opcode::Ret => InstructionFlow::IndirectBranch,
         Opcode::TableSwitch | Opcode::LookupSwitch => {
-            let table = lower_switch(&instruction.operand, instruction.offset)?;
+            let table = lift_switch(&instruction.operand, instruction.offset)?;
             InstructionFlow::Switch {
                 default: table.default,
                 cases: table.cases,
@@ -191,7 +191,7 @@ fn branch_target(instruction: &Instruction) -> Result<CodeAddress> {
     }
 }
 
-fn lower_switch(operand: &Operand, source: usize) -> Result<SwitchTable> {
+fn lift_switch(operand: &Operand, source: usize) -> Result<SwitchTable> {
     match operand {
         Operand::TableSwitch {
             default,
@@ -235,7 +235,7 @@ fn lower_switch(operand: &Operand, source: usize) -> Result<SwitchTable> {
     }
 }
 
-fn lower_reference(index: u16, pool: &ConstantPool) -> Result<SharedOperand> {
+fn lift_reference(index: u16, pool: &ConstantPool) -> Result<SharedOperand> {
     let kind = match pool.get(index)? {
         Constant::String { .. } => ReferenceKind::String,
         Constant::Class { .. } => ReferenceKind::Type,

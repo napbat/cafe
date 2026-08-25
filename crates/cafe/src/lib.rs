@@ -2,14 +2,14 @@
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
 //! under [`java`], [`dex`], [`art`], and [`jni`], including ISA-specific JVM and
-//! Dalvik LLIL; unified cross-format hierarchy aggregation lives under
-//! [`classpath`]; shared instruction and graph APIs, including exact and
-//! conservatively recovered exception structure, live under [`disassembler`];
-//! and the owned definition model is available both at this crate's root and
-//! under [`program`].
+//! Dalvik LLIL; their shared typed semantic representation lives under [`mlil`];
+//! unified cross-format hierarchy aggregation lives under [`classpath`]; shared
+//! instruction and graph APIs, including exact and conservatively recovered
+//! exception structure, live under [`disassembler`]; and the owned definition
+//! model is available both at this crate's root and under [`program`].
 //!
 //! ```
-//! use cafe::{Program, art, cfglib, classpath, dex, disassembler, java, jni, program};
+//! use cafe::{Program, art, cfglib, classpath, dex, disassembler, java, jni, mlil, program};
 //!
 //! let owned = Program::new();
 //! let dex_file = dex::DexFile::new(dex::DexVersion::V040);
@@ -25,6 +25,7 @@
 //! let _ = std::any::type_name::<art::VdexFile>();
 //! let _ = std::any::type_name::<classpath::ClasspathHierarchy>();
 //! let _ = std::any::type_name::<cfglib::BlockId>();
+//! let _ = std::any::type_name::<mlil::Function>();
 //! ```
 
 /// Android runtime VDEX, ODEX, OAT, and canonical dequickening support.
@@ -39,6 +40,8 @@ pub use ::disassembler;
 pub use ::java;
 /// Typed Java Native Interface declarations, symbols, and artifact adapters.
 pub use ::jni;
+/// Shared typed semantic IL, verification, provenance, dominance, and SSA views.
+pub use ::mlil;
 /// Owned modules, definitions, identities, and cross-module resolution.
 pub use ::program;
 

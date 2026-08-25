@@ -1,6 +1,6 @@
 //! Shared Java-ecosystem bytecode disassembly models and control-flow graphs.
 //!
-//! Java format crates lower their native decoded representation into this crate's
+//! Java format crates lift their native decoded representation into this crate's
 //! [`Disassembly`] model by implementing [`DisassemblySource`]. The shared
 //! instruction model deliberately retains native opcodes, mnemonics,
 //! references, addresses, and signatures while presenting one stable boundary

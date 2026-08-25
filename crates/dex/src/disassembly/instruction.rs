@@ -1,4 +1,4 @@
-//! DEX instruction, operand, reference, payload, and flow lowering.
+//! DEX instruction, operand, reference, payload, and flow lifting.
 
 use std::collections::BTreeMap;
 
@@ -111,7 +111,7 @@ impl<'a> Payloads<'a> {
     }
 }
 
-pub(super) fn lower_instruction(
+pub(super) fn lift_instruction(
     instruction: &Instruction,
     file: &DexFile,
     payloads: &Payloads<'_>,
@@ -122,9 +122,9 @@ pub(super) fn lower_instruction(
     })?);
     match instruction.data() {
         InstructionData::Operation { opcode, operands } => {
-            let lowered_operands =
-                lower_operands(*opcode, operands, instruction.offset(), file, payloads)?;
-            let flow = lower_flow(*opcode, operands, instruction.offset(), payloads)?;
+            let lifted_operands =
+                lift_operands(*opcode, operands, instruction.offset(), file, payloads)?;
+            let flow = lift_flow(*opcode, operands, instruction.offset(), payloads)?;
             let exception_behavior = ExceptionBehavior::from_may_throw(
                 crate::analysis::instruction_semantics(instruction)?.may_throw,
             );
@@ -133,7 +133,7 @@ pub(super) fn lower_instruction(
                 size,
                 u32::from(opcode.byte()),
                 opcode.mnemonic(),
-                lowered_operands,
+                lifted_operands,
                 flow,
             )
             .with_exception_behavior(exception_behavior))
@@ -168,14 +168,14 @@ pub(super) fn lower_instruction(
     }
 }
 
-fn lower_operands(
+fn lift_operands(
     opcode: Opcode,
     operands: &Operands,
     source: u32,
     file: &DexFile,
     payloads: &Payloads<'_>,
 ) -> Result<Vec<SharedOperand>> {
-    let lowered = match operands {
+    let lifted = match operands {
         Operands::None => Vec::new(),
         Operands::Register(register) => vec![register_operand(*register)],
         Operands::Registers { first, second } => {
@@ -225,7 +225,7 @@ fn lower_operands(
         ],
         Operands::RegisterIndex { register, index } => vec![
             register_operand(*register),
-            lower_reference(opcode, *index, source, file)?,
+            lift_reference(opcode, *index, source, file)?,
         ],
         Operands::RegistersIndex {
             first,
@@ -234,7 +234,7 @@ fn lower_operands(
         } => vec![
             register_operand(*first),
             register_operand(*second),
-            lower_reference(opcode, *index, source, file)?,
+            lift_reference(opcode, *index, source, file)?,
         ],
         Operands::RegisterListIndex {
             registers,
@@ -246,7 +246,7 @@ fn lower_operands(
                 .copied()
                 .map(register_operand)
                 .collect::<Vec<_>>();
-            values.push(lower_reference(opcode, *index, source, file)?);
+            values.push(lift_reference(opcode, *index, source, file)?);
             if let Some(secondary) = secondary_index {
                 values.push(prototype_reference(*secondary, file)?);
             }
@@ -262,17 +262,17 @@ fn lower_operands(
                 start: u32::from(*start),
                 count: u32::from(*count),
             }];
-            values.push(lower_reference(opcode, *index, source, file)?);
+            values.push(lift_reference(opcode, *index, source, file)?);
             if let Some(secondary) = secondary_index {
                 values.push(prototype_reference(*secondary, file)?);
             }
             values
         }
     };
-    Ok(lowered)
+    Ok(lifted)
 }
 
-fn lower_flow(
+fn lift_flow(
     opcode: Opcode,
     operands: &Operands,
     source: u32,
@@ -317,7 +317,7 @@ fn branch_target(operands: &Operands, source: u32) -> Result<u32> {
     }
 }
 
-fn lower_reference(
+fn lift_reference(
     opcode: Opcode,
     index: u32,
     source: u32,

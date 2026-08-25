@@ -1,4 +1,4 @@
-//! Class and method lowering into shared disassembly IR.
+//! Class and method lifting into shared disassembly IR.
 
 use disassembler::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, Disassembly,
@@ -6,17 +6,17 @@ use disassembler::{
     FunctionSymbol, RawAccessFlags,
 };
 
-use super::instruction::lower_instruction;
+use super::instruction::lift_instruction;
 use crate::classfile::{CATCH_ALL_EXCEPTION_INDEX, ClassFile, CodeAttribute, MethodInfo};
 use crate::{Error, Result};
 
-/// Lowers a parsed JVM class into the shared cross-format disassembly model.
+/// Lifts a parsed JVM class into the shared cross-format disassembly model.
 ///
 /// # Errors
 ///
 /// Returns an error when a method name, descriptor, constant reference,
 /// instruction, or exception catch type cannot be decoded or resolved.
-pub fn lower_class(class: &ClassFile) -> Result<Disassembly> {
+pub fn lift_class(class: &ClassFile) -> Result<Disassembly> {
     let owner = class.class_name()?.to_owned();
     let functions = class
         .methods
@@ -28,7 +28,7 @@ pub fn lower_class(class: &ClassFile) -> Result<Disassembly> {
             let descriptor = method
                 .descriptor(&class.constant_pool)
                 .unwrap_or("<invalid-descriptor>");
-            lower_method(class, method, &owner)
+            lift_method(class, method, &owner)
                 .map_err(|error| error.in_class_method(&owner, name, descriptor))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -44,21 +44,21 @@ impl DisassemblySource for ClassFile {
     type Error = Error;
 
     fn disassemble(&self) -> Result<Disassembly> {
-        lower_class(self)
+        lift_class(self)
     }
 }
 
-/// Lowers one JVM method into the neutral disassembly model.
+/// Lifts one JVM method into the neutral disassembly model.
 ///
 /// # Errors
 ///
 /// Returns an error for unresolved method metadata, malformed bytecode, or an
 /// invalid native control-flow target.
-pub fn lower_method(class: &ClassFile, method: &MethodInfo, owner: &str) -> Result<Function> {
+pub fn lift_method(class: &ClassFile, method: &MethodInfo, owner: &str) -> Result<Function> {
     let pool = &class.constant_pool;
     let body = method
         .code()
-        .map(|code| lower_body(code, class))
+        .map(|code| lift_body(code, class))
         .transpose()?;
     Ok(Function {
         symbol: FunctionSymbol {
@@ -71,11 +71,11 @@ pub fn lower_method(class: &ClassFile, method: &MethodInfo, owner: &str) -> Resu
     })
 }
 
-fn lower_body(code: &CodeAttribute, class: &ClassFile) -> Result<FunctionBody> {
+fn lift_body(code: &CodeAttribute, class: &ClassFile) -> Result<FunctionBody> {
     let instructions = code
         .instructions()?
         .iter()
-        .map(|instruction| lower_instruction(instruction, &class.constant_pool))
+        .map(|instruction| lift_instruction(instruction, &class.constant_pool))
         .collect::<Result<Vec<_>>>()?;
     let exception_handlers = code
         .exception_table
@@ -116,7 +116,7 @@ mod tests {
         RecoveredHandlerSemantics, cfglib::HandlerBody,
     };
 
-    use super::lower_class;
+    use super::lift_class;
     use crate::bytecode::Opcode;
     use crate::classfile::{
         Attribute, ClassAccessFlags, ClassFile, CodeAttribute, Constant, ConstantPool,
@@ -184,9 +184,9 @@ mod tests {
     }
 
     #[test]
-    fn lowers_jvm_methods_through_the_shared_source_trait() {
+    fn lifts_jvm_methods_through_the_shared_source_trait() {
         let class = class_with_branch();
-        let direct = lower_class(&class).unwrap();
+        let direct = lift_class(&class).unwrap();
         let through_trait = DisassemblySource::disassemble(&class).unwrap();
 
         assert_eq!(direct, through_trait);

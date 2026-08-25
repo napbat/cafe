@@ -7,8 +7,8 @@ use program::Module;
 
 use super::reader::EntryReader;
 use super::{ApkFile, EntryId, EntryKind};
-use crate::disassembly::lower_file_named;
-use crate::program::{ProgramOptions, lower_file_named_with_options};
+use crate::disassembly::lift_file_named;
+use crate::program::{ProgramOptions, lift_file_named_with_options};
 use crate::{DexFile, Error, Result};
 
 const DEX_ENTRY_STEM: &str = "classes";
@@ -76,13 +76,13 @@ pub enum DexVisitControl {
 }
 
 impl DexArtifact {
-    /// Lowers this DEX artifact using its exact APK entry name.
+    /// Lifts this DEX artifact using its exact APK entry name.
     ///
     /// # Errors
     ///
     /// Returns an error when DEX definitions or executable bodies are invalid.
     pub fn disassemble(&self) -> Result<Disassembly> {
-        lower_file_named(&self.file, &self.origin.entry_name)
+        lift_file_named(&self.file, &self.origin.entry_name)
             .map_err(|error| error.in_apk_entry(self.origin.entry_name.clone()))
     }
 
@@ -92,7 +92,7 @@ impl DexArtifact {
     ///
     /// Returns an error when DEX definitions or requested bodies are invalid.
     pub fn to_module(&self, options: ProgramOptions) -> Result<Module> {
-        lower_file_named_with_options(&self.file, &self.origin.entry_name, options)
+        lift_file_named_with_options(&self.file, &self.origin.entry_name, options)
             .map_err(|error| error.in_apk_entry(self.origin.entry_name.clone()))
     }
 }

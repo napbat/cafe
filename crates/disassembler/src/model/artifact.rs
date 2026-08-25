@@ -4,7 +4,7 @@ use std::fmt;
 
 use super::{AddressRange, AddressUnit, CodeAddress, Instruction};
 
-/// Native bytecode format from which a disassembly was lowered.
+/// Native bytecode format from which a disassembly was lifted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BinaryFormat {
     /// JVM `ClassFile` bytecode.

@@ -1,6 +1,8 @@
 //! Proof that a consumer can reach every Cafe capability through one crate.
 
-use cafe::{ModuleSource, Program, art, cfglib, classpath, dex, disassembler, java, jni, program};
+use cafe::{
+    ModuleSource, Program, art, cfglib, classpath, dex, disassembler, java, jni, mlil, program,
+};
 
 #[test]
 fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,6 +98,8 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
     let _ = std::any::type_name::<dex::llil::Body>();
     let _ = std::any::type_name::<dex::DexEmitter>();
+    let _ = std::any::type_name::<mlil::Function>();
+    let _ = std::any::type_name::<mlil::EdgeMetadata>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
     Ok(())

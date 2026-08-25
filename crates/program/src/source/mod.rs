@@ -4,7 +4,7 @@ use crate::Module;
 
 /// A decoded format-specific value that can produce a shared program module.
 pub trait ModuleSource {
-    /// Error produced while resolving or lowering the native representation.
+    /// Error produced while resolving or lifting the native representation.
     type Error;
 
     /// Builds an owned module with native metadata and disassembled bodies.
