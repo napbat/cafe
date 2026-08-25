@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use disassembler::{
-    CodeAddress, CodeSize, Immediate, Instruction as SharedInstruction, InstructionFlow,
-    Operand as SharedOperand, Reference, ReferenceKind, SwitchCase, SwitchTable,
+    CodeAddress, CodeSize, ExactText, ExceptionBehavior, Immediate,
+    Instruction as SharedInstruction, InstructionFlow, Operand as SharedOperand, Reference,
+    ReferenceKind, ReferenceSymbol, SwitchCase, SwitchTable,
 };
 
 use crate::file::{
@@ -124,6 +125,9 @@ pub(super) fn lower_instruction(
             let lowered_operands =
                 lower_operands(*opcode, operands, instruction.offset(), file, payloads)?;
             let flow = lower_flow(*opcode, operands, instruction.offset(), payloads)?;
+            let exception_behavior = ExceptionBehavior::from_may_throw(
+                crate::analysis::instruction_semantics(instruction)?.may_throw,
+            );
             Ok(SharedInstruction::new(
                 address,
                 size,
@@ -131,7 +135,8 @@ pub(super) fn lower_instruction(
                 opcode.mnemonic(),
                 lowered_operands,
                 flow,
-            ))
+            )
+            .with_exception_behavior(exception_behavior))
         }
         InstructionData::PackedSwitchPayload(payload) => Ok(SharedInstruction::new(
             address,
@@ -140,7 +145,8 @@ pub(super) fn lower_instruction(
             PayloadKind::PackedSwitch.mnemonic(),
             packed_payload_operands(payload),
             InstructionFlow::IndirectBranch,
-        )),
+        )
+        .with_exception_behavior(ExceptionBehavior::CannotThrow)),
         InstructionData::SparseSwitchPayload(payload) => Ok(SharedInstruction::new(
             address,
             size,
@@ -148,7 +154,8 @@ pub(super) fn lower_instruction(
             PayloadKind::SparseSwitch.mnemonic(),
             sparse_payload_operands(payload),
             InstructionFlow::IndirectBranch,
-        )),
+        )
+        .with_exception_behavior(ExceptionBehavior::CannotThrow)),
         InstructionData::ArrayDataPayload(payload) => Ok(SharedInstruction::new(
             address,
             size,
@@ -156,7 +163,8 @@ pub(super) fn lower_instruction(
             PayloadKind::ArrayData.mnemonic(),
             array_payload_operands(payload),
             InstructionFlow::IndirectBranch,
-        )),
+        )
+        .with_exception_behavior(ExceptionBehavior::CannotThrow)),
     }
 }
 
@@ -343,18 +351,70 @@ fn lower_reference(
                 .to_string(),
         ),
     };
-    Ok(SharedOperand::Reference(match display {
+    let reference = match display {
         Some(display) => Reference::resolved(reference_kind, index, display),
         None => Reference::unresolved(reference_kind, index),
-    }))
+    };
+    Ok(SharedOperand::Reference(
+        reference_symbol(kind, index, file)?
+            .map_or(reference.clone(), |symbol| reference.with_symbol(symbol)),
+    ))
 }
 
 fn prototype_reference(index: u32, file: &DexFile) -> Result<SharedOperand> {
-    Ok(SharedOperand::Reference(Reference::resolved(
-        ReferenceKind::MethodPrototype,
-        index,
-        file.prototype_descriptor(PrototypeIndex::new(index))?,
-    )))
+    let descriptor = file.prototype_descriptor(PrototypeIndex::new(index))?;
+    Ok(SharedOperand::Reference(
+        Reference::resolved(ReferenceKind::MethodPrototype, index, descriptor.clone())
+            .with_symbol(ReferenceSymbol::MethodPrototype(descriptor)),
+    ))
+}
+
+fn reference_symbol(
+    kind: IndexKind,
+    index: u32,
+    file: &DexFile,
+) -> Result<Option<ReferenceSymbol>> {
+    let symbol = match kind {
+        IndexKind::String => {
+            let value = file.resolve_string(StringIndex::new(index))?;
+            Some(ReferenceSymbol::String(ExactText {
+                text: value.text.clone(),
+                utf16_units: value.utf16_units.clone(),
+            }))
+        }
+        IndexKind::Type => Some(ReferenceSymbol::Type(
+            file.type_descriptor(TypeIndex::new(index))?.to_owned(),
+        )),
+        IndexKind::Field => {
+            let field = file.resolve_field_id(FieldIndex::new(index))?;
+            let name = file.resolve_string(field.name)?;
+            Some(ReferenceSymbol::Field {
+                owner: file.type_descriptor(field.class)?.to_owned(),
+                name: ExactText {
+                    text: name.text.clone(),
+                    utf16_units: name.utf16_units.clone(),
+                },
+                descriptor: file.type_descriptor(field.field_type)?.to_owned(),
+            })
+        }
+        IndexKind::Method => {
+            let method = file.resolve_method_id(MethodIndex::new(index))?;
+            let name = file.resolve_string(method.name)?;
+            Some(ReferenceSymbol::Method {
+                owner: file.type_descriptor(method.class)?.to_owned(),
+                name: ExactText {
+                    text: name.text.clone(),
+                    utf16_units: name.utf16_units.clone(),
+                },
+                descriptor: file.prototype_descriptor(method.prototype)?,
+            })
+        }
+        IndexKind::Prototype => Some(ReferenceSymbol::MethodPrototype(
+            file.prototype_descriptor(PrototypeIndex::new(index))?,
+        )),
+        IndexKind::CallSite | IndexKind::MethodHandle => None,
+    };
+    Ok(symbol)
 }
 
 fn packed_payload_operands(payload: &PackedSwitchPayload) -> Vec<SharedOperand> {

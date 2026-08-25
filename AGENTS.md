@@ -16,8 +16,13 @@ These rules apply to the entire repository.
   format.
 - Keep `crates/program` neutral across Java ecosystem formats. It owns the
   editable `Program`/`Module`/definition model, identities, indexed lookup, and
-  resolution. It may depend on the disassembler, but never on Cafe or a native
-  frontend.
+  resolution, plus the format-neutral `ModuleEmitter` contract. It may depend
+  on the disassembler, but never on Cafe or a native frontend.
+- Keep `crates/classpath` as the cross-format Java type-world aggregator. It
+  normalizes JVM internal names and DEX object descriptors, merges equivalent
+  declarations, diagnoses conflicting declarations, and supplies explicit JVM
+  and DEX hierarchy views. It may depend on Java, DEX, and Program, but never
+  on Cafe or container-specific policy.
 - Keep `crates/cafe` the only consumer entry point. It depends on and publicly
   re-exports every workspace capability under a concept-named namespace, while
   re-exporting Program's core types at its root. Every new feature crate must
@@ -26,21 +31,23 @@ These rules apply to the entire repository.
 - Keep `crates/java` a library-only JVM frontend. It owns `.class` parsing and
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
-  disassembler and Program. It also owns symbolic bytecode layout and JVM
-  frame/stack-map analysis. Keep its native instruction graph adapted to
-  cfglib's rooted edge view and run frame propagation through the fallible
-  seeded edge solver. It must not depend on Cafe. Do not add `src/main.rs`, Clap,
-  or tool-specific output policy to this crate.
+  disassembler and Program. It also owns symbolic bytecode layout, JVM
+  frame/stack-map analysis, and verified canonical Program-to-class-file
+  emission. Keep its native instruction graph adapted to cfglib's rooted edge
+  view and run frame propagation through the fallible seeded edge solver. It
+  must not depend on Cafe. Do not add `src/main.rs`, Clap, or tool-specific
+  output policy to this crate.
 - Use the JAR entry reader for archive-wide operations. Validation, rewriting,
   and bulk consumers must share one ZIP reader rather than reopening the
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
   encoding, APK/AAB provenance, corpus validation, executable semantics and
-  register analysis, and adapters into the disassembler and Program. Keep its
-  native operation graph adapted to cfglib's rooted edge view and run register
-  propagation through the fallible seeded edge solver. It must not depend on
-  Cafe or leak Android-container details into shared lower layers.
+  register analysis, and adapters into the disassembler and Program, including
+  verified canonical Program-to-DEX emission. Keep its native operation graph
+  adapted to cfglib's rooted edge view and run register propagation through the
+  fallible seeded edge solver. It must not depend on Cafe or leak
+  Android-container details into shared lower layers.
 - Use the APK or AAB entry reader for archive-wide operations. Bulk DEX
   consumers must select and visit artifacts through the single-reader APIs
   instead of reopening the ZIP directory per entry. Non-fail-fast validators
@@ -75,6 +82,8 @@ These rules apply to the entire repository.
   belongs there only when it genuinely coordinates multiple focused crates.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
+- In Classpath, keep canonical declaration models, hierarchy queries, native
+  views, ingestion, and errors independent.
 - In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `program/`
   independent. Keep frame analysis under `analysis/`, corpus reporting under
   `corpus/`, and JDK containers under `jmod/` and `jimage/`. Keep descriptors,
@@ -118,7 +127,8 @@ These rules apply to the entire repository.
 ## Shared disassembly and Program
 
 - Retain native opcodes, signatures, addresses, table indices, access flags,
-  references, and resolved display names needed by downstream consumers.
+  references, reconstructable structured symbols, resolved display names, and
+  exact register-frame resources needed by downstream consumers.
 - Build and verify ordinary, branch, switch, legacy-subroutine, and exceptional
   control-flow edges through cfglib for every lowered executable body.
 - Expose cfglib's generic exception-flow model from shared graphs. Register
@@ -130,6 +140,10 @@ These rules apply to the entire repository.
   handler entry, and reports shared boundaries and ambiguity evidence. Never
   promote recovered extents to native `HandlerBody::Known` metadata or equate
   catch-all throwing behavior with a proven rethrow or source-level `finally`.
+- Offer an explicit derived structured-lifting bridge that clones the CFG and
+  promotes only complete, nonambiguous, nonoverlapping recovered handler bodies
+  to `HandlerBody::Known`. Never mutate the canonical graph or synthesize
+  source-level `finally` semantics.
 - Carry normal-versus-exceptional meaning, native switch keys, ordered catch
   metadata, exact throw sites, and legacy continuation call sites in cfglib
   edge payloads. Offer zero-copy normal-only views over the same stable edge
@@ -140,6 +154,12 @@ These rules apply to the entire repository.
 - Keep Program definition identity format-qualified and overload-qualified.
   Module mutation must preserve indexed lookup invariants; cross-module
   resolution must distinguish missing, unique, and ambiguous results.
+- Re-intern structured Program references when emitting JVM or DEX artifacts;
+  source table indices are diagnostic provenance, not valid output indices.
+  Emitted artifacts must pass their native assembly, parse, and analysis gates.
+- Normalize JVM and DEX class names only in Classpath. Native analysis APIs
+  consume explicit borrowed hierarchy views rather than absorbing the other
+  frontend's naming or container model.
 - Adapters may offer explicit body-loading policies. Metadata-only consumers
   must not be forced to decode executable bodies.
 
@@ -152,7 +172,9 @@ These rules apply to the entire repository.
   CompactDex, APK/AAB traversal and rewrite reports, deterministic corpus
   validation, ART containers and quickening, JNI ABI mapping, symbol escaping,
   native overload and registration plans, header rendering, and Cafe-only
-  access to every public workspace capability.
+  access to every public workspace capability. Cover canonical Program-to-JVM
+  and Program-to-DEX emission, exact reference rebuilding, register-resource
+  retention, recovered structured lifting, and unified classpath views.
 - Require all of these commands to pass:
 
   ```text

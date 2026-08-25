@@ -9,10 +9,11 @@ Cafe has two primary instruction families:
 - JVM bytecode stored in `.class` files;
 - Android DEX bytecode, including its CompactDex storage form.
 
-Both families now have the parsing, assembly, executable-analysis, corpus,
-archive, provenance, and shared-adapter infrastructure needed by downstream
-tools. The only planned cross-family capability not implemented here is the
-explicit DEX-to-JVM transformation boundary described below.
+Both families now have parsing, assembly, executable analysis, corpus, archive,
+provenance, shared adapters, unified classpath aggregation, and verified
+Program-to-native emission. The only planned cross-family capability not
+implemented here is the explicit DEX-to-JVM transformation boundary described
+below.
 
 The shared CFG boundary now retains stable parallel edge identities and typed
 caller payloads for switch arms, ordered handlers, exact instruction throw
@@ -26,12 +27,16 @@ extents unknown when JVM or DEX metadata does not encode them. A separate
 recovered exception model maps native table entries to cfglib handler
 identities, retains stable exceptional edge and throw-site evidence, and
 conservatively reports handler-exclusive blocks, shared boundaries, and
-ambiguities. It classifies observable catch-all exit behavior without claiming
-source-level `finally` or a proven rethrow. Its seeded fallible edge solver now
-drives JVM verification-frame and DEX register-frame analysis directly while
-preserving native errors and source locations. These are infrastructure for
-analysis and later transformations; they do not implement the deferred
-DEX-to-JVM translation itself.
+ambiguities. Exact catch descriptors are keyed by stable cfglib handler
+identities. A derived structured-lifting bridge promotes only complete,
+nonambiguous, nonoverlapping recovered handler bodies on a cloned CFG; it never
+changes canonical unknown extents or invents source-level `finally`. Native
+opcode throwability suppresses impossible exceptional edges while unknown
+opcodes remain conservative. The seeded fallible edge solver now drives JVM
+verification-frame and DEX register-frame analysis directly while preserving
+native errors and source locations. These are infrastructure for analysis and
+later transformations; they do not implement the deferred DEX-to-JVM
+translation itself.
 
 ## Development principles
 
@@ -69,7 +74,10 @@ The `java` crate now provides:
 - deterministic, non-fail-fast corpus validation with artifact, entry, class,
   method, byte-offset, and processing-stage diagnostics;
 - explicit metadata-only and executable-body adapter policies for shared
-  disassembly and Program.
+  disassembly and Program;
+- verified canonical Program-to-class-file emission with structured constant
+  re-interning, instruction reconstruction, frame propagation, stack-map
+  generation, assembly validation, and parse-back coverage.
 
 JAR, JMOD, and JIMAGE are container boundaries around JVM class files. They do
 not introduce additional instruction semantics.
@@ -94,10 +102,33 @@ The `dex` crate now provides:
 - deterministic, non-fail-fast corpus validation across standalone DEX,
   multi-header DEX 041, APK, and AAB artifacts;
 - cross-format resolution coverage proving that equivalent JVM and DEX
-  declarations retain separate format-qualified identities.
+  declarations retain separate format-qualified identities;
+- verified canonical Program-to-DEX emission with deterministic identifier
+  rebuilding, exact retained register resources, instruction and handler
+  reconstruction, native validation, and parse-back coverage.
 
 Exact pristine output, contextual malformed-input errors, and verified control
 flow remain release gates.
+
+## Completed shared transformation prerequisites
+
+The neutral layers and focused frontends now provide:
+
+- exact structured reference symbols for numeric constants, Java UTF-16 text,
+  types, fields, methods, and method prototypes, while retaining original
+  indices only as provenance;
+- exact DEX register, incoming, and outgoing resource widths on shared bodies;
+- a format-neutral `ModuleEmitter` contract with verified JVM and DEX native
+  backends;
+- a unified `ClasspathHierarchy` that ingests native files, Program modules,
+  and supported JVM/Android containers, merges equivalent declarations, and
+  exposes borrowed JVM and DEX analysis views;
+- exact cfglib handler-type identities, native opcode throwability, recovered
+  exception ownership evidence, and a conservative derived structured-lifting
+  path.
+
+These capabilities support native editing, analysis, and same-family rebuilds.
+They do not translate Dalvik register semantics into JVM stack semantics.
 
 ## Remaining cross-format transformation boundary
 

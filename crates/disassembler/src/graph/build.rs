@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cfglib::{
-    BlockId, Cfg, EdgeKind, Handler, HandlerBody, HandlerKind, HandlerRef, Region, RegionId,
-    verify_with,
+    BlockId, Cfg, EdgeKind, Handler, HandlerBody, HandlerKind, HandlerRef, HandlerTypes, Region,
+    RegionId, verify_with,
 };
 
 use super::validate::ControlFlowValidator;
@@ -19,8 +19,9 @@ type SharedCfg = Cfg<Instruction, ControlFlowEdge>;
 ///
 /// Leaders are introduced at the entry, direct branch targets, instructions
 /// following terminators, and exception-range boundaries. Exception handlers
-/// produce `ExceptionUnwind` edges from every protected block and ordered
-/// region metadata with explicitly unknown handler-body extents.
+/// produce `ExceptionUnwind` edges from protected instructions whose native
+/// semantics may throw, plus ordered region metadata with explicitly unknown
+/// handler-body extents.
 ///
 /// # Errors
 ///
@@ -40,7 +41,7 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
     let (mut cfg, instruction_blocks) = populate_blocks(body, &leaders);
     add_normal_edges(&mut cfg, &instruction_blocks);
     add_exception_edges(body, &mut cfg, &instruction_blocks);
-    let handler_refs = add_exception_regions(body, &mut cfg, &instruction_blocks);
+    let (handler_refs, handler_types) = add_exception_regions(body, &mut cfg, &instruction_blocks);
 
     let verification = verify_with(&cfg, &ControlFlowValidator::new(body));
     if !verification.is_ok() {
@@ -60,6 +61,7 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
         instruction_blocks,
         body.exception_handlers.clone(),
         handler_refs,
+        handler_types,
     ))
 }
 
@@ -380,7 +382,15 @@ fn add_exception_edges(
     for (index, handler) in body.exception_handlers.iter().enumerate() {
         let target = instruction_blocks[&handler.handler];
         for &(source, address) in &block_starts {
-            if handler.protected.contains(address) {
+            if handler.protected.contains(address)
+                && cfg
+                    .block(source)
+                    .instructions()
+                    .first()
+                    .is_some_and(|instruction| {
+                        instruction.exception_behavior.retains_exception_edge()
+                    })
+            {
                 cfg.add_edge_with_payload(
                     source,
                     target,
@@ -410,7 +420,7 @@ fn add_exception_regions(
     body: &FunctionBody,
     cfg: &mut SharedCfg,
     instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
-) -> Vec<HandlerRef> {
+) -> (Vec<HandlerRef>, HandlerTypes<String>) {
     let mut drafts = Vec::<ExceptionRegionDraft>::new();
     for (index, handler) in body.exception_handlers.iter().enumerate() {
         if let Some(draft) = drafts
@@ -482,10 +492,17 @@ fn add_exception_regions(
             handler_refs[handler_index] = Some(HandlerRef::new(region, handler_position));
         }
     }
-    handler_refs
+    let handler_refs = handler_refs
         .into_iter()
         .map(|handler| handler.expect("every validated handler is assigned to one region"))
-        .collect()
+        .collect::<Vec<_>>();
+    let mut handler_types = HandlerTypes::new();
+    for (handler, definition) in handler_refs.iter().copied().zip(&body.exception_handlers) {
+        if let crate::CatchType::Type(catch_type) = &definition.catch {
+            handler_types.set(handler, catch_type.clone());
+        }
+    }
+    (handler_refs, handler_types)
 }
 
 fn strictly_contains(outer: crate::AddressRange, inner: crate::AddressRange) -> bool {
@@ -508,8 +525,8 @@ mod tests {
     use super::build_control_flow_graph;
     use crate::{
         AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ControlFlowEdge,
-        ControlFlowEdgeRole, ExceptionHandler, ExceptionHandlerIndex, FunctionBody, Instruction,
-        InstructionFlow, SwitchCase,
+        ControlFlowEdgeRole, ExceptionBehavior, ExceptionHandler, ExceptionHandlerIndex,
+        FunctionBody, Instruction, InstructionFlow, SwitchCase,
     };
 
     const ONE_UNIT: CodeSize = CodeSize::new(1);
@@ -629,6 +646,40 @@ mod tests {
     }
 
     #[test]
+    fn omits_exception_edges_only_for_instructions_known_not_to_throw() {
+        let body = FunctionBody::new(
+            AddressUnit::Byte,
+            vec![
+                instruction(0, InstructionFlow::FallThrough)
+                    .with_exception_behavior(ExceptionBehavior::CannotThrow),
+                instruction(1, InstructionFlow::FallThrough)
+                    .with_exception_behavior(ExceptionBehavior::MayThrow),
+                instruction(2, InstructionFlow::Return),
+                instruction(3, InstructionFlow::Return),
+            ],
+            vec![ExceptionHandler {
+                protected: AddressRange::new(CodeAddress::ZERO, CodeAddress::from(3_u32)),
+                handler: CodeAddress::from(3_u32),
+                catch: CatchType::Any,
+            }],
+        );
+
+        let graph = build_control_flow_graph(&body).unwrap();
+        let throw_sites = graph
+            .cfg()
+            .edges()
+            .filter(|edge| edge.kind() == EdgeKind::ExceptionUnwind)
+            .map(|edge| edge.payload().source())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            throw_sites,
+            vec![CodeAddress::from(1_u32), CodeAddress::from(2_u32)],
+            "unknown behavior remains conservative"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
     fn registers_nested_regions_and_ordered_unknown_handlers() {
         let inner_range = AddressRange::new(CodeAddress::from(1_u32), CodeAddress::from(3_u32));
         let outer_range = AddressRange::new(CodeAddress::from(0_u32), CodeAddress::from(4_u32));
@@ -707,6 +758,25 @@ mod tests {
             graph.exception_handler_ref(ExceptionHandlerIndex::from_index(2)),
             Some(HandlerRef::new(outer.id, 1))
         );
+        let inner_ref = graph
+            .exception_handler_ref(ExceptionHandlerIndex::from_index(0))
+            .unwrap();
+        let outer_ref = graph
+            .exception_handler_ref(ExceptionHandlerIndex::from_index(1))
+            .unwrap();
+        let fallback_ref = graph
+            .exception_handler_ref(ExceptionHandlerIndex::from_index(2))
+            .unwrap();
+        assert_eq!(
+            graph.exception_handler_type(inner_ref),
+            Some("example/Inner")
+        );
+        assert_eq!(
+            graph.exception_handler_type(outer_ref),
+            Some("example/Outer")
+        );
+        assert_eq!(graph.exception_handler_type(fallback_ref), None);
+        assert_eq!(graph.exception_handler_types().len(), 2);
 
         let entry = graph.block_for_instruction(CodeAddress::ZERO).unwrap();
         let outer_handler_indices = graph

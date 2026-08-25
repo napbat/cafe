@@ -8,6 +8,7 @@
 //! JVM class-file, Android DEX, or JNI implementation details.
 
 mod definition;
+mod emission;
 mod error;
 mod identity;
 mod module;
@@ -18,15 +19,17 @@ mod source;
 /// Raw disassembly types retained by method definitions.
 pub mod disassembly {
     pub use disassembler::{
-        AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ControlFlowGraph,
+        AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ControlFlowGraph, ExactText,
         ExceptionHandler, FunctionBody, GraphError, Immediate, Instruction, InstructionFlow,
-        Operand, Reference, ReferenceKind, SwitchCase, SwitchTable,
+        Operand, Reference, ReferenceKind, ReferenceSymbol, RegisterResources, SwitchCase,
+        SwitchTable,
     };
 }
 
 pub use disassembler::{BinaryFormat, GraphError, RawAccessFlags};
 
 pub use self::definition::{FieldDefinition, MethodDefinition, TypeDefinition};
+pub use self::emission::ModuleEmitter;
 pub use self::error::{DefinitionKind, Error, Result, SymbolComponent};
 pub use self::identity::{FieldId, MethodId, ModuleId, TypeId};
 pub use self::module::Module;

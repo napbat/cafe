@@ -3,7 +3,7 @@
 use disassembler::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, Disassembly,
     DisassemblySource, ExceptionHandler as SharedExceptionHandler, Function, FunctionBody,
-    FunctionSymbol, RawAccessFlags,
+    FunctionSymbol, RawAccessFlags, RegisterResources,
 };
 
 use super::instruction::{Payloads, lower_instruction};
@@ -114,7 +114,12 @@ pub(crate) fn lower_body(file: &DexFile, code: &CodeItem) -> Result<FunctionBody
         }
     }
 
-    let body = FunctionBody::new(AddressUnit::CodeUnit16, instructions, exception_handlers);
+    let body = FunctionBody::new(AddressUnit::CodeUnit16, instructions, exception_handlers)
+        .with_register_resources(RegisterResources::new(
+            code.registers_size,
+            code.ins_size,
+            code.outs_size,
+        ));
     body.control_flow_graph()?;
     Ok(body)
 }
@@ -176,7 +181,7 @@ mod tests {
                         target: 4,
                     },
                 ),
-                Instruction::operation(3, Opcode::ReturnVoid, Operands::None),
+                Instruction::operation(3, Opcode::Throw, Operands::Register(0)),
                 Instruction::packed_switch(
                     4,
                     PackedSwitchPayload {
@@ -189,7 +194,7 @@ mod tests {
             ],
             tries: vec![TryBlock {
                 start_address: 0,
-                instruction_count: 3,
+                instruction_count: 4,
                 handlers: vec![CatchHandler {
                     exception_type: None,
                     address: 10,
@@ -245,7 +250,7 @@ mod tests {
         let [region] = graph.cfg().regions() else {
             panic!("expected the DEX try item to produce one region");
         };
-        assert_eq!(region.protected_blocks.len(), 1);
+        assert_eq!(region.protected_blocks.len(), 2);
         assert_eq!(region.handlers[0].body, HandlerBody::Unknown);
 
         let recovered = graph.recovered_exception_model();

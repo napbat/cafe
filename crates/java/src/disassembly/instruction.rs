@@ -1,8 +1,9 @@
 //! JVM instruction and operand lowering into shared disassembly IR.
 
 use disassembler::{
-    CodeAddress, CodeSize, Immediate, Instruction as SharedInstruction, InstructionFlow,
-    Operand as SharedOperand, Reference, ReferenceKind, SwitchCase, SwitchTable,
+    CodeAddress, CodeSize, ExactText, ExceptionBehavior, Immediate,
+    Instruction as SharedInstruction, InstructionFlow, Operand as SharedOperand, Reference,
+    ReferenceKind, ReferenceSymbol, SwitchCase, SwitchTable,
 };
 
 use crate::bytecode::{Instruction, Operand};
@@ -25,6 +26,69 @@ pub(super) fn lower_instruction(
         instruction.mnemonic(),
         operands,
         flow,
+    )
+    .with_exception_behavior(exception_behavior(instruction.opcode)))
+}
+
+fn exception_behavior(opcode: crate::bytecode::Opcode) -> ExceptionBehavior {
+    use crate::bytecode::Opcode;
+
+    if matches!(
+        opcode,
+        Opcode::Breakpoint | Opcode::ImpDep1 | Opcode::ImpDep2
+    ) {
+        return ExceptionBehavior::Unknown;
+    }
+    ExceptionBehavior::from_may_throw(matches!(
+        opcode,
+        Opcode::Ldc
+            | Opcode::LdcW
+            | Opcode::Ldc2W
+            | Opcode::IALoad
+            | Opcode::LALoad
+            | Opcode::FALoad
+            | Opcode::DALoad
+            | Opcode::AALoad
+            | Opcode::BALoad
+            | Opcode::CALoad
+            | Opcode::SALoad
+            | Opcode::IAStore
+            | Opcode::LAStore
+            | Opcode::FAStore
+            | Opcode::DAStore
+            | Opcode::AAStore
+            | Opcode::BAStore
+            | Opcode::CAStore
+            | Opcode::SAStore
+            | Opcode::IDiv
+            | Opcode::LDiv
+            | Opcode::IRem
+            | Opcode::LRem
+            | Opcode::IReturn
+            | Opcode::LReturn
+            | Opcode::FReturn
+            | Opcode::DReturn
+            | Opcode::AReturn
+            | Opcode::Return
+            | Opcode::GetStatic
+            | Opcode::PutStatic
+            | Opcode::GetField
+            | Opcode::PutField
+            | Opcode::InvokeVirtual
+            | Opcode::InvokeSpecial
+            | Opcode::InvokeStatic
+            | Opcode::InvokeInterface
+            | Opcode::InvokeDynamic
+            | Opcode::New
+            | Opcode::NewArray
+            | Opcode::ANewArray
+            | Opcode::ArrayLength
+            | Opcode::AThrow
+            | Opcode::CheckCast
+            | Opcode::InstanceOf
+            | Opcode::MonitorEnter
+            | Opcode::MonitorExit
+            | Opcode::MultiANewArray
     ))
 }
 
@@ -181,11 +245,105 @@ fn lower_reference(index: u16, pool: &ConstantPool) -> Result<SharedOperand> {
         Constant::InvokeDynamic { .. } => ReferenceKind::DynamicCallSite,
         _ => ReferenceKind::Constant,
     };
-    Ok(SharedOperand::Reference(Reference::resolved(
-        kind,
-        u32::from(index),
-        pool.describe(index)?,
-    )))
+    let reference = Reference::resolved(kind, u32::from(index), pool.describe(index)?);
+    Ok(SharedOperand::Reference(
+        reference_symbol(index, pool)?
+            .map_or(reference.clone(), |symbol| reference.with_symbol(symbol)),
+    ))
+}
+
+fn reference_symbol(index: u16, pool: &ConstantPool) -> Result<Option<ReferenceSymbol>> {
+    let symbol = match pool.get(index)? {
+        Constant::Integer(value) => Some(ReferenceSymbol::Integer(*value)),
+        Constant::Float(value) => Some(ReferenceSymbol::Float(value.to_bits())),
+        Constant::Long(value) => Some(ReferenceSymbol::Long(*value)),
+        Constant::Double(value) => Some(ReferenceSymbol::Double(value.to_bits())),
+        Constant::String { string_index } => {
+            Some(ReferenceSymbol::String(exact_utf8(pool, *string_index)?))
+        }
+        Constant::Class { .. } => Some(ReferenceSymbol::Type(pool.class_name(index)?.to_owned())),
+        Constant::FieldRef {
+            class_index,
+            name_and_type_index,
+        } => Some(member_symbol(
+            pool,
+            *class_index,
+            *name_and_type_index,
+            false,
+        )?),
+        Constant::MethodRef {
+            class_index,
+            name_and_type_index,
+        }
+        | Constant::InterfaceMethodRef {
+            class_index,
+            name_and_type_index,
+        } => Some(member_symbol(
+            pool,
+            *class_index,
+            *name_and_type_index,
+            true,
+        )?),
+        Constant::MethodType { descriptor_index } => Some(ReferenceSymbol::MethodPrototype(
+            pool.utf8(*descriptor_index)?.to_owned(),
+        )),
+        Constant::Unusable
+        | Constant::Utf8(_)
+        | Constant::NameAndType { .. }
+        | Constant::MethodHandle { .. }
+        | Constant::Dynamic { .. }
+        | Constant::InvokeDynamic { .. }
+        | Constant::Module { .. }
+        | Constant::Package { .. } => None,
+    };
+    Ok(symbol)
+}
+
+fn member_symbol(
+    pool: &ConstantPool,
+    class_index: u16,
+    name_and_type_index: u16,
+    method: bool,
+) -> Result<ReferenceSymbol> {
+    let Constant::NameAndType {
+        name_index,
+        descriptor_index,
+    } = pool.get(name_and_type_index)?
+    else {
+        return Err(Error::invalid_bytecode(
+            0,
+            "member reference lacks a NameAndType constant",
+        ));
+    };
+    let owner = pool.class_name(class_index)?.to_owned();
+    let name = exact_utf8(pool, *name_index)?;
+    let descriptor = pool.utf8(*descriptor_index)?.to_owned();
+    Ok(if method {
+        ReferenceSymbol::Method {
+            owner,
+            name,
+            descriptor,
+        }
+    } else {
+        ReferenceSymbol::Field {
+            owner,
+            name,
+            descriptor,
+        }
+    })
+}
+
+fn exact_utf8(pool: &ConstantPool, index: u16) -> Result<ExactText> {
+    let Constant::Utf8(value) = pool.get(index)? else {
+        return Err(Error::invalid_bytecode(
+            0,
+            "symbolic reference text is not a Utf8 constant",
+        ));
+    };
+    Ok(ExactText {
+        text: value.as_str().to_owned(),
+        utf16_units: value.utf16_units().to_vec(),
+    })
 }
 
 fn signed(value: i64) -> SharedOperand {

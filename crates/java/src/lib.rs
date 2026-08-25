@@ -14,6 +14,10 @@ pub mod jimage;
 pub mod jmod;
 pub mod program;
 
+pub use self::program::{
+    DisplayJavaReferenceResolver, JavaEmissionError, JavaEmissionOptions, JavaEmitter,
+    JavaReferenceResolutionError, JavaReferenceResolver, emit_module,
+};
 pub use self::program::{MethodBodyMode, ProgramOptions, lower_class, lower_class_with_options};
 
 /// Compatibility facade for JVM class-file assembly.

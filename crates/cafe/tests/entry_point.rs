@@ -1,6 +1,6 @@
 //! Proof that a consumer can reach every Cafe capability through one crate.
 
-use cafe::{ModuleSource, Program, art, cfglib, dex, disassembler, java, jni, program};
+use cafe::{ModuleSource, Program, art, cfglib, classpath, dex, disassembler, java, jni, program};
 
 #[test]
 fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,10 +21,18 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     )?;
 
     let module = class.to_module()?;
+    let emitted_classes = java::emit_module(&module)?;
+    assert_eq!(emitted_classes.len(), 1);
+    let hierarchy = classpath::ClasspathHierarchy::from_java_classes([&class])?;
+    assert_eq!(hierarchy.len(), 1);
+    let _ = hierarchy.jvm_view();
+    let _ = hierarchy.dex_view();
     let program = Program::from_modules([module]);
     let native_methods = jni::java::native_methods(&class)?;
     let bindings = native_methods.bindings()?;
     let empty_dex = dex::DexFile::new(dex::DexVersion::V040);
+    let emitted_dex = dex::emit_module(&empty_dex.to_module()?)?;
+    assert_eq!(emitted_dex.version(), dex::DexVersion::V040);
     let vdex = art::VdexFile::from_standard_dex_files(std::slice::from_ref(&empty_dex), &[], &[])?;
     assert!(matches!(
         vdex.runtime_dex(0)?,
@@ -78,8 +86,16 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<disassembler::RecoveredExceptionModel>();
     let _ = std::any::type_name::<disassembler::RecoveredExceptionHandler>();
     let _ = std::any::type_name::<disassembler::HandlerExtentStatus>();
+    let _ = std::any::type_name::<disassembler::RecoveredStructuredControlFlow>();
+    let _ = std::any::type_name::<disassembler::StructuredRegionDecision>();
+    let _ = std::any::type_name::<disassembler::RegisterResources>();
+    let _ = std::any::type_name::<cfglib::HandlerTypes<String>>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
+    let _ = std::any::type_name::<java::JavaEmitter>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
+    let _ = std::any::type_name::<dex::DexEmitter>();
+    let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
+    let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
     Ok(())
 }
 

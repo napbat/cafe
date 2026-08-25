@@ -71,6 +71,33 @@ pub struct ExceptionHandler {
     pub catch: CatchType,
 }
 
+/// Register-frame resources retained for Java-ecosystem register bytecode.
+///
+/// DEX adapters use these widths to preserve the placement of incoming
+/// parameters at the high end of the frame. Stack-based frontends leave this
+/// metadata absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegisterResources {
+    /// Total number of addressable register words.
+    pub registers: u16,
+    /// Register words reserved for incoming arguments.
+    pub incoming: u16,
+    /// Maximum outgoing invocation width in register words.
+    pub outgoing: u16,
+}
+
+impl RegisterResources {
+    /// Creates an exact native register-frame description.
+    #[must_use]
+    pub const fn new(registers: u16, incoming: u16, outgoing: u16) -> Self {
+        Self {
+            registers,
+            incoming,
+            outgoing,
+        }
+    }
+}
+
 /// Decoded instructions and metadata for one function body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionBody {
@@ -80,6 +107,8 @@ pub struct FunctionBody {
     pub instructions: Vec<Instruction>,
     /// Exception handlers attached to this body.
     pub exception_handlers: Vec<ExceptionHandler>,
+    /// Exact register resources when supplied by a register-bytecode frontend.
+    pub register_resources: Option<RegisterResources>,
 }
 
 impl FunctionBody {
@@ -94,7 +123,15 @@ impl FunctionBody {
             address_unit,
             instructions,
             exception_handlers,
+            register_resources: None,
         }
+    }
+
+    /// Attaches exact native register-frame resources.
+    #[must_use]
+    pub const fn with_register_resources(mut self, resources: RegisterResources) -> Self {
+        self.register_resources = Some(resources);
+        self
     }
 }
 

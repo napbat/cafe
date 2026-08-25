@@ -26,12 +26,14 @@ pub use graph::{
     CatchAllBehavior, ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph,
     ExceptionHandlerIndex, ExceptionThrowSite, GraphError, HandlerExtentIssue, HandlerExtentStatus,
     NormalControlFlow, RecoveredExceptionHandler, RecoveredExceptionModel, RecoveredHandlerExtent,
-    RecoveredHandlerSemantics, build_control_flow_graph,
+    RecoveredHandlerSemantics, RecoveredStructuredControlFlow, StructuredRegionDecision,
+    StructuredRegionStatus, build_control_flow_graph,
 };
 pub use model::{
     AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, CodeSize, Disassembly,
-    ExceptionHandler, Function, FunctionBody, FunctionSymbol, Immediate, Instruction,
-    InstructionFlow, Operand, RawAccessFlags, Reference, ReferenceKind, SwitchCase, SwitchTable,
+    ExactText, ExceptionBehavior, ExceptionHandler, Function, FunctionBody, FunctionSymbol,
+    Immediate, Instruction, InstructionFlow, Operand, RawAccessFlags, Reference, ReferenceKind,
+    ReferenceSymbol, RegisterResources, SwitchCase, SwitchTable,
 };
 pub use source::DisassemblySource;
 pub use source_map::{FunctionCoordinate, SourceMap, SourceMapEntry, SourceMapError};

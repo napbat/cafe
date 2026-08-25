@@ -147,8 +147,8 @@ mod tests {
             Opcode::IfEq.byte(),
             0,
             4,
-            Opcode::Return.byte(),
-            Opcode::Return.byte(),
+            Opcode::AConstNull.byte(),
+            Opcode::AThrow.byte(),
             Opcode::AThrow.byte(),
         ];
 
@@ -172,7 +172,7 @@ mod tests {
                     code,
                     exception_table: vec![ExceptionHandler {
                         start_pc: 0,
-                        end_pc: 4,
+                        end_pc: 6,
                         handler_pc: 6,
                         catch_type: 0,
                     }],
@@ -203,7 +203,7 @@ mod tests {
         let [region] = graph.cfg().regions() else {
             panic!("expected the JVM exception table to produce one region");
         };
-        assert_eq!(region.protected_blocks.len(), 2);
+        assert_eq!(region.protected_blocks.len(), 4);
         assert_eq!(region.handlers[0].body, HandlerBody::Unknown);
 
         let recovered = graph.recovered_exception_model();
@@ -215,7 +215,7 @@ mod tests {
             handler.semantics,
             RecoveredHandlerSemantics::CatchAll(CatchAllBehavior::ThrowingCleanup)
         );
-        assert_eq!(handler.throw_sites.len(), 2);
+        assert_eq!(handler.throw_sites.len(), 1);
         assert_eq!(
             graph.exception_handler_ref(handler.index),
             Some(handler.cfglib_handler)

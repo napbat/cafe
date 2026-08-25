@@ -144,7 +144,10 @@ impl SemanticValidator<Instruction, ControlFlowEdge> for ControlFlowValidator<'_
             .exception_handlers
             .iter()
             .enumerate()
-            .filter(|(_, handler)| handler.protected.contains(source))
+            .filter(|(_, handler)| {
+                handler.protected.contains(source)
+                    && instructions[0].exception_behavior.retains_exception_edge()
+            })
             .map(|(index, handler)| ControlFlowEdgeRole::Exception {
                 handler: ExceptionHandlerIndex::from_index(index),
                 protected: handler.protected,

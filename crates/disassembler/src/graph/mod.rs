@@ -4,11 +4,12 @@ mod build;
 mod edge;
 mod error;
 mod exception;
+mod structured;
 mod validate;
 
 use std::collections::BTreeMap;
 
-use cfglib::{BlockId, Cfg, Edge, EdgeId, EhModel, FilteredEdges, HandlerRef};
+use cfglib::{BlockId, Cfg, Edge, EdgeId, EhModel, FilteredEdges, HandlerRef, HandlerTypes};
 
 use crate::{CodeAddress, ExceptionHandler, FunctionBody, Instruction};
 
@@ -22,6 +23,9 @@ pub use self::exception::{
     RecoveredExceptionHandler, RecoveredExceptionModel, RecoveredHandlerExtent,
     RecoveredHandlerSemantics,
 };
+pub use self::structured::{
+    RecoveredStructuredControlFlow, StructuredRegionDecision, StructuredRegionStatus,
+};
 
 use self::edge::is_normal_edge;
 
@@ -32,6 +36,7 @@ pub struct ControlFlowGraph {
     instruction_blocks: BTreeMap<CodeAddress, BlockId>,
     exception_handlers: Vec<ExceptionHandler>,
     handler_refs: Vec<HandlerRef>,
+    handler_types: HandlerTypes<String>,
 }
 
 impl ControlFlowGraph {
@@ -40,12 +45,14 @@ impl ControlFlowGraph {
         instruction_blocks: BTreeMap<CodeAddress, BlockId>,
         exception_handlers: Vec<ExceptionHandler>,
         handler_refs: Vec<HandlerRef>,
+        handler_types: HandlerTypes<String>,
     ) -> Self {
         Self {
             cfg,
             instruction_blocks,
             exception_handlers,
             handler_refs,
+            handler_types,
         }
     }
 
@@ -92,10 +99,34 @@ impl ControlFlowGraph {
         RecoveredExceptionModel::compute(self)
     }
 
+    /// Builds a derived CFG for conservative cfglib structured lifting.
+    ///
+    /// Only complete, non-overlapping recovered handler extents are promoted;
+    /// the canonical graph and ambiguous native control flow remain unchanged.
+    #[must_use]
+    pub fn recovered_structured_control_flow(&self) -> RecoveredStructuredControlFlow {
+        RecoveredStructuredControlFlow::compute(self)
+    }
+
     /// Returns exact handler definitions in native table order.
     #[must_use]
     pub fn exception_handlers(&self) -> &[ExceptionHandler] {
         &self.exception_handlers
+    }
+
+    /// Returns exact format-native caught types keyed by cfglib handler identity.
+    ///
+    /// Catch-all handlers intentionally have no entry; their classification is
+    /// represented by [`cfglib::HandlerKind::CatchAll`] on the region handler.
+    #[must_use]
+    pub const fn exception_handler_types(&self) -> &HandlerTypes<String> {
+        &self.handler_types
+    }
+
+    /// Returns the exact format-native caught type for a typed handler.
+    #[must_use]
+    pub fn exception_handler_type(&self, handler: HandlerRef) -> Option<&str> {
+        self.handler_types.metadata(handler).map(String::as_str)
     }
 
     /// Returns the cfglib handler corresponding to a native table index.

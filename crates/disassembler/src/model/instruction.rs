@@ -7,6 +7,41 @@ use cfglib::DisplayInstr;
 
 use super::{CodeAddress, CodeSize, InstructionFlow, Operand};
 
+/// Whether ordinary execution of an instruction can transfer to an exception handler.
+///
+/// Native frontends should report [`Self::MayThrow`] or [`Self::CannotThrow`]
+/// when their instruction semantics are known. [`Self::Unknown`] keeps custom
+/// [`crate::DisassemblySource`] implementations conservative: protected
+/// instructions with unknown behavior retain exceptional CFG edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ExceptionBehavior {
+    /// The source did not classify this instruction's exceptional behavior.
+    #[default]
+    Unknown,
+    /// The instruction can transfer to an enclosing exception handler.
+    MayThrow,
+    /// The instruction cannot transfer to an enclosing exception handler.
+    CannotThrow,
+}
+
+impl ExceptionBehavior {
+    /// Converts an exact native may-throw fact into the shared classification.
+    #[must_use]
+    pub const fn from_may_throw(may_throw: bool) -> Self {
+        if may_throw {
+            Self::MayThrow
+        } else {
+            Self::CannotThrow
+        }
+    }
+
+    /// Whether CFG construction must conservatively retain an exception edge.
+    #[must_use]
+    pub const fn retains_exception_edge(self) -> bool {
+        !matches!(self, Self::CannotThrow)
+    }
+}
+
 /// Decoded instruction retaining its native opcode and normalized operands.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Instruction {
@@ -22,6 +57,8 @@ pub struct Instruction {
     pub operands: Vec<Operand>,
     /// Intraprocedural control-flow effect.
     pub flow: InstructionFlow,
+    /// Exceptional control-flow behavior supplied by the native frontend.
+    pub exception_behavior: ExceptionBehavior,
 }
 
 impl Instruction {
@@ -42,7 +79,15 @@ impl Instruction {
             mnemonic: mnemonic.into(),
             operands,
             flow,
+            exception_behavior: ExceptionBehavior::Unknown,
         }
+    }
+
+    /// Sets this instruction's exceptional control-flow behavior.
+    #[must_use]
+    pub const fn with_exception_behavior(mut self, behavior: ExceptionBehavior) -> Self {
+        self.exception_behavior = behavior;
+        self
     }
 
     /// Returns the first address after this instruction, if representable.

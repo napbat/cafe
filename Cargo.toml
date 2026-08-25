@@ -2,6 +2,7 @@
 members = [
     "crates/art",
     "crates/cafe",
+    "crates/classpath",
     "crates/dex",
     "crates/disassembler",
     "crates/java",
@@ -11,6 +12,7 @@ members = [
 default-members = [
     "crates/art",
     "crates/cafe",
+    "crates/classpath",
     "crates/dex",
     "crates/disassembler",
     "crates/java",
@@ -30,12 +32,13 @@ homepage = "https://github.com/napbat/cafe"
 [workspace.dependencies]
 art = { version = "0.1.0", path = "crates/art" }
 cafe = { version = "0.1.0", path = "crates/cafe" }
+classpath = { version = "0.1.0", path = "crates/classpath" }
 disassembler = { version = "0.1.0", path = "crates/disassembler" }
 dex = { version = "0.1.0", path = "crates/dex" }
 jni = { version = "0.1.0", path = "crates/jni" }
 java = { version = "0.1.0", path = "crates/java" }
 program = { version = "0.1.0", path = "crates/program" }
-cfglib = { version = "0.1.0", git = "https://github.com/napbat/cfglib" }
+cfglib = { version = "0.1.0", path = "../cfglib/crates/cfglib" }
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 thiserror = "2.0.20"
 sha1 = "0.10.6"

@@ -6,21 +6,25 @@ application containers, ART runtime artifacts, shared disassembly and
 control-flow graphs, an editable program model, and JNI linkage metadata
 through coherent namespaces.
 
-The workspace contains seven library crates. `cafe` is the public umbrella; the
-other six are focused implementation boundaries:
+The workspace contains eight library crates. `cafe` is the public umbrella; the
+other seven are focused implementation boundaries:
 
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
-  cross-module resolution.
+  cross-module resolution, plus the shared native-emitter contract.
+- `classpath` normalizes JVM and DEX class identities into one declaration
+  hierarchy and supplies native analysis views for both frontends.
 - `disassembler` owns shared instructions, references, executable bodies,
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
   construction, frame and stack-map analysis, JAR/JMOD/JIMAGE utilities,
-  corpus validation, javap-like presentation, and lowering into shared layers.
+  corpus validation, javap-like presentation, lowering into Program, and
+  verified canonical emission back to class files.
 - `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
   Dalvik instructions, executable-body and register analysis, APK/AAB handling,
-  corpus validation, provenance, and lowering into shared layers.
+  corpus validation, provenance, lowering into Program, and verified canonical
+  emission back to DEX.
 - `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
   and canonical DEX adapters without interpreting native code.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
@@ -42,6 +46,7 @@ consumer
     ├── dex              DEX, CompactDex, APK, and AAB
     ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
+    ├── classpath        unified JVM/DEX declaration hierarchy
     ├── disassembler     shared instruction IR and CFGs
     │   └── cfglib       graph algorithms
     └── program          owned definitions and resolution
@@ -88,6 +93,14 @@ Cafe definitions retain format-qualified and overload-qualified identities.
 Java adapters can load complete executable bodies or declarations only, which
 keeps metadata-oriented consumers from paying for bytecode decoding.
 
+Program modules also have verified native backends. `java::emit_module`
+rebuilds class files, re-interns structured constants instead of trusting stale
+pool indices, recomputes verification frames and stack maps, and validates each
+result. `dex::emit_module` deterministically rebuilds identifier tables,
+instructions, exception tables, class data, and exact retained register-frame
+resources before assembling and reparsing the result. Both frontends expose
+stateful emitters for caller-selected version and reference-resolution policy.
+
 `cafe::dex` retains native identifier tables, indices, code-unit addresses,
 encoded values, annotations, debug programs, exception handlers, hidden-API
 data, and map provenance. It parses DEX versions 035, 037, 038, 039, 040, and
@@ -107,6 +120,13 @@ throw. Fixed-point register analysis tracks parameters, wide pairs, constants,
 arrays, fields, invocations, constructor initialization, exception pre-states,
 and caller-supplied classpath hierarchy relationships. Indexed instruction and
 encoded-value resolvers retain owned symbols and exact Java UTF-16 names.
+
+`cafe::classpath::ClasspathHierarchy` builds one open type world from class
+files, DEX files, Program modules, JAR/JMOD/JIMAGE images, or APK/AAB DEX sets.
+JVM internal names and DEX object descriptors normalize to one canonical
+identity; equivalent declarations merge and incompatible duplicates fail
+transactionally. Borrowed `jvm_view()` and `dex_view()` adapters implement the
+native hierarchy contracts used by JVM frame and DEX register analysis.
 
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
@@ -247,8 +267,10 @@ Shared control-flow graphs expose complementary raw and recovered exception
 models. `ControlFlowGraph::exception_model()` derives cfglib landing pads,
 protected sources, and stable exception-edge identities. Each distinct native
 protected range is registered as a cfglib region with exact protected blocks
-and ordered handler entry/kind. Because JVM and DEX tables do not encode
-complete handler-body extents, the canonical region records
+and ordered handler entry/kind. The graph-owned `HandlerTypes` registry maps
+every stable `HandlerRef` back to its exact resolved catch descriptor. Because
+JVM and DEX tables do not encode complete handler-body extents, the canonical
+region records
 `HandlerBody::Unknown` rather than silently treating a guessed end as native
 metadata.
 
@@ -264,8 +286,14 @@ predecessors, indirect transfers, and missing branch arms are reported as
 ambiguities. Catch-all handlers are classified by observable bytecode exits;
 `ThrowingCleanup` means every represented exit from an isolated recovered body
 throws, not that the original exception is proven to be rethrown or that the
-source language used `finally`. Structured cfglib lifting still requires an
-explicit `HandlerBody::Known` producer.
+source language used `finally`.
+
+`ControlFlowGraph::recovered_structured_control_flow()` is the explicit bridge
+to cfglib lifting. It clones the canonical graph and promotes a recovered
+handler body only when its extent is complete and nonambiguous and does not
+overlap another promoted body. Shared or ambiguous handlers remain
+unstructured, the canonical `HandlerBody::Unknown` metadata never changes, and
+catch-all handlers are never relabeled as source-level `finally`.
 
 Class-file assembly and bytecode encoding operate on public structured models:
 
@@ -358,6 +386,28 @@ fn load_program(jar_path: &str) -> Result<Program, java::Error> {
 For metadata-only tools, use
 `cafe::java::lower_class_with_options` with `cafe::java::ProgramOptions` and
 `cafe::java::MethodBodyMode::DeclarationsOnly` to skip method-body decoding.
+
+The same owned module can feed a unified hierarchy and a native backend:
+
+```rust
+use cafe::{ModuleSource, Program, classpath::ClasspathHierarchy, java};
+
+fn rebuild(class: &java::classfile::ClassFile) -> Result<(), Box<dyn std::error::Error>> {
+    let module = class.to_module()?;
+    let program = Program::from_modules([module.clone()]);
+    let hierarchy = ClasspathHierarchy::from_program(&program)?;
+    let emitted = java::emit_module(&module)?;
+
+    assert_eq!(hierarchy.len(), 1);
+    assert_eq!(emitted.len(), 1);
+    Ok(())
+}
+```
+
+Use `dex::emit_module` for a DEX-qualified module. References are resolved from
+their structured symbols rather than their source indices. Recursive bootstrap,
+method-handle, or call-site structures not retained by Program are rejected
+explicitly instead of being guessed.
 
 ## DEX and APK inspection
 
@@ -467,6 +517,8 @@ crates/
 │   ├── src/source_map.rs
 │   ├── src/diagnostic.rs
 │   └── tests/
+├── classpath/           unified JVM/DEX declarations and hierarchy views
+│   └── src/
 ├── java/                JVM class files, bytecode, JARs, and adapters
 │   ├── src/analysis/
 │   ├── src/bytecode/

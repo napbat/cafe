@@ -1,13 +1,14 @@
 //! Complete public entry point for Cafe's Java ecosystem tooling.
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
-//! under [`java`], [`dex`], [`art`], and [`jni`]; shared instruction and graph
+//! under [`java`], [`dex`], [`art`], and [`jni`]; unified cross-format hierarchy
+//! aggregation lives under [`classpath`]; shared instruction and graph
 //! APIs, including exact and conservatively recovered exception structure, live
 //! under [`disassembler`]; and the owned definition model is available both at
 //! this crate's root and under [`program`].
 //!
 //! ```
-//! use cafe::{Program, art, cfglib, dex, disassembler, java, jni, program};
+//! use cafe::{Program, art, cfglib, classpath, dex, disassembler, java, jni, program};
 //!
 //! let owned = Program::new();
 //! let dex_file = dex::DexFile::new(dex::DexVersion::V040);
@@ -21,11 +22,14 @@
 //! let _ = std::any::type_name::<java::jar::JarFile>();
 //! let _ = std::any::type_name::<jni::NativeMethod>();
 //! let _ = std::any::type_name::<art::VdexFile>();
+//! let _ = std::any::type_name::<classpath::ClasspathHierarchy>();
 //! let _ = std::any::type_name::<cfglib::BlockId>();
 //! ```
 
 /// Android runtime VDEX, ODEX, OAT, and canonical dequickening support.
 pub use ::art;
+/// Unified JVM/DEX classpath declarations and native hierarchy views.
+pub use ::classpath;
 /// Android DEX/CompactDex, Dalvik instructions, APK/AAB, and shared adapters.
 pub use ::dex;
 /// Shared Java-ecosystem disassembly IR and control-flow graphs.

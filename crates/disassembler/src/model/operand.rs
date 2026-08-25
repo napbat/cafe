@@ -36,6 +36,76 @@ pub enum ReferenceKind {
     DynamicCallSite,
 }
 
+/// Exact Java text retained as UTF-16 plus a convenient lossy Rust view.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExactText {
+    /// Lossy Unicode view; unpaired surrogates appear as U+FFFD.
+    pub text: String,
+    /// Exact Java UTF-16 code units.
+    pub utf16_units: Vec<u16>,
+}
+
+impl ExactText {
+    /// Creates exact text from valid Unicode.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        let text = value.into();
+        let utf16_units = text.encode_utf16().collect();
+        Self { text, utf16_units }
+    }
+
+    /// Creates exact text from arbitrary Java UTF-16 code units.
+    #[must_use]
+    pub fn from_utf16(utf16_units: Vec<u16>) -> Self {
+        Self {
+            text: String::from_utf16_lossy(&utf16_units),
+            utf16_units,
+        }
+    }
+}
+
+/// Reconstructable symbolic value selected by an indexed native operand.
+///
+/// This is optional because some VM tables, notably bootstrap call sites and
+/// method handles, require recursive artifact metadata that does not fit one
+/// instruction operand. Emitters reject such references unless the caller
+/// supplies a richer format-specific resolver.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ReferenceSymbol {
+    /// Signed JVM integer constant.
+    Integer(i32),
+    /// IEEE-754 single-precision constant bits.
+    Float(u32),
+    /// Signed JVM long constant.
+    Long(i64),
+    /// IEEE-754 double-precision constant bits.
+    Double(u64),
+    /// Exact Java string contents.
+    String(ExactText),
+    /// JVM internal name, array descriptor, or DEX type descriptor.
+    Type(String),
+    /// Overload-qualified field identity.
+    Field {
+        /// Format-native declaring type name.
+        owner: String,
+        /// Exact field name.
+        name: ExactText,
+        /// JVM-compatible field descriptor.
+        descriptor: String,
+    },
+    /// Overload-qualified method identity.
+    Method {
+        /// Format-native declaring type name.
+        owner: String,
+        /// Exact method name.
+        name: ExactText,
+        /// JVM-compatible method descriptor.
+        descriptor: String,
+    },
+    /// Standalone JVM-compatible method descriptor.
+    MethodPrototype(String),
+}
+
 /// Indexed native symbol with an optional resolved display value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Reference {
@@ -45,6 +115,8 @@ pub struct Reference {
     pub index: u32,
     /// Human-readable resolution retained alongside the native index.
     pub display: Option<String>,
+    /// Structured symbolic value when one instruction operand is sufficient.
+    pub symbol: Option<ReferenceSymbol>,
 }
 
 impl Reference {
@@ -55,6 +127,7 @@ impl Reference {
             kind,
             index,
             display: None,
+            symbol: None,
         }
     }
 
@@ -65,7 +138,15 @@ impl Reference {
             kind,
             index,
             display: Some(display.into()),
+            symbol: None,
         }
+    }
+
+    /// Attaches a reconstructable symbolic value while retaining the native index.
+    #[must_use]
+    pub fn with_symbol(mut self, symbol: ReferenceSymbol) -> Self {
+        self.symbol = Some(symbol);
+        self
     }
 }
 
