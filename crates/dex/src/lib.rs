@@ -1,4 +1,4 @@
-//! Lossless DEX models, Dalvik instruction handling, and Android containers.
+//! Lossless DEX models, reversible Dalvik LLIL, and Android containers.
 //!
 //! This crate keeps DEX-native tables, indices, code-unit addresses, encoded
 //! values, annotations, and debugging state separate from the shared program
@@ -13,6 +13,7 @@ pub mod disassembly;
 mod error;
 pub mod file;
 pub mod instruction;
+pub mod llil;
 pub mod program;
 
 pub use self::error::{Error, IdentifierTable, Result};

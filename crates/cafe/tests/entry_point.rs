@@ -91,8 +91,10 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<disassembler::RegisterResources>();
     let _ = std::any::type_name::<cfglib::HandlerTypes<String>>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
+    let _ = std::any::type_name::<java::llil::Body>();
     let _ = std::any::type_name::<java::JavaEmitter>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
+    let _ = std::any::type_name::<dex::llil::Body>();
     let _ = std::any::type_name::<dex::DexEmitter>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
@@ -191,6 +193,9 @@ fn exercise_analysis_entry_points() -> Result<(), Box<dyn std::error::Error>> {
     );
     let built_code = code.finish()?;
     assert_eq!(built_code.code(), [java::bytecode::Opcode::Return.byte()]);
+    let native_jvm = java::bytecode::decode(built_code.code())?;
+    let jvm_llil = java::llil::lift_instructions(&native_jvm)?;
+    assert_eq!(java::llil::lower_instructions(&jvm_llil)?, native_jvm);
     let mut analysis_pool = java::classfile::ConstantPool::new();
     let (_analyzed_code, method_analysis) = java::classfile::CodeAttribute::from_built_analyzed(
         &mut analysis_pool,
@@ -212,6 +217,8 @@ fn exercise_analysis_entry_points() -> Result<(), Box<dyn std::error::Error>> {
             .reads
             .is_empty()
     );
+    let dex_llil = dex::llil::lift_instructions(std::slice::from_ref(&dalvik_return))?;
+    assert_eq!(dex::llil::lower_instructions(&dex_llil)?, [dalvik_return]);
 
     let source_coordinate = disassembler::FunctionCoordinate::new(
         disassembler::BinaryFormat::Dex,

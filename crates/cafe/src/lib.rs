@@ -1,11 +1,12 @@
 //! Complete public entry point for Cafe's Java ecosystem tooling.
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
-//! under [`java`], [`dex`], [`art`], and [`jni`]; unified cross-format hierarchy
-//! aggregation lives under [`classpath`]; shared instruction and graph
-//! APIs, including exact and conservatively recovered exception structure, live
-//! under [`disassembler`]; and the owned definition model is available both at
-//! this crate's root and under [`program`].
+//! under [`java`], [`dex`], [`art`], and [`jni`], including ISA-specific JVM and
+//! Dalvik LLIL; unified cross-format hierarchy aggregation lives under
+//! [`classpath`]; shared instruction and graph APIs, including exact and
+//! conservatively recovered exception structure, live under [`disassembler`];
+//! and the owned definition model is available both at this crate's root and
+//! under [`program`].
 //!
 //! ```
 //! use cafe::{Program, art, cfglib, classpath, dex, disassembler, java, jni, program};
@@ -30,11 +31,11 @@
 pub use ::art;
 /// Unified JVM/DEX classpath declarations and native hierarchy views.
 pub use ::classpath;
-/// Android DEX/CompactDex, Dalvik instructions, APK/AAB, and shared adapters.
+/// Android DEX/CompactDex, Dalvik instructions and LLIL, APK/AAB, and adapters.
 pub use ::dex;
 /// Shared Java-ecosystem disassembly IR and control-flow graphs.
 pub use ::disassembler;
-/// JVM class files, bytecode, JAR/JMOD/JIMAGE, corpus, and shared adapters.
+/// JVM class files, bytecode and LLIL, JAR/JMOD/JIMAGE, corpus, and adapters.
 pub use ::java;
 /// Typed Java Native Interface declarations, symbols, and artifact adapters.
 pub use ::jni;

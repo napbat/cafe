@@ -9,11 +9,12 @@ Cafe has two primary instruction families:
 - JVM bytecode stored in `.class` files;
 - Android DEX bytecode, including its CompactDex storage form.
 
-Both families now have parsing, assembly, executable analysis, corpus, archive,
-provenance, shared adapters, unified classpath aggregation, and verified
-Program-to-native emission. The only planned cross-family capability not
-implemented here is the explicit DEX-to-JVM transformation boundary described
-below.
+Both families now have parsing, assembly, executable analysis, ISA-specific
+reversible LLIL, corpus, archive, provenance, shared adapters, unified classpath
+aggregation, and verified Program-to-native emission. They intentionally do not
+share one low-level instruction model. Their next convergence layer is a future
+generic semantic MLIL, followed by higher-level analysis or explicit
+cross-family transformation where a consumer requires it.
 
 The shared CFG boundary now retains stable parallel edge identities and typed
 caller payloads for switch arms, ordered handlers, exact instruction throw
@@ -65,6 +66,9 @@ The `java` crate now provides:
 - complete JVM bytecode decoding and encoding, typed reference resolution,
   malformed-input checks, symbolic layout, branch relaxation, exact
   stack/local analysis, and deterministic stack-map generation;
+- JVM-specific LLIL with normalized stack-machine operations, exact native
+  encoding provenance, checked instruction and complete-body lift/lower paths,
+  and lossless exception, stack-map, and debugging metadata retention;
 - independently testable attributes for stack maps, bootstrap methods,
   dynamic constants, modules, records, nests, sealed types, annotations, and
   debugging metadata;
@@ -91,6 +95,10 @@ The `dex` crate now provides:
 - a complete standard Dalvik instruction codec, typed executable semantics,
   verified normal and exceptional control flow, and fixed-point register
   analysis;
+- Dalvik-specific LLIL with typed register definitions and uses, normalized
+  opcode encodings, explicit payload data, exact native provenance, checked
+  instruction and code-item lift/lower paths, and lossless handler/debug/frame
+  metadata retention;
 - stable symbolic interning and builders for strings, types, prototypes,
   fields, and methods without manual table-order bookkeeping;
 - typed CompactDex 001 headers, split main/shared sections, offset tables,
@@ -110,6 +118,33 @@ The `dex` crate now provides:
 Exact pristine output, contextual malformed-input errors, and verified control
 flow remain release gates.
 
+## Completed ISA-specific LLIL boundary
+
+The JVM and Dalvik LLILs live in their owning frontends and deliberately model
+different abstract machines:
+
+- `java::llil` retains implicit JVM operand-stack behavior while normalizing
+  immediate, local-slot, branch-width, switch-shape, invocation, and `wide`
+  encoding variants;
+- `dex::llil` exposes typed register definitions and uses, implicit result
+  behavior, throwability, references, literals, targets, and non-executable
+  payloads while normalizing Dalvik width, range, two-address, and literal
+  opcode variants.
+
+Every LLIL instruction carries normalized semantics separately from exact
+native encoding provenance. Checked lowering requires those views to agree and
+then passes the reconstructed stream through the native codec. Complete-body
+adapters additionally retain and revalidate JVM exception/nested attributes or
+DEX register resources, ordered handlers, debug programs, and source offsets.
+Tests cover every supported native opcode, exact wide and payload encodings,
+encoding-alias normalization, stale-pair rejection, and whole-body metadata
+round trips.
+
+There is no direct JVM-LLIL-to-Dalvik-LLIL conversion. Both will lower into a
+future generic semantic MLIL so stack and register representations converge in
+one explicit, analyzable value model rather than leaking one ISA's mechanics
+into the other frontend.
+
 ## Completed shared transformation prerequisites
 
 The neutral layers and focused frontends now provide:
@@ -118,6 +153,8 @@ The neutral layers and focused frontends now provide:
   types, fields, methods, and method prototypes, while retaining original
   indices only as provenance;
 - exact DEX register, incoming, and outgoing resource widths on shared bodies;
+- reversible, ISA-specific JVM and Dalvik LLIL boundaries with exact native
+  provenance and complete-body metadata validation;
 - a format-neutral `ModuleEmitter` contract with verified JVM and DEX native
   backends;
 - a unified `ClasspathHierarchy` that ingests native files, Program modules,
@@ -128,21 +165,35 @@ The neutral layers and focused frontends now provide:
   path.
 
 These capabilities support native editing, analysis, and same-family rebuilds.
-They do not translate Dalvik register semantics into JVM stack semantics.
+They do not yet lower either ISA-specific LLIL into shared MLIL or translate
+Dalvik register semantics into JVM stack semantics.
 
-## Remaining cross-format transformation boundary
+## Remaining generic-analysis and cross-format boundary
 
-Cafe has the reusable prerequisites for a DEX-to-JVM consumer: typed DEX
-semantics and register frames, symbolic JVM layout, JVM verification frames and
-stack maps, owned symbols, source maps, structured diagnostics, and
-format-qualified Program identities. It intentionally does not implement a
-DEX-to-JVM instruction translator, dex2jar equivalent, or DEX-to-JAR workflow.
+The next decompiler prerequisite is a Java-ecosystem MLIL crate shared by the
+JVM and Dalvik frontends. It must turn implicit JVM stack traffic and explicit
+DEX registers into the same typed value/operation model; represent calls,
+fields, arrays, allocation, monitors, exceptions, control flow, phi-like merges,
+and unresolved native references without semantic loss; and retain
+many-to-many, format-qualified source maps back to each LLIL and native body.
+SSA construction, use/definition chains, constant propagation, dead-code
+analysis, and structured-control recovery belong above or alongside that MLIL,
+not inside either native LLIL.
 
-If that feature is added later, put policy in a focused feature crate that
-depends on both frontends. It must not move DEX/APK details into `java`,
-JVM/class-file details into `dex`, or either frontend into the neutral
-`disassembler` and `program` layers. Unsupported semantic cases must produce
-explicit diagnostics with native source locations rather than silent
+Cafe otherwise has the reusable prerequisites for a DEX-to-JVM consumer: typed
+DEX semantics and register frames, symbolic JVM layout, JVM verification frames
+and stack maps, owned symbols, source maps, structured diagnostics,
+format-qualified Program identities, and the two reversible LLILs. It
+intentionally does not yet implement shared MLIL, a DEX-to-JVM instruction
+translator, dex2jar equivalent, DEX-to-JAR workflow, or source decompiler.
+
+Add MLIL as a focused neutral Java-ecosystem crate consumed through Cafe, with
+frontend-owned JVM-LLIL-to-MLIL and Dalvik-LLIL-to-MLIL adapters. If an explicit
+DEX-to-JVM backend is added later, keep its policy in another focused feature
+crate over MLIL and the JVM backend. Neither step may move DEX/APK details into
+`java`, JVM/class-file details into `dex`, or frontend semantics into the
+neutral `disassembler` and `program` layers. Unsupported semantic cases must
+produce explicit diagnostics with native source locations rather than silent
 approximations.
 
 ## Completed JNI boundary hardening
@@ -213,10 +264,12 @@ A frontend is ready when all of the following are true:
 4. Malformed offsets, indices, lengths, descriptors, and control-flow targets
    fail with contextual errors rather than panics.
 5. Every executable body lowers into verified shared control flow.
-6. Metadata-only loading avoids decoding executable bodies.
-7. Program identities remain format-qualified and overload-qualified.
-8. Archive discovery and traversal are deterministic and retain exact origins.
-9. Public APIs are documented, source files remain below 1,000 lines, and the
+6. Its instruction family has an ISA-specific semantic LLIL with checked,
+   exact native and complete-body round trips.
+7. Metadata-only loading avoids decoding executable bodies.
+8. Program identities remain format-qualified and overload-qualified.
+9. Archive discovery and traversal are deterministic and retain exact origins.
+10. Public APIs are documented, source files remain below 1,000 lines, and the
    complete repository verification gate passes.
-10. The frontend and its capabilities are reachable through `cafe` without a
+11. The frontend and its capabilities are reachable through `cafe` without a
     second direct dependency.

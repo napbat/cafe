@@ -4,7 +4,8 @@ Cafe is the single consumer entry point for Java-specific binary tooling. One
 dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
 control-flow graphs, an editable program model, and JNI linkage metadata
-through coherent namespaces.
+through coherent namespaces. The JVM and Dalvik frontends each expose their own
+reversible low-level intermediate language (LLIL) for native semantic analysis.
 
 The workspace contains eight library crates. `cafe` is the public umbrella; the
 other seven are focused implementation boundaries:
@@ -18,13 +19,13 @@ other seven are focused implementation boundaries:
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
-  construction, frame and stack-map analysis, JAR/JMOD/JIMAGE utilities,
-  corpus validation, javap-like presentation, lowering into Program, and
-  verified canonical emission back to class files.
+  construction, JVM-specific LLIL, frame and stack-map analysis,
+  JAR/JMOD/JIMAGE utilities, corpus validation, javap-like presentation,
+  lowering into Program, and verified canonical emission back to class files.
 - `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
-  Dalvik instructions, executable-body and register analysis, APK/AAB handling,
-  corpus validation, provenance, lowering into Program, and verified canonical
-  emission back to DEX.
+  Dalvik instructions and LLIL, executable-body and register analysis, APK/AAB
+  handling, corpus validation, provenance, lowering into Program, and verified
+  canonical emission back to DEX.
 - `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
   and canonical DEX adapters without interpreting native code.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
@@ -42,8 +43,8 @@ cafe = { git = "https://github.com/napbat/cafe" }
 ```text
 consumer
 └── cafe
-    ├── java             JVM .class, bytecode, JAR, JMOD, and JIMAGE
-    ├── dex              DEX, CompactDex, APK, and AAB
+    ├── java             JVM .class, bytecode, LLIL, JAR, JMOD, and JIMAGE
+    ├── dex              DEX, CompactDex, Dalvik LLIL, APK, and AAB
     ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
     ├── classpath        unified JVM/DEX declaration hierarchy
@@ -128,10 +129,26 @@ identity; equivalent declarations merge and incompatible duplicates fail
 transactionally. Borrowed `jvm_view()` and `dex_view()` adapters implement the
 native hierarchy contracts used by JVM frame and DEX register analysis.
 
+`cafe::java::llil` and `cafe::dex::llil` are separate, ISA-specific low-level
+IRs. Each LLIL instruction separates a normalized semantic operation from an
+exact native encoding sidecar. JVM lifting collapses constant, local, branch,
+switch, invocation, and width aliases while retaining stack-machine behavior;
+Dalvik lifting collapses opcode widths, register-list/range calls, two-address
+forms, and literal forms into typed register definitions and uses. DEX payloads
+remain explicit non-executable LLIL data.
+
+Whole-body adapters preserve exact exception tables, debug metadata, JVM stack
+maps and nested code attributes, and DEX register-frame declarations. Native to
+LLIL to native reconstruction is exact. Reverse conversion first rejects stale
+semantic/encoding pairs, then runs the existing native layout, operand,
+control-flow, handler, payload, and body validators. The two LLILs do not
+translate directly into one another; a future shared semantic MLIL is the
+intended convergence layer for cross-ISA analysis and later decompilation.
+
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
-bytecode. These are infrastructure APIs only: Cafe does not currently include a
-DEX-to-JVM instruction translator or a DEX-to-JAR workflow.
+bytecode. These are infrastructure APIs only: Cafe does not currently include
+shared MLIL, a DEX-to-JVM instruction translator, or a DEX-to-JAR workflow.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -300,7 +317,7 @@ Class-file assembly and bytecode encoding operate on public structured models:
 ```rust
 use cafe::disassembler::DisassemblySource;
 use cafe::java;
-use cafe::java::{bytecode, disassemble, jar::JarFile};
+use cafe::java::{bytecode, disassemble, jar::JarFile, llil};
 
 fn inspect_class(jar_path: &str) -> Result<(), java::Error> {
     let mut jar = JarFile::open(jar_path)?;
@@ -310,6 +327,8 @@ fn inspect_class(jar_path: &str) -> Result<(), java::Error> {
         if let Some(code) = method.code() {
             let instructions = bytecode::decode_code(code)?;
             assert_eq!(bytecode::encode(&instructions)?, code.code);
+            let body = llil::lift_code(code)?;
+            assert_eq!(&llil::lower_code(&body)?, code);
         }
     }
 
@@ -528,6 +547,7 @@ crates/
 │   ├── src/jar/
 │   ├── src/jimage/
 │   ├── src/jmod/
+│   ├── src/llil/
 │   ├── src/program/
 │   └── tests/
 ├── dex/                 DEX/CompactDex, Android archives, and adapters
@@ -538,6 +558,7 @@ crates/
 │   ├── src/disassembly/
 │   ├── src/file/
 │   ├── src/instruction/
+│   ├── src/llil/
 │   ├── src/program/
 │   └── tests/
 ├── art/                 VDEX, ODEX, OAT metadata, and quickening
@@ -562,9 +583,9 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for the completed hardening baseline, the explicitly
-deferred DEX-to-JVM transformation boundary, conditional Java Card support, and
-Java-specific non-goals.
+See [future.md](future.md) for the completed hardening and ISA-specific LLIL
+baseline, the deferred shared-MLIL and DEX-to-JVM boundaries, conditional Java
+Card support, and Java-specific non-goals.
 
 ## Build and verify
 

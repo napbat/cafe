@@ -1,4 +1,5 @@
-//! JVM class-file assembly, shared disassembly lowering, and JAR utilities.
+//! JVM class-file assembly, reversible JVM LLIL, shared disassembly lowering,
+//! and JAR utilities.
 
 mod error;
 
@@ -12,6 +13,7 @@ pub mod disassembly;
 pub mod jar;
 pub mod jimage;
 pub mod jmod;
+pub mod llil;
 pub mod program;
 
 pub use self::program::{

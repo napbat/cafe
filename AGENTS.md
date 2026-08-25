@@ -31,23 +31,25 @@ These rules apply to the entire repository.
 - Keep `crates/java` a library-only JVM frontend. It owns `.class` parsing and
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
-  disassembler and Program. It also owns symbolic bytecode layout, JVM
-  frame/stack-map analysis, and verified canonical Program-to-class-file
-  emission. Keep its native instruction graph adapted to cfglib's rooted edge
-  view and run frame propagation through the fallible seeded edge solver. It
-  must not depend on Cafe. Do not add `src/main.rs`, Clap, or tool-specific
-  output policy to this crate.
+  disassembler and Program. It also owns symbolic bytecode layout,
+  JVM-specific LLIL and checked native round trips, JVM frame/stack-map
+  analysis, and verified canonical Program-to-class-file emission. Keep its
+  native instruction graph adapted to cfglib's rooted edge view and run frame
+  propagation through the fallible seeded edge solver. It must not depend on
+  Cafe. Do not add `src/main.rs`, Clap, or tool-specific output policy to this
+  crate.
 - Use the JAR entry reader for archive-wide operations. Validation, rewriting,
   and bulk consumers must share one ZIP reader rather than reopening the
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
-  encoding, APK/AAB provenance, corpus validation, executable semantics and
-  register analysis, and adapters into the disassembler and Program, including
-  verified canonical Program-to-DEX emission. Keep its native operation graph
-  adapted to cfglib's rooted edge view and run register propagation through the
-  fallible seeded edge solver. It must not depend on Cafe or leak
-  Android-container details into shared lower layers.
+  encoding, Dalvik-specific LLIL and checked native round trips, APK/AAB
+  provenance, corpus validation, executable semantics and register analysis,
+  and adapters into the disassembler and Program, including verified canonical
+  Program-to-DEX emission. Keep its native operation graph adapted to cfglib's
+  rooted edge view and run register propagation through the fallible seeded
+  edge solver. It must not depend on Cafe or leak Android-container details
+  into shared lower layers.
 - Use the APK or AAB entry reader for archive-wide operations. Bulk DEX
   consumers must select and visit artifacts through the single-reader APIs
   instead of reopening the ZIP directory per entry. Non-fail-fast validators
@@ -84,14 +86,14 @@ These rules apply to the entire repository.
   resolution, and source adapters in their own concept folders.
 - In Classpath, keep canonical declaration models, hierarchy queries, native
   views, ingestion, and errors independent.
-- In Java, keep `classfile/`, `bytecode/`, `jar/`, `disassembly/`, and `program/`
-  independent. Keep frame analysis under `analysis/`, corpus reporting under
-  `corpus/`, and JDK containers under `jmod/` and `jimage/`. Keep descriptors,
-  textual presentation, crate errors, and public entry points at the source
-  root.
+- In Java, keep `classfile/`, `bytecode/`, `llil/`, `jar/`, `disassembly/`, and
+  `program/` independent. Keep frame analysis under `analysis/`, corpus
+  reporting under `corpus/`, and JDK containers under `jmod/` and `jimage/`.
+  Keep descriptors, textual presentation, crate errors, and public entry points
+  at the source root.
 - In DEX, keep `file/`, `instruction/`, `apk/`, `aab/`, `corpus/`,
-  `disassembly/`, and `program/` independent. Keep CompactDex and DEX 041
-  physical models under `file/`, and executable/register analysis under
+  `disassembly/`, `llil/`, and `program/` independent. Keep CompactDex and DEX
+  041 physical models under `file/`, and executable/register analysis under
   `analysis/`. Treat APK and AAB as container and provenance boundaries, not
   instruction sets.
 - In ART, keep `vdex/`, `odex/`, `oat/`, and `quickening/` independent. Restore
@@ -121,6 +123,15 @@ These rules apply to the entire repository.
 - Keep parsing and assembly, and bytecode decoding and encoding,
   feature-complete together. A newly supported parsed structure or opcode must
   have a matching encoding path.
+- Keep JVM LLIL in Java and Dalvik LLIL in DEX. Do not make either frontend's
+  stack or register mechanics the shared semantic model, and do not translate
+  directly between the two LLILs; a future MLIL is their generic convergence
+  layer.
+- Separate every LLIL instruction's normalized semantic operation from its
+  exact native encoding provenance. Native lifting must validate the complete
+  stream, reverse conversion must reject stale semantic/encoding pairs and run
+  the native codec, and complete-body adapters must retain and revalidate exact
+  handler, debug, stack-map, register-resource, and source-offset metadata.
 - Preserve unknown class-file attributes and exact modified UTF-8/UTF-16 data
   so unchanged class files remain lossless through parse/assemble round trips.
 
@@ -174,7 +185,9 @@ These rules apply to the entire repository.
   native overload and registration plans, header rendering, and Cafe-only
   access to every public workspace capability. Cover canonical Program-to-JVM
   and Program-to-DEX emission, exact reference rebuilding, register-resource
-  retention, recovered structured lifting, and unified classpath views.
+  retention, recovered structured lifting, unified classpath views, every
+  supported JVM and Dalvik LLIL operation, encoding-alias normalization, stale
+  provenance rejection, and exact complete-body LLIL round trips.
 - Require all of these commands to pass:
 
   ```text
