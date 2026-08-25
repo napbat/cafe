@@ -1,4 +1,5 @@
-//! Lossless DEX models, reversible Dalvik LLIL, and Android containers.
+//! Lossless DEX models, reversible Dalvik LLIL, bidirectional MLIL adaptation,
+//! and Android containers.
 //!
 //! This crate keeps DEX-native tables, indices, code-unit addresses, encoded
 //! values, annotations, and debugging state separate from the shared program

@@ -12,8 +12,8 @@ pub use self::function::Function;
 pub use self::instruction::{Effect, Instruction, InstructionId};
 pub(crate) use self::operation::ControlClass;
 pub use self::operation::{
-    AllocationKind, ArrayAccess, BinaryOperator, BranchOperandKind, BranchPredicate, CallKind,
-    Constant, Conversion, ElementType, FieldAccess, MonitorAction, Operation, Relation,
+    AllocationKind, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind, BranchPredicate,
+    CallKind, Constant, Conversion, ElementType, FieldAccess, MonitorAction, Operation, Relation,
     ThreeWayComparison, UnaryOperator,
 };
 pub use self::provenance::{EntityId, ProvenanceEntry, ProvenanceMap};

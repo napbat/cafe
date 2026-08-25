@@ -1,9 +1,9 @@
 //! Semantic lifting of individual Dalvik LLIL operations.
 
 use ::mlil::{
-    AllocationKind, ArrayAccess, BinaryOperator, BranchOperandKind, BranchPredicate, CallKind,
-    Constant, Conversion, ElementType, FieldAccess, FunctionBuilder, MonitorAction, Operation,
-    Relation, ThreeWayComparison, TypedVariable, UnaryOperator, ValueType, VariableRole,
+    AllocationKind, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind, BranchPredicate,
+    CallKind, Constant, Conversion, ElementType, FieldAccess, FunctionBuilder, MonitorAction,
+    Operation, Relation, ThreeWayComparison, TypedVariable, UnaryOperator, ValueType, VariableRole,
 };
 use disassembler::{Reference, ReferenceSymbol};
 
@@ -113,33 +113,36 @@ pub(super) fn lift_instruction(
             vec![],
             defs,
         ),
-        OperationKind::NewArray => one(
-            Operation::Allocate(AllocationKind::Array {
-                primitive: None,
-                array_type: Some(reference::type_reference(
-                    file,
-                    native,
-                    reference_index(operation, instruction.offset)?,
-                )?),
-                dimensions: 1,
-            }),
-            uses,
-            defs,
-        ),
+        OperationKind::NewArray => {
+            let source = reference::type_reference(
+                file,
+                native,
+                reference_index(operation, instruction.offset)?,
+            )?;
+            one(
+                Operation::Allocate(AllocationKind::Array {
+                    array_type: array_type_from_reference(source, instruction.offset)?,
+                    dimensions: 1,
+                }),
+                uses,
+                defs,
+            )
+        }
         OperationKind::FilledNewArray => {
             let array_type = reference::type_reference(
                 file,
                 native,
                 reference_index(operation, instruction.offset)?,
             )?;
+            let semantic_type = array_type_from_reference(array_type.clone(), instruction.offset)?;
             one(
                 Operation::Allocate(AllocationKind::InitializedArray {
-                    array_type: array_type.clone(),
+                    array_type: semantic_type.clone(),
                 }),
                 uses,
                 vec![TypedVariable::new(
                     variables.result,
-                    referenced_type(&array_type),
+                    ValueType::Reference(Some(semantic_type.descriptor().to_owned())),
                 )],
             )
         }
@@ -152,12 +155,10 @@ pub(super) fn lift_instruction(
                     "fill-array-data target is not an array payload",
                 ));
             };
+            let array_type = array_type_from_use(&uses, instruction.offset)?;
+            let values = decode_array_values(&array_type, payload, instruction.offset)?;
             one(
-                Operation::FillArray {
-                    element_width: payload.element_width,
-                    element_count: payload.element_count,
-                    data: payload.data.clone(),
-                },
+                Operation::InitializeArray { array_type, values },
                 uses,
                 vec![],
             )
@@ -321,6 +322,115 @@ fn lift_call(
         steps,
         throw_step: 0,
     })
+}
+
+fn array_type_from_reference(reference: Reference, offset: u32) -> Result<ArrayType> {
+    let Some(ReferenceSymbol::Type(descriptor)) = &reference.symbol else {
+        return Err(Error::unsupported(
+            offset,
+            "array type operand lacks a structured descriptor",
+        ));
+    };
+    if !descriptor.starts_with('[') {
+        return Err(Error::unsupported(
+            offset,
+            "array type operand is not an array descriptor",
+        ));
+    }
+    Ok(ArrayType::new(descriptor.clone()).with_source_reference(reference))
+}
+
+fn array_type_from_use(uses: &[TypedVariable], offset: u32) -> Result<ArrayType> {
+    let Some(TypedVariable {
+        value_type: ValueType::Reference(Some(descriptor)),
+        ..
+    }) = uses.first()
+    else {
+        return Err(Error::unsupported(
+            offset,
+            "fill-array-data lacks an exact semantic array type",
+        ));
+    };
+    if !descriptor.starts_with('[') {
+        return Err(Error::unsupported(
+            offset,
+            "fill-array-data operand is not an array descriptor",
+        ));
+    }
+    Ok(ArrayType::new(descriptor.clone()))
+}
+
+fn decode_array_values(
+    array_type: &ArrayType,
+    payload: &crate::instruction::ArrayDataPayload,
+    offset: u32,
+) -> Result<Vec<Constant>> {
+    let component = array_type
+        .descriptor()
+        .strip_prefix('[')
+        .and_then(|descriptor| descriptor.as_bytes().first())
+        .copied()
+        .ok_or_else(|| Error::unsupported(offset, "array descriptor has no component type"))?;
+    let expected_width = match component {
+        b'Z' | b'B' => 1,
+        b'C' | b'S' => 2,
+        b'I' | b'F' => 4,
+        b'J' | b'D' => 8,
+        _ => {
+            return Err(Error::unsupported(
+                offset,
+                "fill-array-data requires a primitive array type",
+            ));
+        }
+    };
+    if payload.element_width != expected_width {
+        return Err(Error::unsupported(
+            offset,
+            "fill-array-data width disagrees with its semantic array type",
+        ));
+    }
+    let width = usize::from(expected_width);
+    let expected_len = usize::try_from(payload.element_count)
+        .ok()
+        .and_then(|count| count.checked_mul(width));
+    if expected_len != Some(payload.data.len()) {
+        return Err(Error::unsupported(
+            offset,
+            "fill-array-data element count disagrees with its payload",
+        ));
+    }
+    payload
+        .data
+        .chunks_exact(width)
+        .map(|bytes| {
+            Ok(match component {
+                b'Z' | b'B' => Constant::Integer(i32::from(i8::from_le_bytes([bytes[0]]))),
+                b'C' => Constant::Integer(i32::from(u16::from_le_bytes([bytes[0], bytes[1]]))),
+                b'S' => Constant::Integer(i32::from(i16::from_le_bytes([bytes[0], bytes[1]]))),
+                b'I' => {
+                    Constant::Integer(i32::from_le_bytes(bytes.try_into().map_err(|_| {
+                        Error::unsupported(offset, "invalid 32-bit array element")
+                    })?))
+                }
+                b'F' => {
+                    Constant::Float(u32::from_le_bytes(bytes.try_into().map_err(|_| {
+                        Error::unsupported(offset, "invalid float array element")
+                    })?))
+                }
+                b'J' => {
+                    Constant::Long(i64::from_le_bytes(bytes.try_into().map_err(|_| {
+                        Error::unsupported(offset, "invalid 64-bit array element")
+                    })?))
+                }
+                b'D' => {
+                    Constant::Double(u64::from_le_bytes(bytes.try_into().map_err(|_| {
+                        Error::unsupported(offset, "invalid double array element")
+                    })?))
+                }
+                _ => unreachable!("component was checked above"),
+            })
+        })
+        .collect()
 }
 
 fn initialization_refinement(
@@ -557,13 +667,6 @@ fn switch_keys(payload: &Payload, offset: u32) -> Result<Vec<i64>> {
             ));
         }
     })
-}
-
-fn referenced_type(reference: &Reference) -> ValueType {
-    match &reference.symbol {
-        Some(ReferenceSymbol::Type(descriptor)) => ValueType::Reference(Some(descriptor.clone())),
-        _ => ValueType::Reference(None),
-    }
 }
 
 fn return_type(descriptor: &str) -> Option<ValueType> {

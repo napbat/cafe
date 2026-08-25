@@ -2,7 +2,7 @@
 
 use ::mlil::{CallKind, EdgeRole, Operation, SourceStorage, ValueType};
 
-use super::lift_method;
+use super::{lift_body, lift_method, lower_body};
 use crate::bytecode::Opcode;
 use crate::classfile::{
     Attribute, ClassAccessFlags, ClassFile, CodeAttribute, Constant, ConstantPool,
@@ -99,6 +99,84 @@ fn lifts_stack_arithmetic_into_generic_variables_and_ssa() {
 }
 
 #[test]
+fn lowers_mlil_to_verified_llil_and_relifts_semantics() {
+    let mut class = class_with_method(
+        "(I)I",
+        vec![
+            Opcode::ILoad0.byte(),
+            Opcode::IConst1.byte(),
+            Opcode::IAdd.byte(),
+            Opcode::IReturn.byte(),
+        ],
+        2,
+        1,
+        vec![],
+    );
+    let function = lift_method(&class, &class.methods[0]).unwrap().unwrap();
+    let lowered = lower_body(&function, &mut class.constant_pool).unwrap();
+
+    lowered.body.verify().unwrap();
+    assert!(!lowered.source_map.is_empty());
+    let relifted = lift_body(
+        &class.constant_pool,
+        "Example",
+        "value",
+        "(I)I",
+        MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
+        &lowered.body,
+    )
+    .unwrap();
+    assert!(relifted.verify().is_ok());
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.operation(),
+                Operation::Binary(::mlil::BinaryOperator::Add)
+            )
+        })
+    }));
+}
+
+#[test]
+fn lowers_conditional_control_flow_and_relifts_the_predicate() {
+    let mut class = class_with_method(
+        "(I)I",
+        vec![
+            Opcode::ILoad0.byte(),
+            Opcode::IfEq.byte(),
+            0,
+            5,
+            Opcode::IConst1.byte(),
+            Opcode::IReturn.byte(),
+            Opcode::IConst0.byte(),
+            Opcode::IReturn.byte(),
+        ],
+        1,
+        1,
+        vec![],
+    );
+    let function = lift_method(&class, &class.methods[0]).unwrap().unwrap();
+    let lowered = lower_body(&function, &mut class.constant_pool).unwrap();
+
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(
+        &class.constant_pool,
+        "Example",
+        "value",
+        "(I)I",
+        MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
+        &lowered.body,
+    )
+    .unwrap();
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.operation(), Operation::Branch(_)))
+    }));
+}
+
+#[test]
 fn canonicalizes_stack_array_operands() {
     let class = class_with_method(
         "([III)I",
@@ -142,7 +220,7 @@ fn canonicalizes_stack_array_operands() {
 
 #[test]
 fn protected_definitions_commit_only_on_normal_flow() {
-    let class = class_with_method(
+    let mut class = class_with_method(
         "()V",
         vec![
             Opcode::AConstNull.byte(),
@@ -195,9 +273,28 @@ fn protected_definitions_commit_only_on_normal_flow() {
             .any(|instruction| matches!(instruction.operation(), Operation::CaughtException(_)))
     );
     function.ssa().unwrap();
+
+    let lowered = lower_body(&function, &mut class.constant_pool).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(
+        &class.constant_pool,
+        "Example",
+        "value",
+        "()V",
+        MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
+        &lowered.body,
+    )
+    .unwrap();
+    assert!(
+        relifted
+            .cfg()
+            .edges()
+            .any(|edge| { matches!(edge.payload().role, EdgeRole::Exception { .. }) })
+    );
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn constructor_calls_refine_every_preserved_alias() {
     let mut pool = ConstantPool::new();
     let class_name = pool.push_utf8("Example").unwrap();
@@ -231,7 +328,7 @@ fn constructor_calls_refine_every_preserved_alias() {
         .unwrap();
     let [class_high, class_low] = this_class.to_be_bytes();
     let [constructor_high, constructor_low] = constructor.to_be_bytes();
-    let class = ClassFile {
+    let mut class = ClassFile {
         minor_version: 0,
         major_version: JAVA_8_CLASS_MAJOR,
         constant_pool: pool,
@@ -277,7 +374,7 @@ fn constructor_calls_refine_every_preserved_alias() {
         matches!(
             instruction.operation(),
             Operation::Call {
-                kind: CallKind::Special,
+                kind: CallKind::Direct,
                 ..
             }
         )
@@ -295,4 +392,27 @@ fn constructor_calls_refine_every_preserved_alias() {
         [ValueType::Reference(Some(descriptor))] if descriptor == "LExample;"
     ));
     function.ssa().unwrap();
+
+    let lowered = lower_body(&function, &mut class.constant_pool).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(
+        &class.constant_pool,
+        "Example",
+        "make",
+        "()LExample;",
+        MethodAccessFlags::PUBLIC | MethodAccessFlags::STATIC,
+        &lowered.body,
+    )
+    .unwrap();
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.operation(),
+                Operation::Call {
+                    kind: CallKind::Direct,
+                    ..
+                }
+            )
+        })
+    }));
 }

@@ -5,6 +5,7 @@ use cafe::{
 };
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::Error>> {
     exercise_analysis_entry_points()?;
 
@@ -94,14 +95,32 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<cfglib::HandlerTypes<String>>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
     let _ = std::any::type_name::<java::llil::Body>();
+    let _ = std::any::type_name::<java::mlil::LoweredBody>();
+    let _ = std::any::type_name::<java::mlil::SourceJavaReferenceResolver>();
     let _ = std::any::type_name::<java::JavaEmitter>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
     let _ = std::any::type_name::<dex::llil::Body>();
+    let _ = std::any::type_name::<dex::mlil::LoweredBody>();
+    let _ = std::any::type_name::<dex::mlil::SourceDexReferenceResolver>();
+    let _ = std::any::type_name::<dex::mlil::TargetDexReferenceResolver>();
     let _ = std::any::type_name::<dex::DexEmitter>();
     let _ = std::any::type_name::<mlil::Function>();
+    let _ = std::any::type_name::<mlil::ArrayType>();
     let _ = std::any::type_name::<mlil::EdgeMetadata>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
+    let _: fn(
+        &mlil::Function,
+        &mut java::classfile::ConstantPool,
+    ) -> java::mlil::Result<java::mlil::LoweredBody> = java::mlil::lower_body;
+    let _: fn(
+        &mlil::Function,
+        &mut java::classfile::ConstantPool,
+    ) -> java::mlil::Result<java::mlil::LoweredBody> = java::mlil::lower_body_from_source;
+    let _: fn(&dex::DexFile, &mlil::Function) -> dex::mlil::Result<dex::mlil::LoweredBody> =
+        dex::mlil::lower_body;
+    let _: fn(&dex::DexFile, &mlil::Function) -> dex::mlil::Result<dex::mlil::LoweredBody> =
+        dex::mlil::lower_body_from_source;
     Ok(())
 }
 

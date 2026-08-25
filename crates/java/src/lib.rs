@@ -1,5 +1,5 @@
-//! JVM class-file assembly, reversible JVM LLIL, shared disassembly lifting,
-//! and JAR utilities.
+//! JVM class-file assembly, reversible JVM LLIL, bidirectional MLIL adaptation,
+//! shared disassembly lifting, and JAR utilities.
 
 mod error;
 

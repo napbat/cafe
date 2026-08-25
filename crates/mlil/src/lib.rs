@@ -3,8 +3,9 @@
 //! MLIL removes JVM operand-stack and Dalvik register-encoding mechanics while
 //! retaining explicit variables, types, effects, control flow, exception
 //! provenance, and format-qualified native origins. Frontend-owned adapters
-//! lift JVM and Dalvik LLIL into this crate. Target-specific code generation
-//! remains outside this boundary.
+//! lift JVM and Dalvik LLIL into this crate. Target-specific lowering remains
+//! in those frontends so this neutral boundary never owns stack or register
+//! allocation, native reference tables, or encoding policy.
 
 mod builder;
 mod descriptor;
@@ -15,7 +16,7 @@ mod verify;
 pub use self::builder::FunctionBuilder;
 pub use self::error::{Error, Result, VerificationIssue, VerificationReport};
 pub use self::model::{
-    AllocationKind, AllocationSite, ArrayAccess, BinaryOperator, BranchOperandKind,
+    AllocationKind, AllocationSite, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind,
     BranchPredicate, CallKind, Constant, Conversion, EdgeMetadata, EdgeRole, Effect, ElementType,
     EntityId, FieldAccess, Function, Instruction, InstructionId, MonitorAction, NativeVariable,
     Operation, ProvenanceEntry, ProvenanceMap, Relation, SourceStorage, ThreeWayComparison,

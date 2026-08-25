@@ -3,7 +3,7 @@
 use ::mlil::{EdgeRole, EntityId, Operation, SourceStorage};
 use disassembler::CodeAddress;
 
-use super::lift_method;
+use super::{lift_body, lift_method, lower_body};
 use crate::file::{
     AccessFlags, CatchHandler, CodeItem, DexFile, DexString, DexVersion, EncodedMethod, FieldId,
     MethodId, PrototypeId, TryBlock, TypeId,
@@ -102,6 +102,26 @@ fn lifts_register_arithmetic_into_generic_variables_and_ssa() {
 }
 
 #[test]
+fn lowers_mlil_to_verified_llil_and_relifts_semantics() {
+    let (file, declaration) = arithmetic_fixture();
+    let function = lift_method(&file, &declaration).unwrap().unwrap();
+    let lowered = lower_body(&file, &function).unwrap();
+
+    lowered.body.verify().unwrap();
+    assert!(!lowered.source_map.is_empty());
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    assert!(relifted.verify().is_ok());
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.operation(),
+                Operation::Binary(::mlil::BinaryOperator::Add)
+            )
+        })
+    }));
+}
+
+#[test]
 fn throwing_register_definitions_commit_after_exception_dispatch() {
     let mut file = DexFile::new(DexVersion::V040);
     let method_name = file.push_string(DexString::new("guarded")).unwrap();
@@ -190,6 +210,16 @@ fn throwing_register_definitions_commit_after_exception_dispatch() {
             .any(|instruction| matches!(instruction.operation(), Operation::CaughtException(_)))
     );
     function.ssa().unwrap();
+
+    let lowered = lower_body(&file, &function).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    assert!(
+        relifted
+            .cfg()
+            .edges()
+            .any(|edge| { matches!(edge.payload().role, EdgeRole::Exception { .. }) })
+    );
 }
 
 #[test]
@@ -274,6 +304,16 @@ fn switch_payload_is_fused_into_switch_provenance() {
     ));
     assert!(
         function
+            .cfg()
+            .edges()
+            .any(|edge| { matches!(edge.payload().role, EdgeRole::SwitchCase(7)) })
+    );
+
+    let lowered = lower_body(&file, &function).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    assert!(
+        relifted
             .cfg()
             .edges()
             .any(|edge| { matches!(edge.payload().role, EdgeRole::SwitchCase(7)) })
@@ -418,9 +458,20 @@ fn canonicalizes_array_and_field_operand_order() {
         }
     }
     function.ssa().unwrap();
+
+    let lowered = lower_body(&file, &function).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.operation(), Operation::Array { .. }))
+    }));
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn preserves_invoke_result_as_explicit_state() {
     let mut file = DexFile::new(DexVersion::V040);
     let method_name = file.push_string(DexString::new("recur")).unwrap();
@@ -518,6 +569,16 @@ fn preserves_invoke_result_as_explicit_state() {
         SourceStorage::DexRegister(0)
     ));
     function.ssa().unwrap();
+
+    let lowered = lower_body(&file, &function).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    assert!(relifted.cfg().blocks().iter().any(|block| {
+        block
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.operation(), Operation::Call { .. }))
+    }));
 }
 
 #[test]
@@ -677,6 +738,7 @@ fn preserves_dalvik_zero_as_numeric_or_null() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn treats_two_zero_values_as_integer_operands_for_ordered_branches() {
     let mut file = DexFile::new(DexVersion::V040);
     let method_name = file.push_string(DexString::new("zeroOrder")).unwrap();
@@ -765,6 +827,24 @@ fn treats_two_zero_values_as_integer_operands_for_ordered_branches() {
         [::mlil::ValueType::Zero, ::mlil::ValueType::Zero]
     );
     function.ssa().unwrap();
+
+    let lowered = lower_body(&file, &function).unwrap();
+    lowered.body.verify().unwrap();
+    let relifted = lift_body(&file, &declaration, &lowered.body).unwrap();
+    let relifted_branch = relifted
+        .cfg()
+        .blocks()
+        .iter()
+        .flat_map(disassembler::cfglib::BasicBlock::instructions)
+        .find(|instruction| matches!(instruction.operation(), Operation::Branch(_)))
+        .unwrap();
+    assert!(matches!(
+        relifted_branch.operation(),
+        Operation::Branch(::mlil::BranchPredicate {
+            operands: ::mlil::BranchOperandKind::IntegerPair,
+            ..
+        })
+    ));
 }
 
 #[test]

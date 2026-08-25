@@ -244,7 +244,7 @@ fn operation_effects(operation: &Operation, may_throw: bool) -> Vec<Effect> {
             access: ArrayAccess::Put,
             ..
         }
-        | Operation::FillArray { .. }
+        | Operation::InitializeArray { .. }
         | Operation::Field {
             access: FieldAccess::PutInstance | FieldAccess::PutStatic,
             ..

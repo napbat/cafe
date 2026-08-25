@@ -71,7 +71,7 @@ fn resolve_symbol(
             .intern(Constant::Double(f64::from_bits(*bits)))
             .map_err(native),
         ReferenceSymbol::String(value) => intern_exact_string(pool, value),
-        ReferenceSymbol::Type(name) => pool.intern_class(name).map_err(native),
+        ReferenceSymbol::Type(name) => pool.intern_class(jvm_class_name(name)?).map_err(native),
         ReferenceSymbol::Field {
             owner,
             name,
@@ -106,7 +106,7 @@ fn intern_member(
     descriptor: &str,
     kind: ReferenceKind,
 ) -> Result<u16, JavaReferenceResolutionError> {
-    let class_index = pool.intern_class(owner).map_err(native)?;
+    let class_index = pool.intern_class(jvm_class_name(owner)?).map_err(native)?;
     let name_index = pool
         .intern_utf16(name.utf16_units.clone())
         .map_err(native)?;
@@ -133,6 +133,23 @@ fn intern_member(
         _ => return Err(failure("symbolic member kind is incompatible with JVM")),
     };
     pool.intern(constant).map_err(native)
+}
+
+fn jvm_class_name(name: &str) -> Result<&str, JavaReferenceResolutionError> {
+    if let Some(internal) = name
+        .strip_prefix('L')
+        .and_then(|value| value.strip_suffix(';'))
+    {
+        return (!internal.is_empty())
+            .then_some(internal)
+            .ok_or_else(|| failure("empty object type descriptor"));
+    }
+    if matches!(name, "V" | "Z" | "B" | "C" | "S" | "I" | "J" | "F" | "D") {
+        return Err(failure(
+            "primitive class literals require target-specific wrapper-field legalization",
+        ));
+    }
+    Ok(name)
 }
 
 fn intern_string(

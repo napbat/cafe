@@ -1,5 +1,7 @@
 //! Strict structural and semantic MLIL verification.
 
+mod arrays;
+
 use std::collections::BTreeSet;
 
 use disassembler::cfglib::EdgeId;
@@ -12,6 +14,8 @@ use crate::model::{
     ValueType,
 };
 use crate::{VerificationIssue, VerificationReport};
+
+use self::arrays::{valid_array_allocation, valid_array_initialization, valid_initialized_array};
 
 pub(crate) fn verify_function(function: &Function) -> VerificationReport {
     let mut issues = Vec::new();
@@ -403,30 +407,15 @@ fn valid_managed_operation(operation: &Operation, uses: &[ValueType], defs: &[Va
                     && reference_like(&defs[0])
             }
             AllocationKind::Array {
-                primitive,
                 array_type,
                 dimensions,
-            } => {
-                *dimensions != 0
-                    && primitive.is_some() != array_type.is_some()
-                    && array_type.as_ref().is_none_or(valid_type_reference)
-                    && uses.len() == usize::from(*dimensions)
-                    && defs.len() == 1
-                    && uses.iter().all(integer_like)
-                    && reference_like(&defs[0])
-            }
+            } => valid_array_allocation(array_type, *dimensions, uses, defs),
             AllocationKind::InitializedArray { array_type } => {
                 valid_initialized_array(array_type, uses, defs)
             }
         },
-        Operation::FillArray {
-            element_width,
-            element_count,
-            data,
-        } => {
-            counts(uses, defs, 1, 0)
-                && reference_like(&uses[0])
-                && valid_array_data(*element_width, *element_count, data.len())
+        Operation::InitializeArray { array_type, values } => {
+            valid_array_initialization(array_type, values, uses, defs)
         }
         Operation::Monitor(_) => counts(uses, defs, 1, 0) && reference_like(&uses[0]),
         Operation::CheckCast(reference) => {
@@ -559,7 +548,8 @@ fn valid_call(
         Some(_) => return false,
         None => None,
     };
-    if let Some(symbol_descriptor) = symbol_descriptor
+    if kind != CallKind::Polymorphic
+        && let Some(symbol_descriptor) = symbol_descriptor
         && operation_descriptor != Some(symbol_descriptor)
     {
         return false;
@@ -589,33 +579,6 @@ fn valid_call(
         None => defs.is_empty(),
         Some(expected) => defs.len() == 1 && descriptor::accepts(&expected, &defs[0]),
     }
-}
-
-fn valid_initialized_array(array_type: &Reference, uses: &[ValueType], defs: &[ValueType]) -> bool {
-    if !valid_type_reference(array_type) || defs.len() != 1 || !reference_like(&defs[0]) {
-        return false;
-    }
-    let Some(symbol) = &array_type.symbol else {
-        return true;
-    };
-    let ReferenceSymbol::Type(array_descriptor) = symbol else {
-        return false;
-    };
-    let Some(component_descriptor) = array_descriptor.strip_prefix('[') else {
-        return false;
-    };
-    let Some(component) = descriptor::field_type(component_descriptor) else {
-        return false;
-    };
-    uses.iter()
-        .all(|value| descriptor::accepts(&component, value))
-}
-
-fn valid_array_data(element_width: u16, element_count: u32, data_len: usize) -> bool {
-    matches!(element_width, 1 | 2 | 4 | 8)
-        && usize::from(element_width)
-            .checked_mul(element_count as usize)
-            .is_some_and(|expected| expected == data_len)
 }
 
 fn valid_type_reference(reference: &Reference) -> bool {

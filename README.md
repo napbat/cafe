@@ -5,8 +5,9 @@ dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
 control-flow graphs, a typed cross-ISA semantic IL, an editable program model,
 and JNI linkage metadata through coherent namespaces. The JVM and Dalvik
-frontends retain reversible native LLILs and lift them into one shared MLIL for
-analysis.
+frontends retain reversible native LLILs, lift them into one shared MLIL for
+analysis, and canonically lower any target-representable verified MLIL into
+either JVM or Dalvik LLIL.
 
 The workspace contains nine library crates. `cafe` is the public umbrella; the
 other eight are focused implementation boundaries:
@@ -22,13 +23,13 @@ other eight are focused implementation boundaries:
 - `mlil` owns typed cross-ISA operations and variables, exact control-flow edge
   meaning, native provenance, verification, dominance, and SSA views.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
-  construction, JVM-specific LLIL and LLIL-to-MLIL lifting, frame and stack-map
-  analysis,
+  construction, JVM-specific LLIL, bidirectional MLIL adaptation, frame and
+  stack-map analysis,
   JAR/JMOD/JIMAGE utilities, corpus validation, javap-like presentation,
   lifting into Program, and verified canonical emission back to class files.
 - `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
-  Dalvik instructions, LLIL and LLIL-to-MLIL lifting, executable-body and register
-  analysis, APK/AAB handling, corpus validation, provenance, lifting into
+  Dalvik instructions, LLIL, bidirectional MLIL adaptation, executable-body and
+  register analysis, APK/AAB handling, corpus validation, provenance, lifting into
   Program, and verified canonical emission back to DEX.
 - `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
   and canonical DEX adapters without interpreting native code.
@@ -149,14 +150,22 @@ semantic/encoding pairs, then runs the existing native layout, operand,
 control-flow, handler, payload, and body validators. The two LLILs do not
 translate directly into one another; `java::mlil` and `dex::mlil` instead lift
 their verified bodies into the shared `cafe::mlil` value and operation model.
+Each frontend can lower verified MLIL into fresh target-family LLIL regardless
+of the function's source format. Source ISA remains provenance; target constant
+pool or identifier-table context supplies linkage. This is a semantic,
+canonical retarget or round trip rather than replay of the input encoding
+sidecar.
 
 MLIL makes JVM stack positions, JVM locals, Dalvik registers, DEX implicit
 results, and delivered exceptions explicit variables with point-specific
 types. Exact object and array types use JVM-compatible descriptors in both
 frontends, and Dalvik's verifier-polymorphic zero remains distinct so numeric
-zero and null uses are both sound. Its cfglib graph retains canonical branch
-and switch roles, ordered catch metadata, protected native ranges, and exact
-throw-site identities.
+zero and null uses are both sound. Array allocation and initialization retain
+semantic descriptors and typed constants rather than JVM `newarray` choices or
+raw DEX payload bytes. Calls distinguish semantic direct, super,
+signature-polymorphic, and dynamically linked dispatch. Its cfglib graph
+retains canonical branch and switch roles, ordered catch metadata, protected
+native ranges, and exact throw-site identities.
 Throwing definitions in protected code commit only along normal flow, so an
 exception handler observes the verified pre-instruction state. Synthetic
 handler landings model caught exceptions without guessing handler-body extents
@@ -167,9 +176,15 @@ dominance or SSA is exposed.
 
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
-bytecode. MLIL is currently an analysis sink: Cafe lifts LLIL into MLIL but does
-not yet lower MLIL to native LLIL, translate DEX instructions to JVM
-instructions, or provide a DEX-to-JAR workflow.
+bytecode. JVM lowering allocates locals, schedules operand-stack operations,
+lays out symbolic branches and switches, resolves constant-pool references, and
+rebuilds ordered exception ranges. Dalvik lowering allocates a fresh register
+frame, schedules range calls, lays out branches and payloads, resolves DEX table
+references, and rebuilds ordered try regions. Both discard stale offset-based
+debug or verification metadata and return original-native to generated-native
+source maps. Together they provide verified JVM-to-Dalvik and Dalvik-to-JVM
+LLIL retargeting through MLIL. Whole-artifact class/module synthesis, Android
+runtime API policy, and a DEX-to-JAR workflow remain outside this capability.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -608,9 +623,10 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 
 ## Roadmap
 
-See [future.md](future.md) for the completed hardening, LLIL, and shared-MLIL
-baseline; the remaining generic-analysis, decompiler, and DEX-to-JVM boundaries;
-conditional Java Card support; and Java-specific non-goals.
+See [future.md](future.md) for the completed hardening, LLIL, shared-MLIL, and
+cross-ISA lowering baseline; the remaining generic-analysis, decompiler, and
+whole-artifact translation boundaries; conditional Java Card support; and
+Java-specific non-goals.
 
 ## Build and verify
 

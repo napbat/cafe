@@ -208,8 +208,6 @@ pub enum CallKind {
     Super,
     /// Constructor, private, or otherwise direct dispatch.
     Direct,
-    /// JVM special dispatch.
-    Special,
     /// Static dispatch.
     Static,
     /// Interface dispatch.
@@ -220,6 +218,43 @@ pub enum CallKind {
     Dynamic,
 }
 
+/// Exact semantic array type with optional native operand provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArrayType {
+    descriptor: String,
+    source_reference: Option<Reference>,
+}
+
+impl ArrayType {
+    /// Creates a semantic array type without source-table coupling.
+    #[must_use]
+    pub fn new(descriptor: impl Into<String>) -> Self {
+        Self {
+            descriptor: descriptor.into(),
+            source_reference: None,
+        }
+    }
+
+    /// Retains the native type operand that contributed this semantic type.
+    #[must_use]
+    pub fn with_source_reference(mut self, reference: Reference) -> Self {
+        self.source_reference = Some(reference);
+        self
+    }
+
+    /// Returns the exact JVM-compatible array descriptor.
+    #[must_use]
+    pub fn descriptor(&self) -> &str {
+        &self.descriptor
+    }
+
+    /// Returns the optional source-native type operand retained as provenance.
+    #[must_use]
+    pub const fn source_reference(&self) -> Option<&Reference> {
+        self.source_reference.as_ref()
+    }
+}
+
 /// Type operand used by allocation operations.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AllocationKind {
@@ -227,17 +262,15 @@ pub enum AllocationKind {
     Object(Reference),
     /// Allocate an array from one or more dimension lengths.
     Array {
-        /// Primitive element category when no indexed array type is used.
-        primitive: Option<ElementType>,
-        /// Indexed class or array type when present.
-        array_type: Option<Reference>,
+        /// Exact semantic array type, independent of native encoding choice.
+        array_type: ArrayType,
         /// Number of leading dimensions allocated by this operation.
         dimensions: u8,
     },
     /// Allocate and initialize an array from explicit element operands.
     InitializedArray {
-        /// Indexed array type.
-        array_type: Reference,
+        /// Exact semantic array type, independent of native encoding choice.
+        array_type: ArrayType,
     },
 }
 
@@ -309,6 +342,8 @@ pub enum Operation {
     ///
     /// Non-static calls place the receiver before descriptor-ordered arguments.
     /// Static and dynamic calls contain only descriptor-ordered arguments.
+    /// Signature-polymorphic calls keep the declared method descriptor in the
+    /// target symbol and the effective call-site descriptor separately.
     Call {
         /// Dispatch behavior.
         kind: CallKind,
@@ -319,14 +354,12 @@ pub enum Operation {
     },
     /// Allocate an object or array.
     Allocate(AllocationKind),
-    /// Initialize an existing array from exact encoded data.
-    FillArray {
-        /// Width of one encoded element in bytes.
-        element_width: u16,
-        /// Number of encoded elements.
-        element_count: u32,
-        /// Concatenated little-endian element bytes.
-        data: Vec<u8>,
+    /// Initialize an existing primitive array from semantic constant values.
+    InitializeArray {
+        /// Exact semantic array type.
+        array_type: ArrayType,
+        /// Element values in array order.
+        values: Vec<Constant>,
     },
     /// Check and retain a reference against a type.
     CheckCast(Reference),
@@ -373,7 +406,7 @@ impl Operation {
             | Self::Field { .. }
             | Self::Call { .. }
             | Self::Allocate(_)
-            | Self::FillArray { .. }
+            | Self::InitializeArray { .. }
             | Self::CheckCast(_)
             | Self::InstanceOf(_)
             | Self::Monitor(_)
@@ -414,7 +447,7 @@ impl Operation {
             },
             Self::Call { .. } => "call",
             Self::Allocate(_) => "allocate",
-            Self::FillArray { .. } => "fill-array",
+            Self::InitializeArray { .. } => "array-initialize",
             Self::CheckCast(_) => "check-cast",
             Self::InstanceOf(_) => "instance-of",
             Self::Monitor(MonitorAction::Enter) => "monitor-enter",

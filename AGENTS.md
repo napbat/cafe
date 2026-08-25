@@ -23,7 +23,7 @@ These rules apply to the entire repository.
   semantic edge payloads, format-qualified native provenance, dominance, and
   SSA entry points. It may depend on the disassembler, but never on Cafe or a
   native frontend. It must not own native instruction decoding, LLIL encoding,
-  DEX-to-JVM policy, or source-decompiler presentation.
+  whole-artifact DEX-to-JVM policy, or source-decompiler presentation.
 - Keep `crates/classpath` as the cross-format Java type-world aggregator. It
   normalizes JVM internal names and DEX object descriptors, merges equivalent
   declarations, diagnoses conflicting declarations, and supplies explicit JVM
@@ -39,8 +39,8 @@ These rules apply to the entire repository.
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
   disassembler and Program. It also owns symbolic bytecode layout,
   JVM-specific LLIL and checked native round trips, JVM-LLIL-to-MLIL lifting,
-  JVM frame/stack-map analysis, and verified canonical Program-to-class-file
-  emission. Keep its
+  verified MLIL-to-JVM-LLIL lowering, JVM frame/stack-map analysis, and
+  verified canonical Program-to-class-file emission. Keep its
   native instruction graph adapted to cfglib's rooted edge view and run frame
   propagation through the fallible seeded edge solver. It must not depend on
   Cafe. Do not add `src/main.rs`, Clap, or tool-specific output policy to this
@@ -51,7 +51,8 @@ These rules apply to the entire repository.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
   encoding, Dalvik-specific LLIL and checked native round trips,
-  Dalvik-LLIL-to-MLIL lifting, APK/AAB provenance, corpus validation,
+  Dalvik-LLIL-to-MLIL lifting, verified MLIL-to-Dalvik-LLIL lowering, APK/AAB
+  provenance, corpus validation,
   executable semantics and register analysis, and adapters into the
   disassembler and Program, including verified canonical Program-to-DEX
   emission. Keep its native operation graph adapted to cfglib's
@@ -155,7 +156,10 @@ These rules apply to the entire repository.
 - Canonicalize exact MLIL object and array value types to JVM-compatible
   descriptors across all frontends. Preserve Dalvik's exact zero/null lattice
   value rather than forcing it prematurely into either integer or reference
-  semantics.
+  semantics. Model array allocation and initialization with exact semantic
+  descriptors and typed values, not JVM allocation-form flags or raw DEX
+  payload bytes. Keep declared call targets separate from effective call-site
+  descriptors where signature-polymorphic dispatch requires both.
 - Model definitions produced by protected throwing operations through explicit
   normal-flow commit blocks. Exceptional edges must retain the pre-instruction
   native state, ordered catch metadata, protected ranges, and exact MLIL throw
@@ -163,8 +167,14 @@ These rules apply to the entire repository.
   infer handler-body extents or source-level `finally`.
 - Keep MLIL provenance deterministic, many-to-many, format-qualified, and able
   to represent native instruction expansion and payload fusion. Verify every
-  function before exposing dominance or SSA. MLIL-to-LLIL lowering belongs in
-  an explicit future backend and must not be implied by frontend lifting.
+  function before exposing dominance or SSA. Keep MLIL-to-LLIL lowering in the
+  owning target frontend, treat source format only as provenance, reject
+  invalid or target-unencodable semantics, rebuild target resources and ordered
+  exception metadata, omit stale offset-based metadata, and return
+  generated-native source mappings. Default lowerers must use symbolic target
+  linkage; source-index reuse belongs in explicit same-source entry points.
+  Treat lowering as canonical semantic generation, not byte-identical replay of
+  LLIL encoding provenance.
 - Preserve unknown class-file attributes and exact modified UTF-8/UTF-16 data
   so unchanged class files remain lossless through parse/assemble round trips.
 
@@ -224,7 +234,9 @@ These rules apply to the entire repository.
   construction and rejection, typed operation signatures, provenance expansion
   and fusion, exceptional pre-state commits, constructor alias refinement,
   implicit DEX results and exceptions, dominance and SSA, both frontend
-  adapters, and cross-ISA semantic equivalence through Cafe.
+  lift/lower adapters, same-ISA LLIL-to-MLIL-to-LLIL relifting, and cross-ISA
+  MLIL-to-target-LLIL-to-MLIL relifting through Cafe, including references,
+  arrays, calls, and exceptional control flow.
 - Require all of these commands to pass:
 
   ```text

@@ -1,6 +1,6 @@
 use disassembler::{
-    AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, FunctionCoordinate,
-    FunctionSymbol, Reference, ReferenceKind,
+    AddressRange, AddressUnit, BinaryFormat, CatchType, CodeAddress, ExactText, FunctionCoordinate,
+    FunctionSymbol, Reference, ReferenceKind, ReferenceSymbol,
 };
 
 use crate::{
@@ -207,6 +207,80 @@ fn verifier_checks_call_descriptors_against_typed_arguments() {
             .to_string()
             .contains("invalid typed signature for call")
     );
+}
+
+#[test]
+fn verifier_distinguishes_polymorphic_target_and_effective_descriptors() {
+    let source = FunctionCoordinate::new(
+        BinaryFormat::Dex,
+        FunctionSymbol {
+            owner: "Lsample/Example;".to_owned(),
+            name: "invoke".to_owned(),
+            signature: "(Ljava/lang/invoke/MethodHandle;I)I".to_owned(),
+        },
+        AddressUnit::CodeUnit16,
+    );
+    let mut builder = FunctionBuilder::new(source);
+    let receiver = builder
+        .declare_variable(VariableRole::Parameter(0), None)
+        .unwrap();
+    let argument = builder
+        .declare_variable(VariableRole::Parameter(1), None)
+        .unwrap();
+    let result = builder
+        .declare_variable(VariableRole::Temporary, None)
+        .unwrap();
+    let body = builder.new_block("body");
+    builder
+        .add_edge(
+            builder.entry(),
+            body,
+            EdgeMetadata::ordinary(EdgeRole::Entry),
+            None,
+        )
+        .unwrap();
+    let target = Reference::resolved(
+        ReferenceKind::Method,
+        3,
+        "java/lang/invoke/MethodHandle.invokeExact([Ljava/lang/Object;)Ljava/lang/Object;",
+    )
+    .with_symbol(ReferenceSymbol::Method {
+        owner: "java/lang/invoke/MethodHandle".to_owned(),
+        name: ExactText::new("invokeExact"),
+        descriptor: "([Ljava/lang/Object;)Ljava/lang/Object;".to_owned(),
+    });
+    builder
+        .append_instruction(
+            body,
+            Operation::Call {
+                kind: CallKind::Polymorphic,
+                target,
+                descriptor: Some("(I)I".to_owned()),
+            },
+            vec![
+                TypedVariable::new(
+                    receiver,
+                    ValueType::Reference(Some("Ljava/lang/invoke/MethodHandle;".to_owned())),
+                ),
+                TypedVariable::new(argument, ValueType::Integer),
+            ],
+            vec![TypedVariable::new(result, ValueType::Integer)],
+            true,
+            Some(range(0)),
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Return,
+            vec![TypedVariable::new(result, ValueType::Integer)],
+            vec![],
+            false,
+            Some(range(1)),
+        )
+        .unwrap();
+
+    builder.finish().unwrap();
 }
 
 #[test]

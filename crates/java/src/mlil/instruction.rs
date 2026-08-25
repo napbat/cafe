@@ -1,13 +1,13 @@
 //! Semantic lifting of individual verified JVM LLIL instructions.
 
 use ::mlil::{
-    AllocationKind, ArrayAccess, BinaryOperator, BranchOperandKind, BranchPredicate, CallKind,
-    Constant, Conversion, ElementType, FieldAccess, FunctionBuilder, MonitorAction, Operation,
-    Relation, ThreeWayComparison, TypedVariable, UnaryOperator, ValueType,
+    AllocationKind, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind, BranchPredicate,
+    CallKind, Constant, Conversion, ElementType, FieldAccess, FunctionBuilder, MonitorAction,
+    Operation, Relation, ThreeWayComparison, TypedVariable, UnaryOperator, ValueType,
 };
 
 use crate::analysis::{FrameState, FrameValue};
-use crate::bytecode::{ArrayType, Instruction as NativeInstruction};
+use crate::bytecode::{ArrayType as NativeArrayType, Instruction as NativeInstruction};
 use crate::classfile::ConstantPool;
 use crate::descriptor::{ReturnType, parse_method};
 use crate::llil::{
@@ -189,22 +189,24 @@ pub(super) fn lift_instruction(
         ),
         L::NewPrimitiveArray(array_type) => one(
             Operation::Allocate(AllocationKind::Array {
-                primitive: Some(primitive_array(*array_type)),
-                array_type: None,
+                array_type: ArrayType::new(primitive_array_descriptor(*array_type)),
                 dimensions: 1,
             }),
             vec![top_use(variables, entry, owner, native.offset)?],
             vec![top_def(variables, exit, owner, native.offset)?],
         ),
-        L::NewReferenceArray { index } => one(
-            Operation::Allocate(AllocationKind::Array {
-                primitive: None,
-                array_type: Some(reference::class_reference(pool, native, *index)?),
-                dimensions: 1,
-            }),
-            vec![top_use(variables, entry, owner, native.offset)?],
-            vec![top_def(variables, exit, owner, native.offset)?],
-        ),
+        L::NewReferenceArray { index } => {
+            let definition = top_def(variables, exit, owner, native.offset)?;
+            let source = reference::class_reference(pool, native, *index)?;
+            one(
+                Operation::Allocate(AllocationKind::Array {
+                    array_type: allocated_array_type(&definition, Some(source), native.offset)?,
+                    dimensions: 1,
+                }),
+                vec![top_use(variables, entry, owner, native.offset)?],
+                vec![definition],
+            )
+        }
         L::ArrayLength => unary(
             variables,
             Operation::ArrayLength,
@@ -242,21 +244,24 @@ pub(super) fn lift_instruction(
             vec![top_use(variables, entry, owner, native.offset)?],
             vec![],
         ),
-        L::NewMultiArray { index, dimensions } => one(
-            Operation::Allocate(AllocationKind::Array {
-                primitive: None,
-                array_type: Some(reference::class_reference(pool, native, *index)?),
-                dimensions: *dimensions,
-            }),
-            top_uses(
-                variables,
-                entry,
-                usize::from(*dimensions),
-                owner,
-                native.offset,
-            )?,
-            vec![top_def(variables, exit, owner, native.offset)?],
-        ),
+        L::NewMultiArray { index, dimensions } => {
+            let definition = top_def(variables, exit, owner, native.offset)?;
+            let source = reference::class_reference(pool, native, *index)?;
+            one(
+                Operation::Allocate(AllocationKind::Array {
+                    array_type: allocated_array_type(&definition, Some(source), native.offset)?,
+                    dimensions: *dimensions,
+                }),
+                top_uses(
+                    variables,
+                    entry,
+                    usize::from(*dimensions),
+                    owner,
+                    native.offset,
+                )?,
+                vec![definition],
+            )
+        }
         L::Intrinsic(intrinsic) => {
             return Err(Error::unsupported(
                 native.offset,
@@ -369,7 +374,11 @@ fn lift_call(
     exit: &FrameState,
     owner: &str,
 ) -> Result<LiftedInstruction> {
-    let (target, descriptor) = reference::method(pool, native, index)?;
+    let (mut target, descriptor) = reference::method(pool, native, index)?;
+    let kind = call_kind(invocation, &target, owner, native.offset)?;
+    if kind == CallKind::Polymorphic {
+        canonicalize_polymorphic_target(&mut target, native.offset)?;
+    }
     let parsed = parse_method(&descriptor)?;
     let receiver_count = usize::from(!matches!(
         invocation,
@@ -384,13 +393,7 @@ fn lift_call(
     };
     let mut steps = vec![Step {
         operation: Operation::Call {
-            kind: match invocation {
-                llil::Invocation::Virtual => CallKind::Virtual,
-                llil::Invocation::Special => CallKind::Special,
-                llil::Invocation::Static => CallKind::Static,
-                llil::Invocation::Interface => CallKind::Interface,
-                llil::Invocation::Dynamic => CallKind::Dynamic,
-            },
+            kind,
             target,
             descriptor: Some(descriptor),
         },
@@ -404,6 +407,82 @@ fn lift_call(
         steps,
         throw_step: 0,
     })
+}
+
+fn call_kind(
+    invocation: llil::Invocation,
+    target: &disassembler::Reference,
+    current_owner: &str,
+    offset: usize,
+) -> Result<CallKind> {
+    Ok(match invocation {
+        llil::Invocation::Virtual if is_method_handle_polymorphic(target) => CallKind::Polymorphic,
+        llil::Invocation::Virtual => CallKind::Virtual,
+        llil::Invocation::Special => {
+            let Some(disassembler::ReferenceSymbol::Method { owner, name, .. }) = &target.symbol
+            else {
+                return Err(Error::unsupported(
+                    offset,
+                    "invokespecial target lacks a structured method identity",
+                ));
+            };
+            if name.text == "<init>" || same_object_type(owner, current_owner) {
+                CallKind::Direct
+            } else {
+                CallKind::Super
+            }
+        }
+        llil::Invocation::Static => CallKind::Static,
+        llil::Invocation::Interface => CallKind::Interface,
+        llil::Invocation::Dynamic => CallKind::Dynamic,
+    })
+}
+
+const METHOD_HANDLE_NAME: &str = "java/lang/invoke/MethodHandle";
+const METHOD_HANDLE_INVOKE_NAME: &str = "invoke";
+const METHOD_HANDLE_INVOKE_EXACT_NAME: &str = "invokeExact";
+const METHOD_HANDLE_DECLARED_DESCRIPTOR: &str = "([Ljava/lang/Object;)Ljava/lang/Object;";
+
+fn is_method_handle_polymorphic(target: &disassembler::Reference) -> bool {
+    matches!(
+        &target.symbol,
+        Some(disassembler::ReferenceSymbol::Method { owner, name, .. })
+            if same_object_type(owner, METHOD_HANDLE_NAME)
+                && matches!(
+                    name.text.as_str(),
+                    METHOD_HANDLE_INVOKE_NAME | METHOD_HANDLE_INVOKE_EXACT_NAME
+                )
+    )
+}
+
+fn canonicalize_polymorphic_target(
+    target: &mut disassembler::Reference,
+    offset: usize,
+) -> Result<()> {
+    let Some(disassembler::ReferenceSymbol::Method {
+        owner,
+        name,
+        descriptor,
+    }) = &mut target.symbol
+    else {
+        return Err(Error::unsupported(
+            offset,
+            "signature-polymorphic target lacks a structured method identity",
+        ));
+    };
+    METHOD_HANDLE_DECLARED_DESCRIPTOR.clone_into(descriptor);
+    target.display = Some(format!("{}.{}{}", owner, name.text, descriptor));
+    Ok(())
+}
+
+fn same_object_type(left: &str, right: &str) -> bool {
+    fn internal_name(value: &str) -> &str {
+        value
+            .strip_prefix('L')
+            .and_then(|value| value.strip_suffix(';'))
+            .unwrap_or(value)
+    }
+    internal_name(left) == internal_name(right)
 }
 
 fn initialization_refinement(
@@ -782,15 +861,38 @@ fn element_kind(element: ArrayElementKind) -> ElementType {
     }
 }
 
-fn primitive_array(array_type: ArrayType) -> ElementType {
+const fn primitive_array_descriptor(array_type: NativeArrayType) -> &'static str {
     match array_type {
-        ArrayType::Boolean => ElementType::Boolean,
-        ArrayType::Char => ElementType::Char,
-        ArrayType::Float => ElementType::Float,
-        ArrayType::Double => ElementType::Double,
-        ArrayType::Byte => ElementType::Byte,
-        ArrayType::Short => ElementType::Short,
-        ArrayType::Int => ElementType::Integer,
-        ArrayType::Long => ElementType::Long,
+        NativeArrayType::Boolean => "[Z",
+        NativeArrayType::Char => "[C",
+        NativeArrayType::Float => "[F",
+        NativeArrayType::Double => "[D",
+        NativeArrayType::Byte => "[B",
+        NativeArrayType::Short => "[S",
+        NativeArrayType::Int => "[I",
+        NativeArrayType::Long => "[J",
     }
+}
+
+fn allocated_array_type(
+    definition: &TypedVariable,
+    source: Option<disassembler::Reference>,
+    offset: usize,
+) -> Result<ArrayType> {
+    let ValueType::Reference(Some(descriptor)) = &definition.value_type else {
+        return Err(Error::unsupported(
+            offset,
+            "array allocation lacks an exact result descriptor",
+        ));
+    };
+    if !descriptor.starts_with('[') {
+        return Err(Error::unsupported(
+            offset,
+            "array allocation result is not an array descriptor",
+        ));
+    }
+    let array_type = ArrayType::new(descriptor.clone());
+    Ok(source.map_or(array_type.clone(), |reference| {
+        array_type.with_source_reference(reference)
+    }))
 }
