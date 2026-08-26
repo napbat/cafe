@@ -3,7 +3,7 @@ name = "mlil"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Shared typed semantic MLIL for Java-ecosystem bytecode"
+description = "Java-managed semantic dialect for cfglib MLIL"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -12,8 +12,8 @@ keywords = ["java", "jvm", "dex", "bytecode", "analysis"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+cfglib.workspace = true
 disassembler.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

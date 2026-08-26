@@ -2,80 +2,41 @@
 
 mod arrays;
 
-use std::collections::BTreeSet;
-
 use disassembler::cfglib::EdgeId;
 use disassembler::{BinaryFormat, CatchType, Reference, ReferenceKind, ReferenceSymbol};
 
+use crate::VerificationIssue;
 use crate::descriptor::{self, MethodDescriptor};
 use crate::model::{
     AllocationKind, ArrayAccess, BranchOperandKind, CallKind, Constant, ControlClass, Conversion,
     EdgeRole, ElementType, EntityId, FieldAccess, Function, Instruction, Operation, Relation,
     ValueType,
 };
-use crate::{VerificationIssue, VerificationReport};
 
 use self::arrays::{valid_array_allocation, valid_array_initialization, valid_initialized_array};
 
-pub(crate) fn verify_function(function: &Function) -> VerificationReport {
-    let mut issues = Vec::new();
+pub(crate) fn verify_function(function: &Function, issues: &mut Vec<VerificationIssue>) {
     let method_descriptor = descriptor::method_descriptor(&function.source().symbol.signature);
     if method_descriptor.is_none() {
         issue(
-            &mut issues,
+            issues,
             format!(
                 "function {} has an invalid method descriptor",
                 function.source()
             ),
         );
     }
-    verify_cfg(function, &mut issues);
-    verify_variables(function, &mut issues);
-    verify_instructions(function, method_descriptor.as_ref(), &mut issues);
-    verify_edges(function, &mut issues);
-    verify_blocks(function, &mut issues);
-    verify_provenance(function, &mut issues);
-    VerificationReport { issues }
-}
-
-fn verify_cfg(function: &Function, issues: &mut Vec<VerificationIssue>) {
-    for error in disassembler::cfglib::verify(&function.cfg).errors {
-        issue(issues, format!("control-flow graph: {}", error.message));
-    }
-
-    let entry = function.cfg.entry();
-    if !function.cfg.predecessor_edges(entry).is_empty() {
-        issue(issues, "synthetic root has incoming edges");
-    }
-    if !function.cfg.block(entry).is_empty() {
-        issue(issues, "synthetic root contains semantic instructions");
-    }
-    let outgoing = function.cfg.successor_edges(entry);
-    if outgoing.len() != 1 {
-        issue(
-            issues,
-            format!(
-                "synthetic root has {} outgoing edges instead of one",
-                outgoing.len()
-            ),
-        );
-    } else if function.cfg.edge(outgoing[0]).payload().role != EdgeRole::Entry {
-        issue(issues, "synthetic root edge is not an entry edge");
-    }
+    verify_variables(function, issues);
+    verify_instructions(function, method_descriptor.as_ref(), issues);
+    verify_edges(function, issues);
+    verify_blocks(function, issues);
 }
 
 fn verify_variables(function: &Function, issues: &mut Vec<VerificationIssue>) {
-    let mut native_variables = BTreeSet::new();
-    for (index, variable) in function.variables.iter().enumerate() {
-        if variable.id.index() != index {
-            issue(
-                issues,
-                format!(
-                    "variable table slot {index} contains non-dense identity {}",
-                    variable.id
-                ),
-            );
-        }
+    // Several variables may share one native storage: lifetime splitting
+    // legitimately produces multiple variables carrying the same slot's
+    // provenance. Only the format of that provenance is constrained.
+    for variable in function.variables() {
         if let Some(native) = variable.native
             && native.format != function.source().format
         {
@@ -89,14 +50,6 @@ fn verify_variables(function: &Function, issues: &mut Vec<VerificationIssue>) {
                 ),
             );
         }
-        if let Some(native) = variable.native
-            && !native_variables.insert(native)
-        {
-            issue(
-                issues,
-                format!("multiple variables represent native storage {native:?}"),
-            );
-        }
     }
 }
 
@@ -105,54 +58,9 @@ fn verify_instructions(
     method_descriptor: Option<&MethodDescriptor>,
     issues: &mut Vec<VerificationIssue>,
 ) {
-    let mut seen = BTreeSet::new();
-    let mut count = 0usize;
-    for block in function.cfg.blocks() {
-        for (inst_idx, instruction) in block.instructions().iter().enumerate() {
-            count += 1;
-            let id = instruction.id();
-            if !seen.insert(id) {
-                issue(issues, format!("duplicate instruction identity {id}"));
-            }
-            let expected_point = disassembler::cfglib::ProgramPoint {
-                block: block.id(),
-                inst_idx,
-            };
-            match function.instruction_points.get(id.index()) {
-                Some(point) if *point == expected_point => {}
-                Some(point) => issue(
-                    issues,
-                    format!("instruction {id} is at {expected_point} but indexed at {point}"),
-                ),
-                None => issue(
-                    issues,
-                    format!("instruction {id} has no identity-table entry"),
-                ),
-            }
+    for block in function.cfg().blocks() {
+        for instruction in block.instructions() {
             verify_instruction(function, instruction, method_descriptor, issues);
-        }
-    }
-    if count != function.instruction_points.len() {
-        issue(
-            issues,
-            format!(
-                "instruction table has {} entries for {count} stored instructions",
-                function.instruction_points.len()
-            ),
-        );
-    }
-    for (index, point) in function.instruction_points.iter().enumerate() {
-        let valid = function
-            .cfg
-            .blocks()
-            .get(point.block.index())
-            .and_then(|block| block.instructions().get(point.inst_idx))
-            .is_some_and(|instruction| instruction.id().index() == index);
-        if !valid {
-            issue(
-                issues,
-                format!("instruction table entry i{index} points outside its instruction"),
-            );
         }
     }
 }
@@ -163,31 +71,14 @@ fn verify_instruction(
     method_descriptor: Option<&MethodDescriptor>,
     issues: &mut Vec<VerificationIssue>,
 ) {
-    if instruction.uses().len() != instruction.use_types().len() {
+    if matches!(instruction.operation(), Operation::Select) {
         issue(
             issues,
             format!(
-                "{} has mismatched use and use-type counts",
+                "instruction {} uses HLIL-only select vocabulary in canonical MLIL",
                 instruction.id()
             ),
         );
-    }
-    if instruction.defs().len() != instruction.def_types().len() {
-        issue(
-            issues,
-            format!(
-                "{} has mismatched definition and definition-type counts",
-                instruction.id()
-            ),
-        );
-    }
-    for variable in instruction.uses().iter().chain(instruction.defs()) {
-        if function.variable(*variable).is_none() {
-            issue(
-                issues,
-                format!("{} names undeclared variable {variable}", instruction.id()),
-            );
-        }
     }
     for value_type in instruction
         .use_types()
@@ -203,13 +94,6 @@ fn verify_instruction(
                 ),
             );
         }
-    }
-    let distinct_definitions = instruction.defs().iter().copied().collect::<BTreeSet<_>>();
-    if distinct_definitions.len() != instruction.defs().len() {
-        issue(
-            issues,
-            format!("{} defines one variable more than once", instruction.id()),
-        );
     }
     verify_operation(instruction, method_descriptor, issues);
 }
@@ -608,7 +492,7 @@ fn valid_caught_type(catch: &CatchType, value: &ValueType) -> bool {
 
 fn verify_edges(function: &Function, issues: &mut Vec<VerificationIssue>) {
     let edge_ids = function
-        .cfg
+        .cfg()
         .edges()
         .map(disassembler::cfglib::Edge::id)
         .collect::<Vec<_>>();
@@ -618,24 +502,8 @@ fn verify_edges(function: &Function, issues: &mut Vec<VerificationIssue>) {
 }
 
 fn verify_edge(function: &Function, edge_id: EdgeId, issues: &mut Vec<VerificationIssue>) {
-    let edge = function.cfg.edge(edge_id);
+    let edge = function.cfg().edge(edge_id);
     let metadata = edge.payload();
-    if edge.kind() != metadata.role.cfglib_kind() {
-        issue(
-            issues,
-            format!(
-                "edge {edge_id} kind {} disagrees with role {:?}",
-                edge.kind(),
-                metadata.role
-            ),
-        );
-    }
-    if metadata.role == EdgeRole::Entry && edge.source() != function.cfg.entry() {
-        issue(
-            issues,
-            format!("entry edge {edge_id} does not originate at the synthetic root"),
-        );
-    }
     if metadata.role == EdgeRole::Commit {
         verify_commit_edge(function, edge_id, issues);
     }
@@ -659,8 +527,8 @@ fn verify_edge(function: &Function, edge_id: EdgeId, issues: &mut Vec<Verificati
 }
 
 fn verify_commit_edge(function: &Function, edge_id: EdgeId, issues: &mut Vec<VerificationIssue>) {
-    let edge = function.cfg.edge(edge_id);
-    let source = function.cfg.block(edge.source());
+    let edge = function.cfg().edge(edge_id);
+    let source = function.cfg().block(edge.source());
     if !source
         .instructions()
         .last()
@@ -671,7 +539,7 @@ fn verify_commit_edge(function: &Function, edge_id: EdgeId, issues: &mut Vec<Ver
             format!("commit edge {edge_id} does not follow a throwing instruction"),
         );
     }
-    if function.cfg.block(edge.target()).is_empty() {
+    if function.cfg().block(edge.target()).is_empty() {
         issue(
             issues,
             format!("commit edge {edge_id} targets an empty block"),
@@ -687,14 +555,14 @@ fn verify_exception_edge(
     throw_site: crate::InstructionId,
     issues: &mut Vec<VerificationIssue>,
 ) {
-    let edge = function.cfg.edge(edge_id);
+    let edge = function.cfg().edge(edge_id);
     if protected.is_empty() {
         issue(
             issues,
             format!("edge {edge_id} has an empty protected range"),
         );
     }
-    let source = function.cfg.block(edge.source());
+    let source = function.cfg().block(edge.source());
     let source_contains_throw = source
         .instructions()
         .iter()
@@ -722,7 +590,7 @@ fn verify_exception_edge(
         );
     }
     let protected_throw = function
-        .provenance
+        .provenance()
         .mappings_to(EntityId::Instruction(throw_site))
         .any(|entry| entry.source.start >= protected.start && entry.source.end <= protected.end);
     if !protected_throw {
@@ -735,7 +603,7 @@ fn verify_exception_edge(
         );
     }
     let landing_matches = function
-        .cfg
+        .cfg()
         .block(edge.target())
         .instructions()
         .first()
@@ -751,20 +619,19 @@ fn verify_exception_edge(
 }
 
 fn verify_blocks(function: &Function, issues: &mut Vec<VerificationIssue>) {
-    let entry = function.cfg.entry();
-    for block in function.cfg.blocks() {
+    let entry = function.cfg().entry();
+    for block in function.cfg().blocks() {
         if block.id() == entry {
             continue;
         }
         let normal_roles: Vec<_> = function
-            .cfg
+            .cfg()
             .successor_edges(block.id())
             .iter()
-            .map(|edge| &function.cfg.edge(*edge).payload().role)
+            .map(|edge| &function.cfg().edge(*edge).payload().role)
             .filter(|role| !role.is_exception())
             .collect();
         let Some(last) = block.instructions().last() else {
-            issue(issues, format!("semantic block {} is empty", block.id()));
             continue;
         };
         let valid = match last.operation().control_class() {
@@ -807,31 +674,6 @@ fn verify_blocks(function: &Function, issues: &mut Vec<VerificationIssue>) {
                     normal_roles,
                     last.operation().mnemonic()
                 ),
-            );
-        }
-    }
-}
-
-fn verify_provenance(function: &Function, issues: &mut Vec<VerificationIssue>) {
-    let live_edges: BTreeSet<EdgeId> = function
-        .cfg
-        .edges()
-        .map(disassembler::cfglib::Edge::id)
-        .collect();
-    for entry in function.provenance.entries() {
-        if entry.source.is_empty() {
-            issue(issues, "provenance contains an empty native range");
-        }
-        let valid = match entry.entity {
-            EntityId::Block(block) => block.index() < function.cfg.block_count(),
-            EntityId::Edge(edge) => live_edges.contains(&edge),
-            EntityId::Instruction(instruction) => function.instruction(instruction).is_some(),
-            EntityId::Variable(variable) => function.variable(variable).is_some(),
-        };
-        if !valid {
-            issue(
-                issues,
-                format!("provenance names missing entity {:?}", entry.entity),
             );
         }
     }

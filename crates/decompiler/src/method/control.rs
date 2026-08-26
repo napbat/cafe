@@ -1,11 +1,15 @@
 //! Structured and state-machine Java control-flow rendering.
 
+mod structured;
+
 use std::collections::BTreeSet;
 
 use disassembler::CatchType;
 use java::descriptor::{JavaType, ReturnType};
-use mlil::cfglib::{AstNode, BlockId};
+use mlil::cfglib::BlockId;
 use mlil::{EdgeRole, EntityId, Function, Instruction, InstructionId, Operation};
+
+use self::structured::{Frame, structured_java};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, MethodIdentity};
 use crate::model::{GeneratedSpan, SourceMapEntry};
@@ -49,14 +53,14 @@ impl BodyKind {
         }
     }
 
-    const fn instance(self) -> bool {
+    pub(super) const fn instance(self) -> bool {
         matches!(
             self,
             Self::InstanceMethod | Self::Constructor | Self::EnumConstructor
         )
     }
 
-    const fn constructor(self) -> bool {
+    pub(super) const fn constructor(self) -> bool {
         matches!(self, Self::Constructor | Self::EnumConstructor)
     }
 
@@ -64,7 +68,7 @@ impl BodyKind {
         matches!(self, Self::EnumConstructor)
     }
 
-    const fn class_initializer(self) -> bool {
+    pub(super) const fn class_initializer(self) -> bool {
         matches!(self, Self::ClassInitializer)
     }
 }
@@ -80,6 +84,7 @@ pub(crate) struct BodyRequest<'a> {
     pub(crate) options: &'a DecompilerOptions,
     pub(crate) rethrow: &'a str,
     pub(crate) names: &'a SourceNames,
+    pub(crate) unchecked_calls: &'a BTreeSet<(String, String)>,
 }
 
 pub(crate) fn render(request: &BodyRequest<'_>) -> RenderedBody {
@@ -109,28 +114,48 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
     let prelude = constructor_prelude(request)?;
     let skipped = skipped_instructions(request.function, prelude.as_ref());
 
-    let ast = request.function.structured_control_flow();
+    // Structure a derived function: dominance-guarded copy propagation
+    // and effect-aware dead-code elimination clean slot-alias moves and
+    // write-only stores, monitor-cleanup self-coverage detaches, coverage
+    // extends to provably equivalent blocks, unknown handler extents
+    // promote to their dominated blocks, and small shared tails
+    // (short-circuit conditions, shared side-exits) duplicate until
+    // control flow tree-structures. The canonical function keeps its
+    // exact shape. Jump trampolines need no pass here: the HLIL lift
+    // empties dialect-declared pure transfers itself.
+    let derived = request.function.with_derived_cfg(|cfg| {
+        cfg.remove_unreachable_regions();
+        mlil::cfglib::copy_propagation(cfg);
+    });
+    let derived = derived.with_derived_cfg(super::regions::detach_monitor_cleanup_coverage);
+    let derived = derived.with_derived_cfg(mlil::cfglib::ir::mlil::extend_equivalent_coverage);
+    let (derived, _) = derived.with_promoted_handler_extents();
+    let (derived, _) = derived.with_duplicated_structuring_tails();
+    let forced_state = request.options.control_flow == ControlFlowPreference::StateMachine;
+
+    // Prefer the expression-oriented HLIL rendering; any shape it cannot
+    // state exactly falls back to statement-per-instruction rendering.
+    if !forced_state
+        && !request.kind.enum_constructor()
+        && let Ok(lifted) = mlil::cfglib::ir::hlil::lift_function(&derived)
+        && lifted.report.unstructured_regions.is_empty()
+        && let Ok(lifted) = lifted.with_recovered_structure()
+        && let Ok(body) = super::hlil::render_body(request, &lifted)
+    {
+        return Ok(body);
+    }
+
+    let (ast, report) = mlil::cfglib::lift_with_report(derived.cfg());
     let exceptional = request
         .function
         .cfg()
         .edges()
         .any(|edge| matches!(edge.payload().role, EdgeRole::Exception { .. }));
-    let forced_state = request.options.control_flow == ControlFlowPreference::StateMachine;
-    let structured = !forced_state && !exceptional && structured_java(&ast);
+    let structured =
+        !forced_state && report.unstructured_regions.is_empty() && structured_java(&ast);
     let mut diagnostics = Vec::new();
     if !structured {
-        diagnostics.push(Diagnostic::method_warning(
-            DiagnosticCode::StateMachineFallback,
-            request.owner,
-            request.method.clone(),
-            if exceptional {
-                "exact ordered exception dispatch is represented by a Java state machine"
-            } else if forced_state {
-                "state-machine control flow was requested"
-            } else {
-                "cfglib retained an irreducible label/goto or non-Java region"
-            },
-        ));
+        diagnostics.push(fallback_diagnostic(request, exceptional, forced_state));
     }
 
     let mut context = RenderContext {
@@ -140,11 +165,14 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         source_map: Vec::new(),
         skipped,
         class_initializer: request.kind.class_initializer(),
+        frames: Vec::new(),
+        caught_names: Vec::new(),
+        caught_counter: 0,
     };
     if let Some(prelude) = prelude {
         context.emit_prelude(&prelude);
     }
-    for declaration in variables.declarations(request.function, request.parameters) {
+    for declaration in variables.declarations(request.parameters) {
         context.writer.line(&declaration);
     }
     if !request.function.variables().is_empty() {
@@ -179,6 +207,25 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         diagnostics,
         source_map: context.source_map,
     })
+}
+
+fn fallback_diagnostic(
+    request: &BodyRequest<'_>,
+    exceptional: bool,
+    forced_state: bool,
+) -> Diagnostic {
+    Diagnostic::method_warning(
+        DiagnosticCode::StateMachineFallback,
+        request.owner,
+        request.method.clone(),
+        if exceptional {
+            "exact ordered exception dispatch is represented by a Java state machine"
+        } else if forced_state {
+            "state-machine control flow was requested"
+        } else {
+            "cfglib retained an irreducible label/goto or non-Java region"
+        },
+    )
 }
 
 fn constructor_prelude(
@@ -223,7 +270,7 @@ fn skipped_instructions(
     skipped
 }
 
-fn has_explicit_return(function: &Function) -> bool {
+pub(super) fn has_explicit_return(function: &Function) -> bool {
     function.cfg().blocks().iter().any(|block| {
         block
             .instructions()
@@ -235,30 +282,19 @@ fn has_explicit_return(function: &Function) -> bool {
 fn preflight(function: &Function, renderer: &InstructionRenderer<'_>) -> Result<(), RenderFailure> {
     for block in function.cfg().blocks() {
         for instruction in block.instructions() {
-            renderer.statements(instruction)?;
+            // Monitors pass preflight: the HLIL path recovers paired
+            // monitors as `synchronized`, and unrecovered ones still fail
+            // to a stub through the rendering paths themselves.
+            if matches!(instruction.operation(), Operation::Monitor(_)) {
+                continue;
+            }
+            renderer.statements(instruction, "cafe_caught")?;
             if let Operation::Branch(predicate) = instruction.operation() {
                 let _ = renderer.condition(instruction, *predicate);
             }
         }
     }
     Ok(())
-}
-
-fn structured_java(node: &AstNode<Instruction>) -> bool {
-    match node {
-        AstNode::Block { .. } | AstNode::Return { .. } | AstNode::Break | AstNode::Continue => true,
-        AstNode::Sequence { body } | AstNode::Loop { body, .. } => body.iter().all(structured_java),
-        AstNode::IfThenElse {
-            then_body,
-            else_body,
-            ..
-        } => then_body.iter().all(structured_java) && else_body.iter().all(structured_java),
-        AstNode::Switch { .. }
-        | AstNode::Label { .. }
-        | AstNode::Goto { .. }
-        | AstNode::TryCatch { .. }
-        | AstNode::Guarded { .. } => false,
-    }
 }
 
 struct RenderContext<'a> {
@@ -268,90 +304,24 @@ struct RenderContext<'a> {
     source_map: Vec<SourceMapEntry>,
     skipped: BTreeSet<InstructionId>,
     class_initializer: bool,
+    frames: Vec<Frame>,
+    caught_names: Vec<String>,
+    caught_counter: usize,
 }
 
 impl RenderContext<'_> {
+    /// The in-scope delivered-exception name: the enclosing rendered catch
+    /// parameter, or the state machine's dispatch variable.
+    fn caught_name(&self) -> &str {
+        self.caught_names
+            .last()
+            .map_or("cafe_caught", String::as_str)
+    }
+
     fn emit_prelude(&mut self, prelude: &ConstructorPrelude) {
         let start = self.writer.position();
         self.writer.line(&prelude.source);
         self.map(prelude.instruction, start, self.writer.position());
-    }
-
-    fn render_ast(&mut self, node: &AstNode<Instruction>) -> Result<(), RenderFailure> {
-        match node {
-            AstNode::Block { instructions, .. } | AstNode::Return { instructions, .. } => {
-                for instruction in instructions {
-                    self.emit_instruction(instruction, true)?;
-                }
-            }
-            AstNode::Sequence { body } => {
-                for child in body {
-                    self.render_ast(child)?;
-                }
-            }
-            AstNode::IfThenElse {
-                condition_instructions,
-                then_body,
-                else_body,
-                ..
-            } => {
-                let (branch, prefix) = condition_instructions
-                    .split_last()
-                    .ok_or_else(|| RenderFailure::new("structured conditional has no branch"))?;
-                for instruction in prefix {
-                    self.emit_instruction(instruction, true)?;
-                }
-                let Operation::Branch(predicate) = branch.operation() else {
-                    return Err(RenderFailure::new(
-                        "structured conditional ends in a non-branch instruction",
-                    ));
-                };
-                let start = self.writer.position();
-                self.writer.line(&format!(
-                    "if ({}) {{",
-                    self.renderer.condition(branch, *predicate)
-                ));
-                self.map(branch.id(), start, self.writer.position());
-                self.writer.indent();
-                for child in then_body {
-                    self.render_ast(child)?;
-                }
-                self.writer.dedent();
-                if else_body.is_empty() {
-                    self.writer.line("}");
-                } else {
-                    self.writer.line("} else {");
-                    self.writer.indent();
-                    for child in else_body {
-                        self.render_ast(child)?;
-                    }
-                    self.writer.dedent();
-                    self.writer.line("}");
-                }
-            }
-            AstNode::Loop { body, .. } => {
-                self.writer
-                    .line("while (java.lang.Boolean.TRUE.booleanValue()) {");
-                self.writer.indent();
-                for child in body {
-                    self.render_ast(child)?;
-                }
-                self.writer.dedent();
-                self.writer.line("}");
-            }
-            AstNode::Break => self.writer.line("break;"),
-            AstNode::Continue => self.writer.line("continue;"),
-            AstNode::Switch { .. }
-            | AstNode::Label { .. }
-            | AstNode::Goto { .. }
-            | AstNode::TryCatch { .. }
-            | AstNode::Guarded { .. } => {
-                return Err(RenderFailure::new(
-                    "structured AST contains a non-Java control-flow node",
-                ));
-            }
-        }
-        Ok(())
     }
 
     fn render_state_machine(&mut self) -> Result<(), RenderFailure> {
@@ -419,7 +389,7 @@ impl RenderContext<'_> {
         {
             return Ok(());
         }
-        let statements = self.renderer.statements(instruction)?;
+        let statements = self.renderer.statements(instruction, self.caught_name())?;
         if statements.is_empty() {
             return Ok(());
         }

@@ -21,9 +21,10 @@ other nine are focused implementation boundaries:
 - `disassembler` owns shared instructions, references, executable bodies,
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
-- `mlil` owns typed cross-ISA operations and variables, exact control-flow edge
-  meaning, native provenance, verification, dominance, SSA, data-flow,
-  expression, dead-code, and structured-control views.
+- `mlil` defines Cafe's typed Java-managed operation, value, effect, edge, and
+  native-provenance dialect over `cfglib::mlil`; cfglib owns generic verified
+  storage, identities, builders, dominance, SSA, data-flow, expression,
+  dead-code, and structured-control integration.
 - `decompiler` lifts JVM methods through verified MLIL and renders Java source,
   structured diagnostics, and generated-source-to-native provenance.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
@@ -57,10 +58,10 @@ consumer
     ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
     ├── classpath        unified JVM/DEX declaration hierarchy
-    ├── mlil             shared typed semantic IL, provenance, and SSA
+    ├── mlil             Java-managed semantic dialect and compatibility API
     ├── decompiler       verified JVM class-file to Java source recovery
     ├── disassembler     shared instruction IR and CFGs
-    │   └── cfglib       graph algorithms
+    ├── cfglib           generic MLIL, graph algorithms, SSA, and data flow
     └── program          owned definitions and resolution
 ```
 
@@ -161,7 +162,10 @@ pool or identifier-table context supplies linkage. This is a semantic,
 canonical retarget or round trip rather than replay of the input encoding
 sidecar.
 
-MLIL makes JVM stack positions, JVM locals, Dalvik registers, DEX implicit
+Cfglib owns the language-neutral MLIL storage, stable identities, checked
+builder, source-provenance map, and reusable analysis entry points. Cafe's
+`mlil` crate specializes those contracts with one Java-managed dialect. That
+dialect makes JVM stack positions, JVM locals, Dalvik registers, DEX implicit
 results, and delivered exceptions explicit variables with point-specific
 types. Exact object and array types use JVM-compatible descriptors in both
 frontends, and Dalvik's verifier-polymorphic zero remains distinct so numeric
@@ -179,7 +183,7 @@ instruction expansion and payload fusion. Checked construction verifies types,
 terminators, edge roles, exception evidence, identities, and provenance before
 dominance or SSA is exposed.
 
-Verified MLIL functions also expose definition/use chains, liveness, forward
+Through cfglib, verified MLIL functions expose definition/use chains, liveness, forward
 and sparse constants, block-local expression recovery, copy-propagated views,
 effect-aware dead-code reports, and cfglib structured control flow. Every
 analysis consumes the same canonical payload-bearing graph; none discards
@@ -631,8 +635,9 @@ crates/
 │   ├── src/source_map.rs
 │   ├── src/diagnostic.rs
 │   └── tests/
-├── mlil/                 typed semantic operations, verification, and SSA
-│   └── src/model/
+├── mlil/                 Java-managed dialect over cfglib's generic MLIL
+│   ├── src/model/
+│   └── src/dialect.rs
 ├── decompiler/           verified MLIL-backed Java source recovery
 │   ├── src/method/
 │   └── tests/

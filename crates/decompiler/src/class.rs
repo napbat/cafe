@@ -134,6 +134,25 @@ fn render_class(
 
     let mut source_map = Vec::new();
     let mut helper_used = false;
+    // Methods of this class that declare no exceptions: calls to them
+    // provably cannot raise checked exceptions, so their statements skip
+    // the rethrow launder.
+    let unchecked_calls: BTreeSet<(String, String)> = class
+        .methods
+        .iter()
+        .filter(
+            |method| match method.known_attribute(KnownAttributeKind::Exceptions) {
+                Some(KnownAttribute::Exceptions(attribute)) => attribute.indices.is_empty(),
+                _ => true,
+            },
+        )
+        .filter_map(|method| {
+            Some((
+                method.name(&class.constant_pool).ok()?.to_owned(),
+                method.descriptor(&class.constant_pool).ok()?.to_owned(),
+            ))
+        })
+        .collect();
     for (method_index, method) in class.methods.iter().enumerate() {
         if !options.include_synthetic_members
             && method.access_flags.contains(MethodAccessFlags::SYNTHETIC)
@@ -213,6 +232,13 @@ fn render_class(
         writer.indent();
         match lift(method) {
             Ok(Some(function)) => {
+                // One variable per SSA lifetime: storage-derived slot reuse
+                // separates into single-typed locals before rendering, and
+                // every non-variable identity survives the rebuild.
+                let function = function
+                    .split_variables()
+                    .map(|split| split.function)
+                    .unwrap_or(function);
                 let request = BodyRequest {
                     function: &function,
                     owner: &internal_name,
@@ -228,6 +254,7 @@ fn render_class(
                     options,
                     rethrow: &helper,
                     names: &names,
+                    unchecked_calls: &unchecked_calls,
                 };
                 let rendered = render(&request);
                 helper_used |= rendered.source.contains(&helper);

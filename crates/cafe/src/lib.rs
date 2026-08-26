@@ -2,7 +2,8 @@
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
 //! under [`java`], [`dex`], [`art`], and [`jni`], including ISA-specific JVM and
-//! Dalvik LLIL; their shared typed semantic representation lives under [`mlil`];
+//! Dalvik LLIL; their shared Java-managed semantic dialect lives under [`mlil`]
+//! and uses the generic storage and analyses under [`cfglib`];
 //! unified cross-format hierarchy aggregation lives under [`classpath`]; Java
 //! source recovery lives under [`decompiler`]; shared
 //! instruction and graph APIs, including exact and conservatively recovered
@@ -44,11 +45,11 @@ pub use ::disassembler;
 pub use ::java;
 /// Typed Java Native Interface declarations, symbols, and artifact adapters.
 pub use ::jni;
-/// Shared typed semantic IL, verification, provenance, dominance, and SSA views.
+/// Java-managed semantic dialect and concrete facade over generic cfglib MLIL.
 pub use ::mlil;
 /// Owned modules, definitions, identities, and cross-module resolution.
 pub use ::program;
 
-/// Graph algorithms and data structures used by shared control-flow graphs.
+/// Generic MLIL, graph algorithms, and shared control-flow data structures.
 pub use ::disassembler::cfglib;
 pub use ::program::*;

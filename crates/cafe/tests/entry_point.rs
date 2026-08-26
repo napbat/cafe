@@ -109,6 +109,11 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<dex::mlil::TargetDexReferenceResolver>();
     let _ = std::any::type_name::<dex::DexEmitter>();
     let _ = std::any::type_name::<mlil::Function>();
+    let _ = std::any::type_name::<cfglib::ir::mlil::Function<mlil::JavaDialect>>();
+    assert_eq!(
+        std::any::TypeId::of::<mlil::Function>(),
+        std::any::TypeId::of::<cfglib::ir::mlil::Function<mlil::JavaDialect>>()
+    );
     let _ = std::any::type_name::<mlil::ArrayType>();
     let _ = std::any::type_name::<mlil::EdgeMetadata>();
     let _ = std::any::type_name::<decompiler::DecompiledClass>();

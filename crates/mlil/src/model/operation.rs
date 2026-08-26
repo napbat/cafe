@@ -124,6 +124,21 @@ pub enum Relation {
     LessOrEqual,
 }
 
+impl Relation {
+    /// The exact negation over the same operands.
+    #[must_use]
+    pub const fn inverted(self) -> Self {
+        match self {
+            Self::Equal => Self::NotEqual,
+            Self::NotEqual => Self::Equal,
+            Self::Less => Self::GreaterOrEqual,
+            Self::GreaterOrEqual => Self::Less,
+            Self::Greater => Self::LessOrEqual,
+            Self::LessOrEqual => Self::Greater,
+        }
+    }
+}
+
 /// Shape of operands consumed by a conditional branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BranchOperandKind {
@@ -146,6 +161,17 @@ pub struct BranchPredicate {
     pub relation: Relation,
     /// Operand shape.
     pub operands: BranchOperandKind,
+}
+
+impl BranchPredicate {
+    /// The exact negation over the same operands.
+    #[must_use]
+    pub const fn inverted(self) -> Self {
+        Self {
+            relation: self.relation.inverted(),
+            operands: self.operands,
+        }
+    }
 }
 
 /// Direction of an array operation.
@@ -371,6 +397,12 @@ pub enum Operation {
     CaughtException(CatchType),
     /// Explicitly retained implementation-defined semantic operation.
     Intrinsic(String),
+    /// Select between two values by a condition, evaluating exactly one
+    /// arm: `select(condition, when_true, when_false)`.
+    ///
+    /// HLIL-only vocabulary: structural recovery introduces it above the
+    /// flat level, and canonical MLIL rejects it.
+    Select,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,7 +443,8 @@ impl Operation {
             | Self::InstanceOf(_)
             | Self::Monitor(_)
             | Self::CaughtException(_)
-            | Self::Intrinsic(_) => ControlClass::Normal,
+            | Self::Intrinsic(_)
+            | Self::Select => ControlClass::Normal,
         }
     }
 
@@ -454,6 +487,7 @@ impl Operation {
             Self::Monitor(MonitorAction::Exit) => "monitor-exit",
             Self::CaughtException(_) => "caught-exception",
             Self::Intrinsic(_) => "intrinsic",
+            Self::Select => "select",
         }
     }
 }

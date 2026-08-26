@@ -1,22 +1,21 @@
-//! Shared typed semantic intermediate language for Java-ecosystem bytecode.
+//! Java-managed semantic dialect for cfglib's generic medium-level IR.
 //!
-//! MLIL removes JVM operand-stack and Dalvik register-encoding mechanics while
-//! retaining explicit variables, types, effects, control flow, exception
-//! provenance, and format-qualified native origins. Frontend-owned adapters
-//! lift JVM and Dalvik LLIL into this crate. Target-specific lowering remains
-//! in those frontends so this neutral boundary never owns stack or register
-//! allocation, native reference tables, or encoding policy.
+//! [`cfglib::ir::mlil`] owns generic MLIL storage, stable identities, provenance,
+//! verification scaffolding, and reusable analyses. This crate supplies the
+//! shared Java-ecosystem operation, type, effect, edge, and source vocabulary
+//! used by JVM and Dalvik frontends. Target-specific lowering remains in those
+//! frontends so this layer never owns stack or register allocation, native
+//! reference tables, or encoding policy.
 
 mod analysis;
-mod builder;
 mod descriptor;
-mod error;
+mod dialect;
+mod hlil;
 mod model;
 mod verify;
 
 pub use self::analysis::ExpressionOperator;
-pub use self::builder::FunctionBuilder;
-pub use self::error::{Error, Result, VerificationIssue, VerificationReport};
+pub use self::dialect::JavaDialect;
 pub use self::model::{
     AllocationKind, AllocationSite, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind,
     BranchPredicate, CallKind, Constant, Conversion, EdgeMetadata, EdgeRole, Effect, ElementType,
@@ -24,9 +23,13 @@ pub use self::model::{
     Operation, ProvenanceEntry, ProvenanceMap, Relation, SourceStorage, ThreeWayComparison,
     TypedVariable, UnaryOperator, ValueType, Variable, VariableId, VariableRole,
 };
+pub use cfglib::ir::mlil::{Error, Result, VerificationIssue, VerificationReport};
+
+/// Checked builder for a Java-managed semantic function.
+pub type FunctionBuilder = cfglib::ir::mlil::FunctionBuilder<JavaDialect>;
 
 /// Graph algorithms and SSA/data-flow facilities used by MLIL.
-pub use disassembler::cfglib;
+pub use cfglib;
 
 #[cfg(test)]
 mod tests;

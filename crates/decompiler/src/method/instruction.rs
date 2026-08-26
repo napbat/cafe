@@ -65,6 +65,7 @@ impl<'a> InstructionRenderer<'a> {
     pub(super) fn statements(
         &self,
         instruction: &Instruction,
+        caught: &str,
     ) -> Result<Vec<String>, RenderFailure> {
         let uses = instruction.uses();
         let defs = instruction.defs();
@@ -123,10 +124,9 @@ impl<'a> InstructionRenderer<'a> {
                 self.object_use(instruction, 0)?,
                 reference_type(reference, self.names)?
             )],
-            Operation::CaughtException(_) => vec![format!(
-                "{} = cafe_caught;",
-                self.definition(instruction, 0)?
-            )],
+            Operation::CaughtException(_) => {
+                vec![format!("{} = {caught};", self.definition(instruction, 0)?)]
+            }
             Operation::Monitor(MonitorAction::Enter | MonitorAction::Exit) => {
                 return Err(RenderFailure::new(
                     "unpaired monitor operations require synchronized-region recovery",
@@ -136,6 +136,11 @@ impl<'a> InstructionRenderer<'a> {
                 return Err(RenderFailure::new(format!(
                     "intrinsic `{name}` has no Java source policy"
                 )));
+            }
+            Operation::Select => {
+                return Err(RenderFailure::new(
+                    "select is HLIL-only vocabulary; the expression renderer owns it",
+                ));
             }
         };
         let _ = (uses, defs, self.function, self.owner);
@@ -670,7 +675,9 @@ impl<'a> InstructionRenderer<'a> {
     }
 }
 
-fn allocation_aliases(function: &Function) -> BTreeMap<AllocationSite, BTreeSet<VariableId>> {
+pub(super) fn allocation_aliases(
+    function: &Function,
+) -> BTreeMap<AllocationSite, BTreeSet<VariableId>> {
     let mut aliases = BTreeMap::new();
     for block in function.cfg().blocks() {
         for instruction in block.instructions() {
@@ -729,7 +736,10 @@ pub(super) fn constant_expression(
     })
 }
 
-fn reference_type(reference: &Reference, names: &SourceNames) -> Result<String, RenderFailure> {
+pub(super) fn reference_type(
+    reference: &Reference,
+    names: &SourceNames,
+) -> Result<String, RenderFailure> {
     let Some(ReferenceSymbol::Type(value)) = &reference.symbol else {
         return Err(RenderFailure::new(
             "type reference lacks a structured symbol",
@@ -738,7 +748,10 @@ fn reference_type(reference: &Reference, names: &SourceNames) -> Result<String, 
     reference_type_name(value, names)
 }
 
-fn reference_type_name(value: &str, names: &SourceNames) -> Result<String, RenderFailure> {
+pub(super) fn reference_type_name(
+    value: &str,
+    names: &SourceNames,
+) -> Result<String, RenderFailure> {
     if value.starts_with('[')
         || (value.starts_with('L') && value.ends_with(';'))
         || matches!(value, "Z" | "B" | "C" | "S" | "I" | "J" | "F" | "D")
@@ -751,7 +764,7 @@ fn reference_type_name(value: &str, names: &SourceNames) -> Result<String, Rende
     }
 }
 
-fn java_value_to_slot(expression: &str, value_type: &JavaType) -> String {
+pub(super) fn java_value_to_slot(expression: &str, value_type: &JavaType) -> String {
     if matches!(value_type, JavaType::Boolean) {
         format!("({expression} ? 1 : 0)")
     } else {
@@ -759,7 +772,7 @@ fn java_value_to_slot(expression: &str, value_type: &JavaType) -> String {
     }
 }
 
-fn constant_as_java_type(
+pub(super) fn constant_as_java_type(
     constant: &Constant,
     value_type: &JavaType,
     names: &SourceNames,
@@ -782,7 +795,9 @@ fn constant_as_java_type(
     })
 }
 
-fn field_symbol(reference: &Reference) -> Result<(&str, &ExactText, &str), RenderFailure> {
+pub(super) fn field_symbol(
+    reference: &Reference,
+) -> Result<(&str, &ExactText, &str), RenderFailure> {
     match &reference.symbol {
         Some(ReferenceSymbol::Field {
             owner,
@@ -795,7 +810,9 @@ fn field_symbol(reference: &Reference) -> Result<(&str, &ExactText, &str), Rende
     }
 }
 
-fn method_symbol(reference: &Reference) -> Result<(&str, &ExactText, &str), RenderFailure> {
+pub(super) fn method_symbol(
+    reference: &Reference,
+) -> Result<(&str, &ExactText, &str), RenderFailure> {
     match &reference.symbol {
         Some(ReferenceSymbol::Method {
             owner,
@@ -808,7 +825,7 @@ fn method_symbol(reference: &Reference) -> Result<(&str, &ExactText, &str), Rend
     }
 }
 
-fn new_array(
+pub(super) fn new_array(
     descriptor: &str,
     lengths: &[String],
     names: &SourceNames,
@@ -837,14 +854,14 @@ fn new_array(
     Ok(expression)
 }
 
-const fn unary_symbol(operator: UnaryOperator) -> &'static str {
+pub(super) const fn unary_symbol(operator: UnaryOperator) -> &'static str {
     match operator {
         UnaryOperator::Negate => "-",
         UnaryOperator::BitwiseNot => "~",
     }
 }
 
-const fn binary_symbol(operator: BinaryOperator) -> &'static str {
+pub(super) const fn binary_symbol(operator: BinaryOperator) -> &'static str {
     match operator {
         BinaryOperator::Add => "+",
         BinaryOperator::Subtract | BinaryOperator::ReverseSubtract => "-",
@@ -860,7 +877,7 @@ const fn binary_symbol(operator: BinaryOperator) -> &'static str {
     }
 }
 
-const fn relation_symbol(relation: Relation) -> &'static str {
+pub(super) const fn relation_symbol(relation: Relation) -> &'static str {
     match relation {
         Relation::Equal => "==",
         Relation::NotEqual => "!=",
@@ -871,7 +888,7 @@ const fn relation_symbol(relation: Relation) -> &'static str {
     }
 }
 
-const fn conversion_target(conversion: Conversion) -> &'static str {
+pub(super) const fn conversion_target(conversion: Conversion) -> &'static str {
     match conversion {
         Conversion::IntToLong | Conversion::FloatToLong | Conversion::DoubleToLong => "long",
         Conversion::IntToFloat | Conversion::LongToFloat | Conversion::DoubleToFloat => "float",
@@ -893,7 +910,7 @@ const fn slot_java_type(kind: SlotKind) -> &'static str {
     }
 }
 
-const fn element_array_descriptor(element: ElementType) -> &'static str {
+pub(super) const fn element_array_descriptor(element: ElementType) -> &'static str {
     match element {
         ElementType::Boolean => "[Z",
         ElementType::Byte | ElementType::ByteOrBoolean => "[B",

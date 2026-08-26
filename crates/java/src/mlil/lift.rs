@@ -1,6 +1,6 @@
 //! Whole-method JVM LLIL to MLIL graph construction.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ::mlil::{
     EdgeMetadata, EdgeRole, EntityId, Function, FunctionBuilder, Operation, TypedVariable,
@@ -169,6 +169,7 @@ fn lift_analyzed_body(
         },
         AddressUnit::Byte,
     );
+    let synchronized = access_flags.contains(MethodAccessFlags::SYNCHRONIZED);
     let mut builder = FunctionBuilder::new(coordinate);
     let parsed_descriptor = parse_method(descriptor)?;
     let variables = StateVariables::declare(
@@ -197,7 +198,7 @@ fn lift_analyzed_body(
         let exit = analysis.exit_frame(offset).ok_or_else(|| {
             Error::unsupported(offset, "frame analysis omitted a JVM instruction exit")
         })?;
-        let protected = if opcode_may_throw(native_instruction.opcode) {
+        let protected = if opcode_may_throw(native_instruction.opcode, synchronized) {
             protected_handlers(&body.exception_table, offset)
         } else {
             Vec::new()
@@ -219,11 +220,12 @@ fn lift_analyzed_body(
             native_instruction,
             lifted,
             !protected.is_empty(),
+            synchronized,
         )?;
     }
 
     add_normal_edges(&mut builder, body, &native, &blocks)?;
-    add_exception_edges(
+    let landings = add_exception_edges(
         &mut builder,
         pool,
         body,
@@ -231,7 +233,9 @@ fn lift_analyzed_body(
         &variables,
         &blocks,
         owner,
+        synchronized,
     )?;
+    add_exception_regions(&mut builder, pool, body, &blocks, &landings)?;
     Ok(builder.finish()?)
 }
 
@@ -263,6 +267,7 @@ fn append_lifted(
     native: &NativeInstruction,
     mut lifted: LiftedInstruction,
     has_exception_edges: bool,
+    synchronized: bool,
 ) -> Result<()> {
     let range = blocks.ranges[&native.offset];
     let block = blocks.blocks[&native.offset];
@@ -284,7 +289,7 @@ fn append_lifted(
         }
     }
 
-    let may_throw = opcode_may_throw(native.opcode) || has_exception_edges;
+    let may_throw = opcode_may_throw(native.opcode, synchronized) || has_exception_edges;
     let mut instruction_ids = Vec::with_capacity(lifted.steps.len());
     for (index, step) in lifted.steps.into_iter().enumerate() {
         instruction_ids.push(builder.append_instruction(
@@ -433,39 +438,52 @@ fn add_exception_edges(
     variables: &StateVariables,
     blocks: &NativeBlocks,
     owner: &str,
-) -> Result<()> {
+    synchronized: bool,
+) -> Result<Vec<BlockId>> {
+    let mut landings = Vec::with_capacity(body.exception_table.len());
+    let mut shared: BTreeMap<(usize, CatchType), BlockId> = BTreeMap::new();
     for (order, handler) in body.exception_table.iter().enumerate() {
         let handler_offset = usize::from(handler.handler_pc);
         let catch = catch_type(pool, *handler)?;
-        let landing = builder.new_block(format!("jvm_{handler_offset:04x}_handler_{order}"));
-        let handler_range =
-            blocks
-                .ranges
-                .get(&handler_offset)
-                .copied()
-                .ok_or(Error::MissingTarget {
-                    source_offset: handler_offset,
-                    target: handler_offset,
-                })?;
-        builder.map_entity(handler_range, EntityId::Block(landing))?;
-        let handler_frame = analysis.entry_frame(handler_offset).ok_or_else(|| {
-            Error::unsupported(handler_offset, "handler has no analyzed entry frame")
-        })?;
-        let caught = variables.stack(handler_frame, 0, owner);
-        builder.append_instruction(
-            landing,
-            Operation::CaughtException(catch.clone()),
-            vec![],
-            vec![caught],
-            false,
-            Some(handler_range),
-        )?;
-        builder.add_edge(
-            landing,
-            blocks.blocks[&handler_offset],
-            EdgeMetadata::ordinary(EdgeRole::FallThrough),
-            Some(handler_range),
-        )?;
+        // Table entries naming the same handler and catch type are one
+        // source handler whose coverage javac split into several ranges;
+        // they share one landing, so region grouping sees one handler.
+        let landing = if let Some(&landing) = shared.get(&(handler_offset, catch.clone())) {
+            landing
+        } else {
+            let landing = builder.new_block(format!("jvm_{handler_offset:04x}_handler_{order}"));
+            shared.insert((handler_offset, catch.clone()), landing);
+            let handler_range =
+                blocks
+                    .ranges
+                    .get(&handler_offset)
+                    .copied()
+                    .ok_or(Error::MissingTarget {
+                        source_offset: handler_offset,
+                        target: handler_offset,
+                    })?;
+            builder.map_entity(handler_range, EntityId::Block(landing))?;
+            let handler_frame = analysis.entry_frame(handler_offset).ok_or_else(|| {
+                Error::unsupported(handler_offset, "handler has no analyzed entry frame")
+            })?;
+            let caught = variables.stack(handler_frame, 0, owner);
+            builder.append_instruction(
+                landing,
+                Operation::CaughtException(catch.clone()),
+                vec![],
+                vec![caught],
+                false,
+                Some(handler_range),
+            )?;
+            builder.add_edge(
+                landing,
+                blocks.blocks[&handler_offset],
+                EdgeMetadata::ordinary(EdgeRole::FallThrough),
+                Some(handler_range),
+            )?;
+            landing
+        };
+        landings.push(landing);
 
         let protected = AddressRange::new(
             CodeAddress::from(handler.start_pc),
@@ -476,7 +494,7 @@ fn add_exception_edges(
         for instruction in &body.instructions {
             if instruction.offset >= usize::from(handler.start_pc)
                 && instruction.offset < usize::from(handler.end_pc)
-                && opcode_may_throw(instruction.encoding.opcode)
+                && opcode_may_throw(instruction.encoding.opcode, synchronized)
             {
                 let source = blocks.blocks[&instruction.offset];
                 let throw_site = blocks.throw_sites[&instruction.offset];
@@ -495,6 +513,78 @@ fn add_exception_edges(
                 )?;
             }
         }
+    }
+    Ok(landings)
+}
+
+/// Declares one exception region per source-level handler.
+///
+/// Entries were grouped onto shared landings by
+/// [`add_exception_edges`], so each landing is one handler; its protected
+/// set is the union of its table ranges (javac splits one construct's
+/// coverage around return paths and cleanups). Handlers whose protected
+/// sets coincide are one dispatch site with table-ordered arms (adjacent
+/// catches, multi-catch); distinct sets are distinct — nested — regions.
+///
+/// Handler landings are exact; handler-body extents stay
+/// [`HandlerBody::Unknown`](mlil::cfglib::HandlerBody::Unknown) — the
+/// canonical function never guesses where a handler ends. Presentation
+/// derives extents on its own graph when it needs structure.
+fn add_exception_regions(
+    builder: &mut FunctionBuilder,
+    pool: &ConstantPool,
+    body: &llil::Body,
+    blocks: &NativeBlocks,
+    landings: &[BlockId],
+) -> Result<()> {
+    use mlil::cfglib::{Handler, HandlerBody, HandlerKind, Region, RegionId};
+
+    let mut order: Vec<BlockId> = Vec::new();
+    let mut groups: BTreeMap<BlockId, (HandlerKind, BTreeSet<BlockId>)> = BTreeMap::new();
+    for (entry, &landing) in body.exception_table.iter().zip(landings) {
+        let kind = match catch_type(pool, *entry)? {
+            CatchType::Any => HandlerKind::CatchAll,
+            CatchType::Type(_) => HandlerKind::Catch,
+        };
+        let group = groups.entry(landing).or_insert_with(|| {
+            order.push(landing);
+            (kind, BTreeSet::new())
+        });
+        for (&offset, &block) in &blocks.blocks {
+            if offset >= usize::from(entry.start_pc) && offset < usize::from(entry.end_pc) {
+                group.1.insert(block);
+                // The commit continuation of a protected instruction is
+                // part of the same protected extent.
+                group.1.insert(blocks.normal_sources[&offset]);
+            }
+        }
+    }
+    let mut regions: Vec<(BTreeSet<BlockId>, Vec<Handler>)> = Vec::new();
+    for landing in order {
+        let Some((kind, protected)) = groups.remove(&landing) else {
+            continue;
+        };
+        if protected.is_empty() {
+            continue;
+        }
+        let handler = Handler {
+            entry: landing,
+            body: HandlerBody::Unknown,
+            kind,
+        };
+        if let Some(existing) = regions.iter_mut().find(|(set, _)| *set == protected) {
+            existing.1.push(handler);
+        } else {
+            regions.push((protected, vec![handler]));
+        }
+    }
+    for (protected, handlers) in regions {
+        builder.add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: protected,
+            handlers,
+            parent: None,
+        })?;
     }
     Ok(())
 }
@@ -605,7 +695,20 @@ fn reject_unsupported(body: &llil::Body) -> Result<()> {
     Ok(())
 }
 
-fn opcode_may_throw(opcode: Opcode) -> bool {
+fn opcode_may_throw(opcode: Opcode, synchronized: bool) -> bool {
+    if matches!(
+        opcode,
+        Opcode::IReturn
+            | Opcode::LReturn
+            | Opcode::FReturn
+            | Opcode::DReturn
+            | Opcode::AReturn
+            | Opcode::Return
+    ) {
+        // JVMS 6.5 *return*: a return throws only when the method itself
+        // is synchronized and its monitor state is inconsistent.
+        return synchronized;
+    }
     matches!(
         opcode,
         Opcode::Ldc
@@ -631,12 +734,6 @@ fn opcode_may_throw(opcode: Opcode) -> bool {
             | Opcode::LDiv
             | Opcode::IRem
             | Opcode::LRem
-            | Opcode::IReturn
-            | Opcode::LReturn
-            | Opcode::FReturn
-            | Opcode::DReturn
-            | Opcode::AReturn
-            | Opcode::Return
             | Opcode::GetStatic
             | Opcode::PutStatic
             | Opcode::GetField

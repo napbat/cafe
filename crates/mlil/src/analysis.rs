@@ -2,10 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use disassembler::cfglib::{ConstantFolder, CopySource, ExprInstr};
-
 use crate::{
-    BinaryOperator, Constant, Conversion, Instruction, Operation, ThreeWayComparison, UnaryOperator,
+    BinaryOperator, Constant, Conversion, Instruction, Operation, ThreeWayComparison,
+    UnaryOperator, VariableId,
 };
 
 /// Pure MLIL operator retained in recovered expression trees.
@@ -20,75 +19,69 @@ impl ExpressionOperator {
     }
 }
 
-impl CopySource for Instruction {
-    fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)> {
-        (matches!(self.operation(), Operation::Copy)
-            && self.effects().is_empty()
-            && self.defs().len() == 1
-            && self.uses().len() == 1)
-            .then(|| (self.defs()[0], self.uses()[0]))
-    }
-
-    fn rewrite_use(&mut self, old: &Self::Variable, new: &Self::Variable) {
-        self.rewrite_use(*old, *new);
-    }
+pub(crate) fn is_copy(operation: &Operation) -> bool {
+    matches!(operation, Operation::Copy)
 }
 
-impl ExprInstr for Instruction {
-    type Operator = ExpressionOperator;
-    type Const = Constant;
-
-    fn as_expr(&self) -> Option<(Self::Operator, &[Self::Variable])> {
-        let expression = matches!(
-            self.operation(),
-            Operation::Copy
-                | Operation::Unary(_)
-                | Operation::Binary(_)
-                | Operation::Convert(_)
-                | Operation::Compare(_)
-                | Operation::InstanceOf(_)
-        );
-        (expression && self.effects().is_empty() && self.defs().len() == 1)
-            .then(|| (ExpressionOperator(self.operation().clone()), self.uses()))
-    }
-
-    fn as_const(&self) -> Option<Self::Const> {
-        let Operation::Constant(constant) = self.operation() else {
-            return None;
-        };
-        Some(constant.clone())
-    }
+pub(crate) fn expression_operator(operation: &Operation) -> Option<ExpressionOperator> {
+    matches!(
+        operation,
+        Operation::Copy
+            | Operation::Unary(_)
+            | Operation::Binary(_)
+            | Operation::Convert(_)
+            | Operation::Compare(_)
+            | Operation::InstanceOf(_)
+    )
+    .then(|| ExpressionOperator(operation.clone()))
 }
 
-impl ConstantFolder for Instruction {
-    type Const = Constant;
+pub(crate) fn constant(operation: &Operation) -> Option<Constant> {
+    let Operation::Constant(constant) = operation else {
+        return None;
+    };
+    Some(constant.clone())
+}
 
-    fn fold_constant(
-        &self,
-        known: &BTreeMap<Self::Variable, Self::Const>,
-    ) -> Option<(Self::Variable, Self::Const)> {
-        let destination = *self.defs().first()?;
-        let value = match self.operation() {
-            Operation::Constant(value) => value.clone(),
-            Operation::Copy => known.get(self.uses().first()?)?.clone(),
-            Operation::Unary(operator) => fold_unary(*operator, known.get(self.uses().first()?)?)?,
-            Operation::Binary(operator) => fold_binary(
-                *operator,
-                known.get(self.uses().first()?)?,
-                known.get(self.uses().get(1)?)?,
-            )?,
-            Operation::Convert(conversion) => {
-                fold_conversion(*conversion, known.get(self.uses().first()?)?)?
-            }
-            Operation::Compare(comparison) => fold_comparison(
-                *comparison,
-                known.get(self.uses().first()?)?,
-                known.get(self.uses().get(1)?)?,
-            )?,
-            _ => return None,
-        };
-        Some((destination, value))
-    }
+pub(crate) fn fold_constant(
+    instruction: &Instruction,
+    known: &BTreeMap<VariableId, Constant>,
+) -> Option<(VariableId, Constant)> {
+    let destination = *instruction.defs().first()?;
+    let value = match instruction.operation() {
+        Operation::Constant(value) => value.clone(),
+        Operation::Copy => known.get(instruction.uses().first()?)?.clone(),
+        Operation::Unary(operator) => {
+            fold_unary(*operator, known.get(instruction.uses().first()?)?)?
+        }
+        Operation::Binary(operator) => fold_binary(
+            *operator,
+            known.get(instruction.uses().first()?)?,
+            known.get(instruction.uses().get(1)?)?,
+        )?,
+        Operation::Convert(conversion) => {
+            fold_conversion(*conversion, known.get(instruction.uses().first()?)?)?
+        }
+        Operation::Compare(comparison) => fold_comparison(
+            *comparison,
+            known.get(instruction.uses().first()?)?,
+            known.get(instruction.uses().get(1)?)?,
+        )?,
+        _ => return None,
+    };
+    Some((destination, value))
+}
+
+pub(crate) fn callee(operation: &Operation) -> Option<String> {
+    let Operation::Call { target, .. } = operation else {
+        return None;
+    };
+    Some(
+        target
+            .display
+            .clone()
+            .unwrap_or_else(|| format!("{:?}#{}", target.kind, target.index)),
+    )
 }
 
 fn fold_unary(operator: UnaryOperator, value: &Constant) -> Option<Constant> {

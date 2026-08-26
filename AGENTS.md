@@ -18,13 +18,17 @@ These rules apply to the entire repository.
   editable `Program`/`Module`/definition model, identities, indexed lookup, and
   resolution, plus the format-neutral `ModuleEmitter` contract. It may depend
   on the disassembler, but never on Cafe or a native frontend.
-- Keep `crates/mlil` neutral across Java ecosystem formats. It owns the typed
-  semantic value and operation model, verified cfglib-backed functions, exact
-  semantic edge payloads, format-qualified native provenance, dominance, SSA,
-  data-flow, expression, dead-code, and structured-control entry points. It may
-  depend on the disassembler, but never on Cafe or a
-  native frontend. It must not own native instruction decoding, LLIL encoding,
-  whole-artifact DEX-to-JVM policy, or source-decompiler presentation.
+- Keep `crates/mlil` neutral across Java ecosystem formats. Cfglib owns the
+  generic MLIL function, instruction, identity, provenance, checked-builder,
+  verification scaffold, and reusable analysis integration; this crate owns
+  Cafe's Java-managed dialect: typed semantic values and operations, exact edge
+  payloads, format-qualified native coordinates, analysis hooks, semantic
+  verification, and compatibility aliases over `cfglib::mlil`. It may depend
+  on cfglib and the disassembler, but never on Cafe or a native frontend. It
+  must not move JVM descriptors, Dalvik zero values, native table references,
+  catch types, or source formats into cfglib, nor own native instruction
+  decoding, LLIL encoding, whole-artifact DEX-to-JVM policy, or decompiler
+  presentation.
 - Keep `crates/classpath` as the cross-format Java type-world aggregator. It
   normalizes JVM internal names and DEX object descriptors, merges equivalent
   declarations, diagnoses conflicting declarations, and supplies explicit JVM
@@ -101,9 +105,11 @@ These rules apply to the entire repository.
   belongs there only when it genuinely coordinates multiple focused crates.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
-- In MLIL, keep variables and types, operations, instructions, edges,
-  provenance, functions, checked construction, and verification independent.
-  Keep the crate's root a narrow re-export facade.
+- In MLIL, keep the Java-managed dialect, descriptors and verification,
+  analysis hooks, operations, types, effects, and edges independent. Reuse
+  cfglib's generic storage rather than shadowing its function, instruction,
+  identity, variable, provenance, error, or builder types. Keep the crate's
+  root a narrow compatibility and re-export facade.
 - In Classpath, keep canonical declaration models, hierarchy queries, native
   views, ingestion, and errors independent.
 - In Decompiler, keep class declarations, method control recovery, instruction

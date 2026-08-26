@@ -48,7 +48,10 @@ impl EdgeRole {
             Self::BranchTrue => EdgeKind::ConditionalTrue,
             Self::BranchFalse => EdgeKind::ConditionalFalse,
             Self::Jump => EdgeKind::Jump,
-            Self::SwitchDefault | Self::SwitchCase(_) => EdgeKind::SwitchCase,
+            Self::SwitchCase(_) => EdgeKind::SwitchCase,
+            // The default arm is the dispatch's sequential fallback, which
+            // is how cfglib's structuring recognizes an explicit default.
+            Self::SwitchDefault => EdgeKind::Unconditional,
             Self::Exception { .. } => EdgeKind::ExceptionUnwind,
         }
     }

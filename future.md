@@ -142,14 +142,20 @@ Tests cover every supported native opcode, exact wide and payload encodings,
 encoding-alias normalization, stale-pair rejection, and whole-body metadata
 round trips.
 
-There is no direct JVM-LLIL-to-Dalvik-LLIL conversion. Both lift into the
-generic semantic `mlil` crate, where stack and register representations converge
-in one explicit, analyzable value model without leaking one ISA's mechanics into
-the other frontend.
+There is no direct JVM-LLIL-to-Dalvik-LLIL conversion. Both lift into Cafe's
+Java-managed dialect over generic `cfglib::mlil` storage, where stack and
+register representations converge in one explicit, analyzable value model
+without leaking one ISA's mechanics into the other frontend or Java-specific
+semantics into cfglib.
 
 ## Completed shared MLIL boundary
 
-The `mlil` crate now provides:
+Cfglib now provides generic MLIL functions, instructions, stable identities,
+typed variable occurrences, checked construction, many-to-many source
+provenance, structural verification, and reusable analysis integration through
+consumer-defined dialect contracts. Cafe's `mlil` crate now provides the
+Java-managed dialect and preserves the concrete public API. Together they
+provide:
 
 - typed mutable variables for parameters, locals, temporaries, conditions, and
   delivered exceptions, with format-qualified JVM local/stack and DEX
@@ -162,9 +168,9 @@ The `mlil` crate now provides:
   encoding order;
 - one canonical JVM-compatible descriptor spelling for exact object and array
   value types, plus an explicit Dalvik zero/null lattice value;
-- cfglib-backed control flow with a synthetic root, stable typed edge payloads,
-  exact native switch keys, ordered catches, protected ranges, and throw-site
-  instruction identities;
+- cfglib-owned control flow and MLIL storage with a synthetic root, stable
+  typed edge payloads, exact native switch keys, ordered catches, protected
+  ranges, and throw-site instruction identities;
 - exception-precise normal-flow commit blocks, so definitions produced by a
   protected throwing instruction are invisible along its exceptional edges;
 - synthetic handler landings that materialize delivered exceptions without
@@ -267,9 +273,11 @@ MLIL.
 
 ## Completed generic analysis and Java source decompilation
 
-The neutral `mlil` API exposes reusable definition/use chains, liveness,
+The generic `cfglib::mlil` API exposes reusable definition/use chains, liveness,
 forward and sparse constants, expression trees, copy propagation, effect-aware
-dead-code reporting and elimination, and structured-control recovery. cfglib's
+dead-code reporting and elimination, and structured-control recovery. Cafe's
+MLIL dialect supplies Java-managed folding, effects, call targets, edge meaning,
+and semantic verification. Cfglib's
 solvers and AST lifter accept caller-owned edge payloads directly, and natural
 loops are detected by dominance even when a frontend correctly retains the
 native edge as an ordinary jump. Memory reads, writes, allocation, calls,

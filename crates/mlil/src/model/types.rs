@@ -2,36 +2,6 @@
 
 use disassembler::{BinaryFormat, CodeAddress};
 
-/// Stable identity of one mutable MLIL variable before SSA renaming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct VariableId(u32);
-
-impl VariableId {
-    /// Creates an identity from its dense raw index.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    /// Returns the compact raw identity.
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-impl std::fmt::Display for VariableId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "v{}", self.0)
-    }
-}
-
 /// Native allocation identity retained for uninitialized references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AllocationSite {
@@ -154,35 +124,4 @@ pub struct NativeVariable {
     pub format: BinaryFormat,
     /// Native storage location.
     pub storage: SourceStorage,
-}
-
-/// One declared MLIL variable before SSA renaming.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Variable {
-    /// Stable dense identity.
-    pub id: VariableId,
-    /// Semantic role used by analyses and presentation.
-    pub role: VariableRole,
-    /// Optional native storage provenance.
-    pub native: Option<NativeVariable>,
-}
-
-/// One variable occurrence paired with its type at that program point.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TypedVariable {
-    /// Mutable variable identity.
-    pub variable: VariableId,
-    /// Value type required or produced at this occurrence.
-    pub value_type: ValueType,
-}
-
-impl TypedVariable {
-    /// Creates a typed variable occurrence.
-    #[must_use]
-    pub const fn new(variable: VariableId, value_type: ValueType) -> Self {
-        Self {
-            variable,
-            value_type,
-        }
-    }
 }

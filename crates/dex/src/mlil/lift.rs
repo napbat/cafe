@@ -361,6 +361,7 @@ fn add_exception_edges(
     let mut handler_order = 0u32;
     for (try_index, try_block) in body.tries.iter().enumerate() {
         let protected = protected_range(try_block)?;
+        let mut region_handlers = Vec::with_capacity(try_block.handlers.len());
         for (handler_index, handler) in try_block.handlers.iter().enumerate() {
             let catch = catch_type(file, *handler)?;
             let landing = builder.new_block(format!(
@@ -415,11 +416,55 @@ fn add_exception_edges(
                     )?;
                 }
             }
+            region_handlers.push({
+                use ::mlil::cfglib::{Handler, HandlerBody, HandlerKind};
+                Handler {
+                    entry: landing,
+                    body: HandlerBody::Unknown,
+                    kind: match catch {
+                        CatchType::Any => HandlerKind::CatchAll,
+                        CatchType::Type(_) => HandlerKind::Catch,
+                    },
+                }
+            });
             handler_order = handler_order
                 .checked_add(1)
                 .ok_or_else(|| Error::unsupported(handler.address, "handler order exceeds u32"))?;
         }
+        add_exception_region(builder, try_block, blocks, region_handlers)?;
     }
+    Ok(())
+}
+
+/// Registers one exception region per try block, handlers in dispatch
+/// order. Handler-body extents stay unknown in the canonical function;
+/// presentation derives them on its own graph when it needs structure.
+fn add_exception_region(
+    builder: &mut FunctionBuilder,
+    try_block: &TryBlock,
+    blocks: &NativeBlocks,
+    handlers: Vec<::mlil::cfglib::Handler>,
+) -> Result<()> {
+    use ::mlil::cfglib::{Region, RegionId};
+
+    let mut protected = std::collections::BTreeSet::new();
+    for (&offset, &block) in &blocks.blocks {
+        if protects(try_block, offset) {
+            protected.insert(block);
+            // The commit continuation of a protected instruction belongs
+            // to the same protected extent.
+            protected.insert(blocks.normal_sources[&offset]);
+        }
+    }
+    if protected.is_empty() {
+        return Ok(());
+    }
+    builder.add_region(Region {
+        id: RegionId::from_raw(0),
+        protected_blocks: protected,
+        handlers,
+        parent: None,
+    })?;
     Ok(())
 }
 

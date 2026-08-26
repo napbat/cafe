@@ -639,7 +639,23 @@ fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::
     );
     assert!(output.source.contains(" + "), "{}", output.source);
     assert!(output.source.contains("if ("), "{}", output.source);
-    assert!(output.source.contains("while (true)"), "{}", output.source);
+    // The counting loop recovers as a genuine `for` with its real
+    // relational condition and compound update, and the lookup switch
+    // renders structurally with its case keys and default arm.
+    assert!(output.source.contains("for ("), "{}", output.source);
+    assert!(output.source.contains(" < "), "{}", output.source);
+    assert!(output.source.contains("++"), "{}", output.source);
+    assert!(
+        !output
+            .source
+            .contains("while (java.lang.Boolean.TRUE.booleanValue())"),
+        "{}",
+        output.source
+    );
+    assert!(output.source.contains("switch ("), "{}", output.source);
+    assert!(output.source.contains("case 1: {"), "{}", output.source);
+    assert!(output.source.contains("case 5: {"), "{}", output.source);
+    assert!(output.source.contains("default: {"), "{}", output.source);
     assert!(output.source.contains("new int["), "{}", output.source);
     assert!(output.source.contains("super();"), "{}", output.source);
     assert!(output.source.contains("seed ="), "{}", output.source);
@@ -653,7 +669,28 @@ fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::
         "{}",
         output.source
     );
-    assert!(output.source.contains("cafe_dispatch"), "{}", output.source);
+    // Exception dispatch is structured: one catch-all per region with
+    // ordered `instanceof` dispatch, no state machine left in the fixture.
+    assert!(output.source.contains("try {"), "{}", output.source);
+    assert!(
+        output
+            .source
+            .contains("} catch (java.lang.Throwable cafe_caught_"),
+        "{}",
+        output.source
+    );
+    assert!(
+        output
+            .source
+            .contains("instanceof java.lang.NullPointerException"),
+        "{}",
+        output.source
+    );
+    assert!(
+        !output.source.contains("cafe_dispatch"),
+        "{}",
+        output.source
+    );
     assert_eq!(output.source.matches(" covariant()").count(), 1);
     assert!(output.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == decompiler::DiagnosticCode::DeclarationApproximation

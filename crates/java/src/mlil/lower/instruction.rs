@@ -288,6 +288,12 @@ pub(super) fn emit_instruction<R: JavaReferenceResolver, I: JavaMlilIntrinsicLow
                 allocation.slot(definition),
             );
         }
+        Operation::Select => {
+            return Err(Error::lowering(
+                instruction.id(),
+                "select is HLIL-only vocabulary; verified MLIL never contains it",
+            ));
+        }
         Operation::Intrinsic(name) => {
             load_uses(builder, instruction, allocation, function)?;
             let expansion = intrinsics

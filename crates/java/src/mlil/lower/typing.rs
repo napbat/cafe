@@ -67,6 +67,7 @@ pub(super) fn zero_use_is_reference(
         | Operation::Constant(_)
         | Operation::CaughtException(_)
         | Operation::Intrinsic(_)
+        | Operation::Select
         | Operation::Jump => false,
     };
     Ok(reference)

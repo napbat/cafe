@@ -2,7 +2,9 @@
 
 mod constructor;
 mod control;
+mod hlil;
 mod instruction;
+mod regions;
 mod variables;
 
 use java::descriptor::parse_method;
@@ -73,6 +75,9 @@ pub fn decompile_function(function: &Function, options: &DecompilerOptions) -> D
         options,
         rethrow: "cafe_rethrow",
         names: &names,
+        // Standalone rendering has no class context: every call keeps
+        // the conservative launder.
+        unchecked_calls: &std::collections::BTreeSet::new(),
     };
     let rendered = render(&request);
     DecompiledBody {

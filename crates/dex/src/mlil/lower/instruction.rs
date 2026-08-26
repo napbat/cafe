@@ -400,6 +400,12 @@ pub(super) fn emit_instruction<R: DexMlilReferenceResolver, I: DexMlilIntrinsicL
             plain(planner, Opcode::MoveException, Operands::Register(0))?;
             store_single(planner, instruction, allocation, 0)?;
         }
+        Operation::Select => {
+            return Err(Error::lowering(
+                instruction.id(),
+                "select is HLIL-only vocabulary; verified MLIL never contains it",
+            ));
+        }
         Operation::Intrinsic(name) => {
             let use_registers = instruction
                 .uses()

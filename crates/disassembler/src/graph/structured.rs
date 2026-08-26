@@ -198,13 +198,19 @@ mod tests {
                 else_body,
                 ..
             } => then_body.iter().chain(else_body).any(contains_try),
-            AstNode::Switch { cases, .. } => {
-                cases.iter().flat_map(|case| &case.body).any(contains_try)
-            }
+            AstNode::Switch {
+                cases,
+                default_body,
+                ..
+            } => cases
+                .iter()
+                .flat_map(|case| &case.body)
+                .chain(default_body)
+                .any(contains_try),
             AstNode::Block { .. }
             | AstNode::Return { .. }
-            | AstNode::Break
-            | AstNode::Continue
+            | AstNode::Break { .. }
+            | AstNode::Continue { .. }
             | AstNode::Goto { .. } => false,
         }
     }
