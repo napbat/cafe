@@ -129,12 +129,17 @@ impl HlilRenderer<'_> {
                     });
                 }
                 let text = constant_expression(constant, self.names)?;
+                let boolean = match constant {
+                    Constant::Integer(0) => Some("false".to_owned()),
+                    Constant::Integer(1) => Some("true".to_owned()),
+                    _ => None,
+                };
                 Ok(Rendered {
                     atomic: !text.starts_with('-'),
                     text,
                     object: None,
                     int: None,
-                    boolean: None,
+                    boolean,
                     pure: true,
                     calls: false,
                     exact: self.exact_reference(&value_type),
@@ -791,10 +796,26 @@ impl HlilRenderer<'_> {
             JavaType::Short => format!("(short) {}", operand.nested_int()),
             JavaType::Int => operand.int().to_owned(),
             JavaType::Long | JavaType::Float | JavaType::Double => operand.text.clone(),
-            JavaType::Object(_) | JavaType::Array(_) => {
-                Self::cast_value(operand, &self.names.value_type(target))
-            }
+            JavaType::Object(_) | JavaType::Array(_) => self.reference_value(operand, target),
         }
+    }
+
+    /// A reference value in a descriptor-declared Java context. Exact
+    /// classpath assignability makes a source cast unnecessary; unresolved
+    /// relationships retain the conservative double-cast fallback.
+    fn reference_value(&self, operand: &Rendered, target: &JavaType) -> String {
+        let target_name = self.names.value_type(target);
+        if operand.exact.is_some()
+            && let Some(hierarchy) = self.hierarchy
+            && let (Some(source), Some(target)) = (
+                value_reference_key(&operand.value_type),
+                java_reference_key(target),
+            )
+            && hierarchy.is_assignable(source, &target)
+        {
+            return operand.object().to_owned();
+        }
+        Self::cast_value(operand, &target_name)
     }
 
     /// One operand coerced to an assignment target's slot view and
@@ -896,5 +917,51 @@ impl HlilRenderer<'_> {
             (None, true) => format!("{} == 0", rendered.int()),
         };
         Ok((text, rendered.calls))
+    }
+}
+
+/// JVM hierarchy key for an exact MLIL reference occurrence: internal names
+/// for objects and descriptors for arrays.
+fn value_reference_key(value_type: &ValueType) -> Option<&str> {
+    let descriptor = match value_type {
+        ValueType::Reference(Some(descriptor)) | ValueType::UninitializedThis(descriptor) => {
+            descriptor
+        }
+        ValueType::Uninitialized { descriptor, .. } => descriptor,
+        _ => return None,
+    };
+    descriptor_reference_key(descriptor)
+}
+
+fn descriptor_reference_key(descriptor: &str) -> Option<&str> {
+    if descriptor.starts_with('[') {
+        Some(descriptor)
+    } else {
+        descriptor
+            .strip_prefix('L')
+            .and_then(|name| name.strip_suffix(';'))
+    }
+}
+
+fn java_reference_key(value: &JavaType) -> Option<String> {
+    match value {
+        JavaType::Object(name) => Some(name.clone()),
+        JavaType::Array(_) => Some(java_type_descriptor(value)),
+        _ => None,
+    }
+}
+
+fn java_type_descriptor(value: &JavaType) -> String {
+    match value {
+        JavaType::Byte => "B".to_owned(),
+        JavaType::Char => "C".to_owned(),
+        JavaType::Double => "D".to_owned(),
+        JavaType::Float => "F".to_owned(),
+        JavaType::Int => "I".to_owned(),
+        JavaType::Long => "J".to_owned(),
+        JavaType::Short => "S".to_owned(),
+        JavaType::Boolean => "Z".to_owned(),
+        JavaType::Object(name) => format!("L{name};"),
+        JavaType::Array(element) => format!("[{}", java_type_descriptor(element)),
     }
 }

@@ -63,26 +63,40 @@ struct NestedName {
 
 impl SourceNames {
     pub(crate) fn from_class(class: &ClassFile) -> Result<Self> {
-        let Some(KnownAttribute::InnerClasses(attribute)) =
-            class.known_attribute(KnownAttributeKind::InnerClasses)
-        else {
-            return Ok(Self::default());
-        };
+        let mut names = Self::from_classes(core::iter::once(class))?;
+        // A lone member class is emitted as a legal top-level declaration
+        // whose binary `$` name is retained. Its own references must use the
+        // same name. Archive compilation-unit recovery supplies the enclosing
+        // class and deliberately retains this mapping instead.
+        names.nested.remove(class.class_name()?);
+        Ok(names)
+    }
+
+    pub(crate) fn from_classes<'a>(
+        classes: impl IntoIterator<Item = &'a ClassFile>,
+    ) -> Result<Self> {
         let mut nested = BTreeMap::new();
-        for entry in &attribute.classes {
-            if entry.outer_class_info_index == 0 || entry.inner_name_index == 0 {
+        for class in classes {
+            let Some(KnownAttribute::InnerClasses(attribute)) =
+                class.known_attribute(KnownAttributeKind::InnerClasses)
+            else {
                 continue;
+            };
+            for entry in &attribute.classes {
+                if entry.outer_class_info_index == 0 || entry.inner_name_index == 0 {
+                    continue;
+                }
+                let inner = class
+                    .constant_pool
+                    .class_name(entry.inner_class_info_index)?
+                    .to_owned();
+                let outer = class
+                    .constant_pool
+                    .class_name(entry.outer_class_info_index)?
+                    .to_owned();
+                let simple = identifier(class.constant_pool.utf8(entry.inner_name_index)?).0;
+                nested.insert(inner, NestedName { outer, simple });
             }
-            let inner = class
-                .constant_pool
-                .class_name(entry.inner_class_info_index)?
-                .to_owned();
-            let outer = class
-                .constant_pool
-                .class_name(entry.outer_class_info_index)?
-                .to_owned();
-            let simple = identifier(class.constant_pool.utf8(entry.inner_name_index)?).0;
-            nested.insert(inner, NestedName { outer, simple });
         }
         Ok(Self { nested })
     }

@@ -7,17 +7,21 @@ use disassembler::ExactText;
 use java::analysis::ReferenceHierarchy;
 use java::classfile::{
     CLASS_INITIALIZER_NAME, ClassAccessFlags, ClassFile, Constant, ConstantPool, FieldAccessFlags,
-    KnownAttribute, KnownAttributeKind, MODULE_INFO_CLASS_NAME, MethodAccessFlags, MethodInfo,
-    MethodParametersAttribute,
+    InnerClassAccessFlags, KnownAttribute, KnownAttributeKind, MODULE_INFO_CLASS_NAME,
+    MethodAccessFlags, MethodInfo, MethodParametersAttribute,
 };
-use java::descriptor::{JavaType, MethodDescriptor, parse_field, parse_method};
+use java::descriptor::{MethodDescriptor, parse_field, parse_method};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, MethodIdentity};
+use crate::environment::MethodExceptionCatalog;
 use crate::method::{BodyKind, BodyRequest, render};
 use crate::model::{DecompiledClass, GeneratedSpan, SourceMapEntry};
 use crate::names::{SourceNames, identifier, package_and_simple, string_literal};
 use crate::options::DecompilerOptions;
-use crate::writer::SourceWriter;
+use crate::signature::{
+    ClassSignature as GenericClassSignature, MethodSignature as GenericMethodSignature,
+};
+use crate::writer::{IndentedOffsetMap, SourceWriter};
 use crate::{Error, Result};
 
 /// Decompiles one parsed JVM class file with default recovery policies.
@@ -49,7 +53,8 @@ pub fn decompile_class_with_options(
     class: &ClassFile,
     options: &DecompilerOptions,
 ) -> Result<DecompiledClass> {
-    render_class(class, options, |method| {
+    let names = SourceNames::from_class(class)?;
+    render_class(class, options, &names, None, None, None, |method| {
         java::mlil::lift_method(class, method)
     })
 }
@@ -65,15 +70,62 @@ pub fn decompile_class_with_hierarchy(
     hierarchy: &dyn ReferenceHierarchy,
     options: &DecompilerOptions,
 ) -> Result<DecompiledClass> {
-    render_class(class, options, |method| {
-        java::mlil::lift_method_with_hierarchy(class, method, hierarchy)
-    })
+    let names = SourceNames::from_class(class)?;
+    render_class(
+        class,
+        options,
+        &names,
+        None,
+        Some(hierarchy),
+        None,
+        |method| java::mlil::lift_method_with_hierarchy(class, method, hierarchy),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MemberDeclaration<'a> {
+    pub(crate) simple_name: &'a str,
+    pub(crate) access_flags: InnerClassAccessFlags,
+}
+
+pub(crate) fn decompile_class_in_unit(
+    class: &ClassFile,
+    hierarchy: Option<&dyn ReferenceHierarchy>,
+    method_exceptions: &MethodExceptionCatalog,
+    options: &DecompilerOptions,
+    names: &SourceNames,
+    member: Option<MemberDeclaration<'_>>,
+) -> Result<DecompiledClass> {
+    match hierarchy {
+        Some(hierarchy) => render_class(
+            class,
+            options,
+            names,
+            member,
+            Some(hierarchy),
+            Some(method_exceptions),
+            |method| java::mlil::lift_method_with_hierarchy(class, method, hierarchy),
+        ),
+        None => render_class(
+            class,
+            options,
+            names,
+            member,
+            None,
+            Some(method_exceptions),
+            |method| java::mlil::lift_method(class, method),
+        ),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
 fn render_class(
     class: &ClassFile,
     options: &DecompilerOptions,
+    names: &SourceNames,
+    member: Option<MemberDeclaration<'_>>,
+    hierarchy: Option<&dyn ReferenceHierarchy>,
+    method_exceptions: Option<&MethodExceptionCatalog>,
     mut lift: impl FnMut(&MethodInfo) -> java::mlil::Result<Option<mlil::Function>>,
 ) -> Result<DecompiledClass> {
     class.validate()?;
@@ -85,9 +137,11 @@ fn render_class(
             "module-info requires module-declaration source recovery".to_owned(),
         ));
     }
-    let (package, raw_simple_name) = package_and_simple(&internal_name);
+    let (package, raw_simple_name) = member.map_or_else(
+        || package_and_simple(&internal_name),
+        |member| (None, member.simple_name.to_owned()),
+    );
     let (simple_name, escaped_class_name) = identifier(&raw_simple_name);
-    let names = SourceNames::from_class(class)?;
     let mut diagnostics = Vec::new();
     if escaped_class_name {
         diagnostics.push(Diagnostic::class_warning(
@@ -97,6 +151,8 @@ fn render_class(
         ));
     }
     let declaration_kind = declaration_kind(class, &internal_name, &mut diagnostics);
+    let generic_class =
+        crate::signature::class_attribute(class, &internal_name, &mut diagnostics, names)?;
     let helper = helper_name(class)?;
     let mut writer = SourceWriter::default();
     if let Some(package) = package {
@@ -107,7 +163,9 @@ fn render_class(
         class,
         declaration_kind,
         &simple_name,
-        &names,
+        names,
+        member.map(|member| member.access_flags),
+        generic_class.as_ref(),
     )?);
     writer.indent();
 
@@ -127,7 +185,7 @@ fn render_class(
             declaration_kind == DeclarationKind::Interface,
             &internal_name,
             &mut diagnostics,
-            &names,
+            names,
         )?);
         wrote_member = true;
     }
@@ -170,12 +228,10 @@ fn render_class(
                 .enumerate()
                 .any(|(other_index, other)| {
                     other_index != method_index
+                        && !other.access_flags.contains(MethodAccessFlags::BRIDGE)
                         && other
                             .name(&class.constant_pool)
                             .is_ok_and(|other_name| other_name == name)
-                        && other.descriptor(&class.constant_pool).is_ok_and(|other| {
-                            parameter_descriptor(other) == parameter_descriptor(&descriptor_text)
-                        })
                 })
         {
             diagnostics.push(Diagnostic::method_warning(
@@ -203,6 +259,15 @@ fn render_class(
             &identity,
             &mut diagnostics,
         )?;
+        let generic_method = crate::signature::method_attribute(
+            class,
+            method,
+            &descriptor,
+            &internal_name,
+            &identity,
+            &mut diagnostics,
+            names,
+        )?;
         if wrote_member {
             writer.blank();
         }
@@ -219,7 +284,8 @@ fn render_class(
                 declaration_kind,
                 &internal_name,
                 &mut diagnostics,
-                &names,
+                names,
+                generic_method.as_ref(),
             )?);
         }
         let has_body = method.code().is_some()
@@ -253,8 +319,10 @@ fn render_class(
                     ),
                     options,
                     rethrow: &helper,
-                    names: &names,
+                    names,
                     unchecked_calls: &unchecked_calls,
+                    hierarchy,
+                    method_exceptions,
                 };
                 let rendered = render(&request);
                 helper_used |= rendered.source.contains(&helper);
@@ -330,12 +398,6 @@ fn render_class(
     })
 }
 
-fn parameter_descriptor(descriptor: &str) -> &str {
-    descriptor
-        .split_once(')')
-        .map_or(descriptor, |(parameters, _)| parameters)
-}
-
 fn emit_throwing_stub(writer: &mut SourceWriter, message: &str, class_initializer: bool) {
     let throwing = format!(
         "throw new java.lang.UnsupportedOperationException({});",
@@ -396,49 +458,80 @@ fn class_header(
     kind: DeclarationKind,
     simple_name: &str,
     names: &SourceNames,
+    member_flags: Option<InnerClassAccessFlags>,
+    generic: Option<&GenericClassSignature>,
 ) -> Result<String> {
     let mut parts = Vec::new();
-    if class.access_flags.contains(ClassAccessFlags::PUBLIC) {
-        parts.push("public".to_owned());
-    }
-    if kind == DeclarationKind::Class && class.access_flags.contains(ClassAccessFlags::ABSTRACT) {
-        parts.push("abstract".to_owned());
-    }
-    if kind == DeclarationKind::Class && class.access_flags.contains(ClassAccessFlags::FINAL) {
-        parts.push("final".to_owned());
+    if let Some(flags) = member_flags {
+        for (flag, name) in [
+            (InnerClassAccessFlags::PUBLIC, "public"),
+            (InnerClassAccessFlags::PRIVATE, "private"),
+            (InnerClassAccessFlags::PROTECTED, "protected"),
+            (InnerClassAccessFlags::STATIC, "static"),
+        ] {
+            if flags.contains(flag) {
+                parts.push(name.to_owned());
+            }
+        }
+        if kind == DeclarationKind::Class && flags.contains(InnerClassAccessFlags::ABSTRACT) {
+            parts.push("abstract".to_owned());
+        }
+        if kind == DeclarationKind::Class && flags.contains(InnerClassAccessFlags::FINAL) {
+            parts.push("final".to_owned());
+        }
+    } else {
+        if class.access_flags.contains(ClassAccessFlags::PUBLIC) {
+            parts.push("public".to_owned());
+        }
+        if kind == DeclarationKind::Class && class.access_flags.contains(ClassAccessFlags::ABSTRACT)
+        {
+            parts.push("abstract".to_owned());
+        }
+        if kind == DeclarationKind::Class && class.access_flags.contains(ClassAccessFlags::FINAL) {
+            parts.push("final".to_owned());
+        }
     }
     parts.push(match kind {
         DeclarationKind::Class => "class".to_owned(),
         DeclarationKind::Interface => "interface".to_owned(),
     });
-    parts.push(simple_name.to_owned());
-    if kind == DeclarationKind::Class
-        && !class.access_flags.contains(ClassAccessFlags::ENUM)
-        && let Some(super_name) = class.super_name()?
-        && super_name != java::classfile::JAVA_LANG_OBJECT_NAME
-    {
-        parts.push("extends".to_owned());
-        parts.push(names.class_name(super_name));
+    parts.push(format!(
+        "{simple_name}{}",
+        generic.map_or("", |signature| signature.type_parameters.as_str())
+    ));
+    if kind == DeclarationKind::Class && !class.access_flags.contains(ClassAccessFlags::ENUM) {
+        let superclass = match generic {
+            Some(signature) => Some(signature.superclass.clone()),
+            None => class.super_name()?.map(|name| names.class_name(name)),
+        };
+        if let Some(superclass) = superclass
+            && superclass != "java.lang.Object"
+        {
+            parts.push("extends".to_owned());
+            parts.push(superclass);
+        }
     }
-    if !class.interfaces.is_empty() {
+    let interfaces = if let Some(signature) = generic {
+        signature.interfaces.clone()
+    } else {
+        class
+            .interfaces
+            .iter()
+            .map(|&index| {
+                class
+                    .constant_pool
+                    .class_name(index)
+                    .map(|name| names.class_name(name))
+            })
+            .collect::<java::Result<Vec<_>>>()?
+    };
+    if !interfaces.is_empty() {
         parts.push(if kind == DeclarationKind::Interface {
             "extends".to_owned()
         } else {
             "implements".to_owned()
         });
-        parts.push(
-            class
-                .interfaces
-                .iter()
-                .map(|&index| {
-                    class
-                        .constant_pool
-                        .class_name(index)
-                        .map(|name| names.class_name(name))
-                })
-                .collect::<java::Result<Vec<_>>>()?
-                .join(", "),
-        );
+        parts.push(interfaces.join(", "));
     }
     Ok(format!("{} {{", parts.join(" ")))
 }
@@ -462,6 +555,8 @@ fn field_source(
     }
     let descriptor = field.descriptor(&class.constant_pool)?;
     let field_type = parse_field(descriptor)?;
+    let generic_type =
+        crate::signature::field_attribute(class, field, class_name, raw_name, diagnostics, names)?;
     let constant_initializer = constant_value(&class.constant_pool, field, descriptor)?;
     let mut modifiers = field_modifiers(field.access_flags);
     if interface {
@@ -490,7 +585,7 @@ fn field_source(
         } else {
             format!("{} ", modifiers.join(" "))
         },
-        names.value_type(&field_type),
+        generic_type.unwrap_or_else(|| names.value_type(&field_type)),
         initializer.map_or_else(String::new, |value| format!(" = {value}"))
     ))
 }
@@ -507,6 +602,7 @@ fn method_header(
     class_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
     names: &SourceNames,
+    generic: Option<&GenericMethodSignature>,
 ) -> Result<String> {
     let constructor = raw_name == java::classfile::INSTANCE_INITIALIZER_NAME;
     let (name, changed) = if constructor {
@@ -537,24 +633,39 @@ fn method_header(
         .zip(parameter_names)
         .enumerate()
         .map(|(index, (value_type, name))| {
+            let rendered_type = generic
+                .and_then(|signature| signature.parameters.get(index))
+                .cloned()
+                .unwrap_or_else(|| names.value_type(value_type));
             if method.access_flags.contains(MethodAccessFlags::VARARGS)
                 && index + 1 == descriptor.parameters.len()
-                && let JavaType::Array(element) = value_type
+                && let Some(element) = rendered_type.strip_suffix("[]")
             {
-                return format!("{}... {name}", names.value_type(element));
+                return format!("{element}... {name}");
             }
-            format!("{} {name}", names.value_type(value_type))
+            format!("{rendered_type} {name}")
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let throws = throws_clause(class, method, names)?;
-    let declaration = if constructor {
-        format!("{name}({parameters}){throws}")
+    let throws = if let Some(signature) = generic.filter(|signature| !signature.throws.is_empty()) {
+        format!(" throws {}", signature.throws.join(", "))
     } else {
-        format!(
-            "{} {name}({parameters}){throws}",
-            names.return_type(&descriptor.return_type)
-        )
+        throws_clause(class, method, names)?
+    };
+    let type_parameters = generic.map_or("", |signature| signature.type_parameters.as_str());
+    let generic_prefix = if type_parameters.is_empty() {
+        String::new()
+    } else {
+        format!("{type_parameters} ")
+    };
+    let declaration = if constructor {
+        format!("{generic_prefix}{name}({parameters}){throws}")
+    } else {
+        let return_type = generic.map_or_else(
+            || names.return_type(&descriptor.return_type),
+            |signature| signature.return_type.clone(),
+        );
+        format!("{generic_prefix}{return_type} {name}({parameters}){throws}")
     };
     let prefix = if modifiers.is_empty() {
         String::new()
@@ -746,26 +857,12 @@ fn translate_source_map(
     base: usize,
     indent: usize,
 ) {
-    let indent_bytes = indent * 4;
+    let offsets = IndentedOffsetMap::new(body, base, indent);
     for mut entry in entries {
         entry.generated = GeneratedSpan {
-            start: translate_offset(body, entry.generated.start, base, indent_bytes),
-            end: translate_offset(body, entry.generated.end, base, indent_bytes),
+            start: offsets.translate(entry.generated.start),
+            end: offsets.translate(entry.generated.end),
         };
         output.push(entry);
     }
-}
-
-#[allow(clippy::naive_bytecount)]
-fn translate_offset(body: &str, offset: usize, base: usize, indent_bytes: usize) -> usize {
-    if body.is_empty() {
-        return base;
-    }
-    let total_lines = body.lines().count();
-    let prefixes = (1 + body.as_bytes()[..offset.min(body.len())]
-        .iter()
-        .filter(|&&byte| byte == b'\n')
-        .count())
-    .min(total_lines);
-    base + offset + prefixes * indent_bytes
 }

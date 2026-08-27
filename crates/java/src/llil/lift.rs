@@ -19,6 +19,11 @@ use super::{
 /// control-flow targets.
 pub fn lift_instructions(native: &[NativeInstruction]) -> Result<Vec<Instruction>> {
     bytecode::encode(native)?;
+    lift_decoded_instructions(native)
+}
+
+/// Classifies a stream already checked by the native decoder.
+pub(crate) fn lift_decoded_instructions(native: &[NativeInstruction]) -> Result<Vec<Instruction>> {
     native.iter().map(Instruction::from_native).collect()
 }
 

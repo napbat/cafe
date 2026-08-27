@@ -5,10 +5,11 @@ dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
 control-flow graphs, a typed cross-ISA semantic IL, verified Java source
 recovery, an editable program model, and JNI linkage metadata through coherent
-namespaces. The JVM and Dalvik
-frontends retain reversible native LLILs, lift them into one shared MLIL for
-analysis, and canonically lower any target-representable verified MLIL into
-either JVM or Dalvik LLIL.
+namespaces. The JVM and Dalvik frontends retain reversible native LLILs, lift
+them into distinct stack- and register-oriented RTL dialects, and raise both
+through cfglib into one shared MLIL for analysis. Any target-representable
+verified MLIL can be lowered through the selected RTL into either JVM or
+Dalvik LLIL.
 
 The workspace contains ten library crates and one command-line application.
 `cafe` is the public umbrella; the other nine libraries are focused
@@ -23,20 +24,21 @@ implementation boundaries:
   cfglib-backed control-flow graphs, format-qualified source maps, and
   structured diagnostics.
 - `mlil` defines Cafe's typed Java-managed operation, value, effect, edge, and
-  native-provenance dialect over `cfglib::mlil`; cfglib owns generic verified
-  storage, identities, builders, dominance, SSA, data-flow, expression,
-  dead-code, and structured-control integration.
+  native-provenance dialect plus the shared semantic RTL adapter; cfglib owns
+  generic checked RTL/MLIL storage, distinct-dialect lifting and lowering,
+  identities, dominance, SSA, data flow, expressions, dead-code analysis, and
+  structured-control integration.
 - `decompiler` lifts JVM methods through verified MLIL and renders Java source,
   structured diagnostics, and generated-source-to-native provenance.
 - `java` owns JVM class-file parsing and assembly, symbolic JVM bytecode
-  construction, JVM-specific LLIL, bidirectional MLIL adaptation, frame and
-  stack-map analysis,
+  construction, JVM-specific LLIL and RTL, checked LLIL/RTL/MLIL adaptation,
+  frame and stack-map analysis,
   JAR/JMOD/JIMAGE utilities, corpus validation, javap-like presentation,
   lifting into Program, and verified canonical emission back to class files.
 - `dex` owns standard and CompactDex parsing and assembly, DEX 041 containers,
-  Dalvik instructions, LLIL, bidirectional MLIL adaptation, executable-body and
-  register analysis, APK/AAB handling, corpus validation, provenance, lifting into
-  Program, and verified canonical emission back to DEX.
+  Dalvik instructions, LLIL and RTL, checked LLIL/RTL/MLIL adaptation,
+  executable-body and register analysis, APK/AAB handling, corpus validation,
+  provenance, lifting into Program, and verified canonical emission back to DEX.
 - `art` owns VDEX/ODEX containers, stable OAT metadata, quickening restoration,
   and canonical DEX adapters without interpreting native code.
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
@@ -56,15 +58,15 @@ cafe = { git = "https://github.com/napbat/cafe" }
 ```text
 consumer
 └── cafe
-    ├── java             JVM .class, bytecode, LLIL, JAR, JMOD, and JIMAGE
-    ├── dex              DEX, CompactDex, Dalvik LLIL, APK, and AAB
+    ├── java             JVM .class, bytecode, LLIL/RTL, JAR, JMOD, and JIMAGE
+    ├── dex              DEX, CompactDex, Dalvik LLIL/RTL, APK, and AAB
     ├── art              VDEX, ODEX, OAT metadata, and dequickening
     ├── jni              native linkage metadata
     ├── classpath        unified JVM/DEX declaration hierarchy
     ├── mlil             Java-managed semantic dialect and compatibility API
     ├── decompiler       verified JVM class-file to Java source recovery
     ├── disassembler     shared instruction IR and CFGs
-    ├── cfglib           generic MLIL, graph algorithms, SSA, and data flow
+    ├── cfglib           generic RTL/MLIL, graph algorithms, SSA, and data flow
     └── program          owned definitions and resolution
 ```
 
@@ -157,17 +159,26 @@ maps and nested code attributes, and DEX register-frame declarations. Native to
 LLIL to native reconstruction is exact. Reverse conversion first rejects stale
 semantic/encoding pairs, then runs the existing native layout, operand,
 control-flow, handler, payload, and body validators. The two LLILs do not
-translate directly into one another; `java::mlil` and `dex::mlil` instead lift
-their verified bodies into the shared `cafe::mlil` value and operation model.
-Each frontend can lower verified MLIL into fresh target-family LLIL regardless
-of the function's source format. Source ISA remains provenance; target constant
-pool or identifier-table context supplies linkage. This is a semantic,
-canonical retarget or round trip rather than replay of the input encoding
-sidecar.
+translate directly into one another. `java::rtl` lifts verified JVM LLIL into
+stack/local storage, while `dex::rtl` lifts verified Dalvik LLIL into explicit
+register/result/exception storage. Cfglib then recovers typed def-use webs and
+raises either RTL into the shared `cafe::mlil` value and operation model.
 
-Cfglib owns the language-neutral MLIL storage, stable identities, checked
-builder, source-provenance map, and reusable analysis entry points. Cafe's
-`mlil` crate specializes those contracts with one Java-managed dialect. That
+The reverse direction uses equally explicit naming: `lift` moves LLIL → RTL →
+MLIL, while `lower` moves MLIL → target RTL → LLIL/native encoding. RTL edge
+translation is fallible and retains exact switch roles, catch order, protected
+ranges, and throw-site identities. Signatures, exception regions, instruction
+expansion/fusion provenance, and target-only allocation survive the bridge;
+synthetic or cross-ISA target storage is never mislabeled as source-native
+provenance. Each frontend can target fresh family-specific LLIL regardless of
+the function's source format. The target constant pool or identifier table
+supplies linkage. This is a semantic, canonical retarget or round trip rather
+than replay of the input encoding sidecar.
+
+Cfglib owns language-neutral RTL and MLIL storage, stable identities, checked
+builders, source-provenance maps, exact bridge rewrite maps, and reusable
+analysis entry points. Cafe's `mlil` crate specializes those contracts with one
+Java-managed dialect and a shared semantic operation adapter. That
 dialect makes JVM stack positions, JVM locals, Dalvik registers, DEX implicit
 results, and delivered exceptions explicit variables with point-specific
 types. Exact object and array types use JVM-compatible descriptors in both
@@ -187,11 +198,18 @@ terminators, edge roles, exception evidence, identities, and provenance before
 dominance or SSA is exposed.
 
 Through cfglib, verified MLIL functions expose definition/use chains, liveness, forward
-and sparse constants, block-local expression recovery, copy-propagated views,
-effect-aware dead-code reports, and cfglib structured control flow. Every
-analysis consumes the same canonical payload-bearing graph; none discards
-ordered handler, native switch, or exact throw-site identities to build an
-analysis-only CFG.
+and sparse constants, block-local expression recovery, copy- and semantic-alias-
+propagated views, effect-aware dead-code reports, and cfglib structured control
+flow. Every analysis consumes the same canonical payload-bearing graph; none
+discards ordered handler, native switch, or exact throw-site identities to
+build an analysis-only CFG.
+
+Cfglib's generic named pass pipeline composes ordered, fallible transformations
+over any compiler state and reports which passes changed it. The decompiler
+publishes `DecompilerPass` and `DecompilerPasses` as a dependency-safe opt-in
+profile: defaults reproduce Cafe's recommended recovery chain, while callers
+can select none or an exact subset. These passes mutate one cloned presentation
+graph before HLIL lifting; verified canonical MLIL is never rewritten.
 
 Shared `SourceMap` and `Diagnostics` models provide format-qualified provenance
 and machine-readable reporting for consumers that generate or transform
@@ -202,12 +220,15 @@ frame, schedules range calls, lays out branches and payloads, resolves DEX table
 references, and rebuilds ordered try regions. Both discard stale offset-based
 debug or verification metadata and return original-native to generated-native
 source maps. Together they provide verified JVM-to-Dalvik and Dalvik-to-JVM
-LLIL retargeting through MLIL. Whole-artifact class/module synthesis, Android
+LLIL → RTL → MLIL → RTL → LLIL retargeting. Whole-artifact class/module synthesis, Android
 runtime API policy, and a DEX-to-JAR workflow remain outside this capability.
 
 `cafe::decompiler` recovers a complete Java compilation unit from a parsed JVM
-class file or raw class bytes. It lifts every executable method to verified
-MLIL, reconstructs ordinary reducible branches and natural loops, and uses a
+class file or raw class bytes. Its class-family entry points combine a top-level
+class with metadata-proven named member classes, including recursively nested
+members, in one source unit. It lifts every executable method to verified MLIL,
+applies the configured presentation-pass profile, reconstructs ordinary
+reducible branches and natural loops, and uses a
 Java-valid state machine when exact switches, exception dispatch, or
 irreducible flow cannot be represented safely with structured statements.
 State-machine exception paths preserve native handler order, catch types, and
@@ -223,13 +244,19 @@ approximation diagnostics, while `module-info` is rejected as a different
 source artifact. This decompiler is independent of the future DEX-to-JAR
 whole-artifact workflow.
 
-`InnerClasses` metadata is used for canonical source type names, and erased
-bridge duplicates are omitted with diagnostics. Fields whose bytecode
-initialization has not yet been reconstructed as Java definite assignment omit
-the `final` source modifier with an explicit approximation diagnostic. The
-entry points above remain class-level: they do not aggregate member-class bodies
-into an enclosing compilation unit, so compiling an outer class that refers to
-its own nested declarations requires a future JAR-level source coordinator.
+`InnerClasses` metadata supplies canonical source type names, exact member
+visibility and `static`/`final` modifiers, while `Signature` attributes recover
+generic class, field, and method declarations. Erased bridge methods are omitted
+with diagnostics, unchanged receiver and parameter values render directly, and
+runtime-identical constructor refinements are removed through cfglib's guarded
+alias propagation. Caller-supplied hierarchy facts omit unnecessary reference
+casts, while exact method `Exceptions` declarations omit checked-exception
+laundering only when the declaration proves it safe. Implicit no-argument
+`super()` constructors and trailing void returns are omitted.
+Fields whose bytecode initialization has not yet been reconstructed as Java
+definite assignment omit the `final` source modifier with an explicit
+approximation diagnostic. Local and anonymous classes retain standalone binary
+names until their method-level declaration sites can be reconstructed.
 
 APK support is a lossless archive boundary around DEX artifacts rather than a
 separate instruction set. It provides stable entry identities, deterministic
@@ -283,9 +310,13 @@ cafe decompile jar application.jar --output decompiled
 Use `--release 17` to choose a target view of a multi-release JAR. With no
 release, the newest variant present is selected. Existing source files are not
 overwritten unless `--force` is passed. The command reads selected class
-payloads through one archive reader, builds a hierarchy from the JAR, continues
-after malformed independent class members, and recovers classes concurrently
-with a bounded automatic worker count. Pass `--jobs N` to choose that count.
+payloads through one archive reader, builds a hierarchy and exact method-
+exception catalog from the JAR, continues after malformed independent class
+members, groups named member classes into their enclosing compilation units,
+and recovers those units concurrently with a bounded automatic worker count.
+Large units are scheduled first by estimated bytecode volume so expensive
+methods overlap the rest of the archive instead of becoming a serial tail.
+Pass `--jobs N` to choose the worker count.
 The console shows at most 100 recovery diagnostics by default; pass
 `--all-diagnostics` to print the complete deterministic report. Error-level
 recovery diagnostics or class failures produce a failure status even though
@@ -306,11 +337,34 @@ fn recover(bytes: &[u8]) -> Result<String, decompiler::Error> {
 ```
 
 Use `decompile_class_with_hierarchy` when frame merging needs declarations not
-present in the class itself, or `decompile_function` when a consumer already
-owns a verified MLIL function and needs only body statements. The returned
-source map uses UTF-8 byte spans in the generated source and retains the
-overload-qualified native coordinate, MLIL instruction identity, and all
-contributing bytecode ranges.
+present in the class itself. Use `decompile_compilation_unit` or its options and
+hierarchy variants when the caller has an enclosing class and its named member
+class files. Use `MethodExceptionCatalog` with
+`decompile_compilation_unit_with_environment` when the caller has wider
+classpath declarations and wants both hierarchy-aware casts and exact checked-
+exception decisions. Missing declarations remain conservative. Use
+`decompile_function` when a consumer already owns a verified MLIL function and
+needs only body statements. The returned source map uses UTF-8
+byte spans in the generated source and retains the overload-qualified native
+coordinate, MLIL instruction identity, and all contributing bytecode ranges.
+The direct JVM path decodes each method once and shares that checked stream
+between LLIL classification, frame propagation, and RTL lifting. Generated
+source-span indentation uses a per-fragment newline index, keeping translation
+linearithmic instead of repeatedly scanning multi-megabyte method bodies.
+
+Pass profiles are explicit library policy:
+
+```rust
+use cafe::decompiler::{DecompilerOptions, DecompilerPass, DecompilerPasses};
+
+let options = DecompilerOptions::default().with_passes(DecompilerPasses::only([
+    DecompilerPass::PropagateValueAliases,
+    DecompilerPass::PromoteHandlerExtents,
+]));
+```
+
+Use `DecompilerPasses::recommended()` for the default chain or
+`DecompilerPasses::none()` for an unnormalized presentation graph.
 
 ## Java and JAR inspection
 

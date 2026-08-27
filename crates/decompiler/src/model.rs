@@ -38,7 +38,8 @@ pub struct DecompiledBody {
     pub source_map: Vec<SourceMapEntry>,
 }
 
-/// Complete Java compilation unit recovered from one JVM class file.
+/// Complete Java compilation unit recovered from one JVM class file or an
+/// enclosing class family.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecompiledClass {
     /// Generated Java compilation unit.

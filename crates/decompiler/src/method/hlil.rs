@@ -78,6 +78,8 @@ pub(super) fn render_body(
         caught_names: Vec::new(),
         caught_counter: 0,
         unchecked_calls: request.unchecked_calls,
+        hierarchy: request.hierarchy,
+        method_exceptions: request.method_exceptions,
         finally_skips: BTreeSet::new(),
         forwarded_assigns: forwarding.assigns,
         forwarded_returns: forwarding.returns,
@@ -97,6 +99,13 @@ pub(super) fn render_body(
         }
         renderer.emit_statement(delegation)?;
         body = rest;
+    }
+    if matches!(request.return_type, ReturnType::Void)
+        && body
+            .last()
+            .is_some_and(|&statement| renderer.is_void_return(statement))
+    {
+        body = &body[..body.len() - 1];
     }
     for declaration in variables.declarations(request.parameters) {
         renderer.writer.line(&declaration);
@@ -210,6 +219,12 @@ pub(super) struct HlilRenderer<'a> {
     /// Methods of the rendered class declaring no exceptions: calls to
     /// them provably cannot raise checked exceptions.
     unchecked_calls: &'a std::collections::BTreeSet<(String, String)>,
+    /// Classpath relationships used to omit casts accepted by Java
+    /// reference assignability.
+    hierarchy: Option<&'a dyn java::analysis::ReferenceHierarchy>,
+    /// Archive or classpath method declarations used to distinguish an
+    /// unresolved call from one proven to declare no exceptions.
+    method_exceptions: Option<&'a crate::environment::MethodExceptionCatalog>,
     /// Statements consumed by `finally` recovery: matched duplicate
     /// copies of a finally body never emit on their own.
     finally_skips: BTreeSet<StatementId>,
@@ -292,6 +307,13 @@ impl<'a> HlilRenderer<'a> {
             })
     }
 
+    fn is_void_return(&self, statement: StatementId) -> bool {
+        matches!(
+            self.statement_kind(statement),
+            Ok(StatementKind::Return { values }) if values.is_empty()
+        )
+    }
+
     /// Whether this expression tree can raise a checked exception javac
     /// would force the caller to handle — the reason the
     /// `$cafe$rethrow` launder exists. Calls resolve conservatively,
@@ -326,11 +348,13 @@ impl<'a> HlilRenderer<'a> {
                 name,
                 descriptor,
             }) => {
-                owner == self.owner
+                self.method_exceptions.is_some_and(|catalog| {
+                    catalog.declares_no_exceptions(owner, &name.text, descriptor)
+                }) || (owner == self.owner
                     && self
                         .unchecked_calls
                         .iter()
-                        .any(|(method, signature)| method == &name.text && signature == descriptor)
+                        .any(|(method, signature)| method == &name.text && signature == descriptor))
             }
             _ => false,
         }
@@ -672,6 +696,9 @@ impl<'a> HlilRenderer<'a> {
             // first, so the plain statement order is already legal.
             let (owner, _, _) = method_symbol(target)?;
             let delegate = if owner == self.owner { "this" } else { "super" };
+            if delegate == "super" && arguments.is_empty() {
+                return Ok(());
+            }
             // Never laundered: JLS §8.8.7 demands the delegation stand
             // alone as the first statement, and the constructor's own
             // `throws` clause already covers whatever it declares.

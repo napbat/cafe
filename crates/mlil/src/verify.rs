@@ -122,7 +122,7 @@ fn verify_operation(
         issue(
             issues,
             format!(
-                "{id} has an invalid typed signature for {} ({} uses, {} definitions)",
+                "{id} has an invalid typed signature for {} ({} uses, {} definitions; use types {uses:?}, definition types {defs:?})",
                 instruction.operation().mnemonic(),
                 uses.len(),
                 defs.len()

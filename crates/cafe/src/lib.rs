@@ -2,8 +2,9 @@
 //!
 //! Consumers need only this crate. Format-specific capabilities remain grouped
 //! under [`java`], [`dex`], [`art`], and [`jni`], including ISA-specific JVM and
-//! Dalvik LLIL; their shared Java-managed semantic dialect lives under [`mlil`]
-//! and uses the generic storage and analyses under [`cfglib`];
+//! Dalvik LLIL and distinct frontend-owned RTL dialects; both RTLs raise into
+//! the shared Java-managed semantic dialect under [`mlil`] using generic
+//! storage and analyses under [`cfglib`];
 //! unified cross-format hierarchy aggregation lives under [`classpath`]; Java
 //! source recovery lives under [`decompiler`]; shared
 //! instruction and graph APIs, including exact and conservatively recovered
@@ -29,6 +30,8 @@
 //! let _ = std::any::type_name::<decompiler::DecompiledClass>();
 //! let _ = std::any::type_name::<cfglib::BlockId>();
 //! let _ = std::any::type_name::<mlil::Function>();
+//! let _ = std::any::type_name::<java::rtl::Function>();
+//! let _ = std::any::type_name::<dex::rtl::Function>();
 //! ```
 
 /// Android runtime VDEX, ODEX, OAT, and canonical dequickening support.
@@ -37,11 +40,11 @@ pub use ::art;
 pub use ::classpath;
 /// Verified MLIL-backed JVM class-file to Java source decompilation.
 pub use ::decompiler;
-/// Android DEX/CompactDex, Dalvik instructions and LLIL, APK/AAB, and adapters.
+/// Android DEX/CompactDex, Dalvik instructions, LLIL/RTL, APK/AAB, and adapters.
 pub use ::dex;
 /// Shared Java-ecosystem disassembly IR and control-flow graphs.
 pub use ::disassembler;
-/// JVM class files, bytecode and LLIL, JAR/JMOD/JIMAGE, corpus, and adapters.
+/// JVM class files, bytecode and LLIL/RTL, JAR/JMOD/JIMAGE, corpus, and adapters.
 pub use ::java;
 /// Typed Java Native Interface declarations, symbols, and artifact adapters.
 pub use ::jni;
@@ -50,6 +53,6 @@ pub use ::mlil;
 /// Owned modules, definitions, identities, and cross-module resolution.
 pub use ::program;
 
-/// Generic MLIL, graph algorithms, and shared control-flow data structures.
+/// Generic RTL/MLIL, graph algorithms, and shared control-flow data structures.
 pub use ::disassembler::cfglib;
 pub use ::program::*;

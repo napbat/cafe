@@ -26,14 +26,25 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let recovered_source = decompiler::decompile_class(&class)?;
     assert!(recovered_source.source.contains("class Native"));
     assert!(recovered_source.source.contains("native"));
+    let recovered_unit = decompiler::decompile_compilation_unit(&class, &[])?;
+    assert!(recovered_unit.source.contains("class Native"));
 
     let module = class.to_module()?;
     let emitted_classes = java::emit_module(&module)?;
     assert_eq!(emitted_classes.len(), 1);
     let hierarchy = classpath::ClasspathHierarchy::from_java_classes([&class])?;
     assert_eq!(hierarchy.len(), 1);
-    let _ = hierarchy.jvm_view();
+    let hierarchy_view = hierarchy.jvm_view();
     let _ = hierarchy.dex_view();
+    let method_exceptions = decompiler::MethodExceptionCatalog::from_classes([&class])?;
+    let recovered_environment = decompiler::decompile_compilation_unit_with_environment(
+        &class,
+        &[],
+        Some(&hierarchy_view),
+        &method_exceptions,
+        &decompiler::DecompilerOptions::default(),
+    )?;
+    assert!(recovered_environment.source.contains("class Native"));
     let program = Program::from_modules([module]);
     let native_methods = jni::java::native_methods(&class)?;
     let bindings = native_methods.bindings()?;
@@ -97,13 +108,18 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<disassembler::StructuredRegionDecision>();
     let _ = std::any::type_name::<disassembler::RegisterResources>();
     let _ = std::any::type_name::<cfglib::HandlerTypes<String>>();
+    let _ = std::any::type_name::<cfglib::PassPipeline<'static, (), std::convert::Infallible>>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
     let _ = std::any::type_name::<java::llil::Body>();
+    let _ = std::any::type_name::<java::rtl::Function>();
+    let _ = std::any::type_name::<java::rtl::JvmStorage>();
     let _ = std::any::type_name::<java::mlil::LoweredBody>();
     let _ = std::any::type_name::<java::mlil::SourceJavaReferenceResolver>();
     let _ = std::any::type_name::<java::JavaEmitter>();
     let _ = std::any::type_name::<dex::analysis::RegisterAnalysis>();
     let _ = std::any::type_name::<dex::llil::Body>();
+    let _ = std::any::type_name::<dex::rtl::Function>();
+    let _ = std::any::type_name::<dex::rtl::DexStorage>();
     let _ = std::any::type_name::<dex::mlil::LoweredBody>();
     let _ = std::any::type_name::<dex::mlil::SourceDexReferenceResolver>();
     let _ = std::any::type_name::<dex::mlil::TargetDexReferenceResolver>();
@@ -117,6 +133,9 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<mlil::ArrayType>();
     let _ = std::any::type_name::<mlil::EdgeMetadata>();
     let _ = std::any::type_name::<decompiler::DecompiledClass>();
+    let _ = std::any::type_name::<decompiler::DecompilerPass>();
+    let _ = std::any::type_name::<decompiler::DecompilerPasses>();
+    let _ = std::any::type_name::<decompiler::MethodExceptionCatalog>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();
     let _: fn(

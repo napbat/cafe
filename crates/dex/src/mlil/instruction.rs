@@ -2,8 +2,8 @@
 
 use ::mlil::{
     AllocationKind, ArrayAccess, ArrayType, BinaryOperator, BranchOperandKind, BranchPredicate,
-    CallKind, Constant, Conversion, ElementType, FieldAccess, FunctionBuilder, MonitorAction,
-    Operation, Relation, ThreeWayComparison, TypedVariable, UnaryOperator, ValueType, VariableRole,
+    CallKind, Constant, Conversion, ElementType, FieldAccess, MonitorAction, Operation, Relation,
+    ThreeWayComparison, TypedVariable, UnaryOperator, ValueType, VariableRole,
 };
 use disassembler::{Reference, ReferenceSymbol};
 
@@ -13,23 +13,23 @@ use crate::instruction::Instruction as NativeInstruction;
 use crate::llil::{self, InstructionKind, Operand, OperationKind, Payload};
 
 use super::reference;
-use super::state::{StateVariables, value_kind};
+use super::state::{StateVariables, VariableAllocator, value_kind};
 use super::{Error, Result};
 
-pub(super) struct Step {
-    pub(super) operation: Operation,
-    pub(super) uses: Vec<TypedVariable>,
-    pub(super) defs: Vec<TypedVariable>,
+pub(crate) struct Step {
+    pub(crate) operation: Operation,
+    pub(crate) uses: Vec<TypedVariable>,
+    pub(crate) defs: Vec<TypedVariable>,
 }
 
-pub(super) struct LiftedInstruction {
-    pub(super) steps: Vec<Step>,
-    pub(super) throw_step: usize,
+pub(crate) struct LiftedInstruction {
+    pub(crate) steps: Vec<Step>,
+    pub(crate) throw_step: usize,
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) fn lift_instruction(
-    builder: &mut FunctionBuilder,
+pub(crate) fn lift_instruction(
+    builder: &mut (impl VariableAllocator + ?Sized),
     variables: &StateVariables,
     file: &DexFile,
     native: &NativeInstruction,
@@ -477,7 +477,7 @@ fn initialized(before: &RegisterType, after: &RegisterType) -> bool {
 }
 
 fn lift_binary(
-    builder: &mut FunctionBuilder,
+    builder: &mut (impl VariableAllocator + ?Sized),
     operation: &llil::Operation,
     operator: llil::ArithmeticOperator,
     mut uses: Vec<TypedVariable>,

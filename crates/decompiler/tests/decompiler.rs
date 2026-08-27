@@ -657,7 +657,17 @@ fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::
     assert!(output.source.contains("case 5: {"), "{}", output.source);
     assert!(output.source.contains("default: {"), "{}", output.source);
     assert!(output.source.contains("new int["), "{}", output.source);
-    assert!(output.source.contains("super();"), "{}", output.source);
+    assert!(
+        output.source.contains("return parameter0 * 2;"),
+        "{}",
+        output.source
+    );
+    assert!(!output.source.contains(" = this;"), "{}", output.source);
+    assert!(
+        output.source.contains("public Arithmetic() {\n    }"),
+        "{}",
+        output.source
+    );
     assert!(output.source.contains("seed ="), "{}", output.source);
     assert!(
         output.source.contains("public static int seed;"),

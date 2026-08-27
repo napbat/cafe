@@ -13,6 +13,7 @@ mod stack_map;
 mod stack_ops;
 mod transfer;
 
+pub(crate) use self::frame::analyze_decoded_code_with_hierarchy;
 pub use self::frame::{
     analyze_code, analyze_code_with_hierarchy, analyze_method, analyze_method_with_hierarchy,
 };

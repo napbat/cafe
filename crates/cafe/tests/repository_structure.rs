@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAX_SOURCE_LINES: usize = 1_000;
 const SOURCE_EXTENSIONS: &[&str] = &[
@@ -20,8 +21,11 @@ const EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
 #[test]
 fn source_files_do_not_exceed_line_limit() {
     let workspace_root = workspace_root();
-    let mut files = Vec::new();
-    collect_source_files(&workspace_root, &mut files);
+    let mut files = tracked_source_files(&workspace_root).unwrap_or_else(|| {
+        let mut files = Vec::new();
+        collect_source_files(&workspace_root, &mut files);
+        files
+    });
     files.sort();
 
     let oversized = files
@@ -37,6 +41,30 @@ fn source_files_do_not_exceed_line_limit() {
         oversized.is_empty(),
         "source files exceed the {MAX_SOURCE_LINES}-line limit: {oversized:#?}"
     );
+}
+
+/// Lists repository-owned sources without treating arbitrary local output
+/// directories as project source. Packaged source trees without Git metadata
+/// retain the recursive fallback above.
+fn tracked_source_files(workspace_root: &Path) -> Option<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(workspace_root)
+        .args(["ls-files", "-z"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let paths = String::from_utf8(output.stdout).ok()?;
+    Some(
+        paths
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(|path| workspace_root.join(path))
+            .filter(|path| path.is_file() && is_source_file(path))
+            .collect(),
+    )
 }
 
 #[test]

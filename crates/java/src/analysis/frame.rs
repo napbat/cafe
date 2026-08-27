@@ -145,10 +145,34 @@ pub fn analyze_code_with_hierarchy(
     code: &CodeAttribute,
     hierarchy: &dyn ReferenceHierarchy,
 ) -> Result<MethodAnalysis> {
-    let parsed = descriptor::parse_method(descriptor)
-        .map_err(|error| error.in_class_method(owner, name, descriptor))?;
     let instructions =
         decode_code(code).map_err(|error| error.in_class_method(owner, name, descriptor))?;
+    analyze_decoded_code_with_hierarchy(
+        pool,
+        owner,
+        name,
+        descriptor,
+        access_flags,
+        code,
+        &instructions,
+        hierarchy,
+    )
+}
+
+/// Computes frames from a native stream already checked against `code`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_decoded_code_with_hierarchy(
+    pool: &ConstantPool,
+    owner: &str,
+    name: &str,
+    descriptor: &str,
+    access_flags: MethodAccessFlags,
+    code: &CodeAttribute,
+    instructions: &[Instruction],
+    hierarchy: &dyn ReferenceHierarchy,
+) -> Result<MethodAnalysis> {
+    let parsed = descriptor::parse_method(descriptor)
+        .map_err(|error| error.in_class_method(owner, name, descriptor))?;
     analyze_inner(
         pool,
         owner,
@@ -156,7 +180,7 @@ pub fn analyze_code_with_hierarchy(
         &parsed,
         access_flags,
         code,
-        &instructions,
+        instructions,
         hierarchy,
     )
     .map_err(|error| error.in_class_method(owner, name, descriptor))

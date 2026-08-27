@@ -9,6 +9,9 @@ pub enum Error {
     /// Shared MLIL construction or verification failed.
     #[error(transparent)]
     Mlil(#[from] ::mlil::Error),
+    /// Shared RTL construction, lifting, or lowering failed.
+    #[error(transparent)]
+    Rtl(#[from] cfglib::ir::rtl::Error),
     /// Source-index reuse was requested for non-DEX provenance.
     #[error("cannot reuse DEX source-table indices from {actual} MLIL")]
     WrongFormat {

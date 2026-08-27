@@ -18,7 +18,7 @@ type Graph = Cfg<Instruction, EdgeMetadata>;
 /// cleanup strip, and any fallback rendering of a monitor method lands in
 /// the state machine over the canonical function, so semantics never
 /// change silently.
-pub(super) fn detach_monitor_cleanup_coverage(cfg: &mut Graph) {
+pub(super) fn detach_monitor_cleanup_coverage(cfg: &mut Graph) -> usize {
     let mut strips: Vec<(RegionId, BTreeSet<BlockId>, BlockId)> = Vec::new();
     for region in cfg.regions() {
         for handler in &region.handlers {
@@ -35,6 +35,7 @@ pub(super) fn detach_monitor_cleanup_coverage(cfg: &mut Graph) {
             strips.push((region.id, chain, handler.entry));
         }
     }
+    let detached = strips.len();
     for (id, chain, entry) in strips {
         let mut doomed = Vec::new();
         for &block in &chain {
@@ -54,6 +55,7 @@ pub(super) fn detach_monitor_cleanup_coverage(cfg: &mut Graph) {
             }
         }
     }
+    detached
 }
 
 /// The first block of the cleanup a landing pad leads to: the pad's

@@ -8,21 +8,31 @@
 //! instead of guessed source.
 
 mod class;
+mod compilation_unit;
 mod diagnostic;
+mod environment;
 mod error;
 mod method;
 mod model;
 mod names;
 mod options;
+mod signature;
 mod writer;
 
 pub use self::class::{
     decompile_class, decompile_class_bytes, decompile_class_with_hierarchy,
     decompile_class_with_options,
 };
+pub use self::compilation_unit::{
+    decompile_compilation_unit, decompile_compilation_unit_with_environment,
+    decompile_compilation_unit_with_hierarchy, decompile_compilation_unit_with_options,
+};
 pub use self::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticSeverity, MethodIdentity};
+pub use self::environment::MethodExceptionCatalog;
 pub use self::error::{Error, Result};
 pub use self::method::decompile_function;
 pub use self::model::{DecompiledBody, DecompiledClass, GeneratedSpan, SourceMapEntry};
 pub use self::names::compilation_unit_path;
-pub use self::options::{ControlFlowPreference, DecompilerOptions};
+pub use self::options::{
+    ControlFlowPreference, DecompilerOptions, DecompilerPass, DecompilerPasses,
+};

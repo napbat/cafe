@@ -16,6 +16,7 @@ pub mod jmod;
 pub mod llil;
 pub mod mlil;
 pub mod program;
+pub mod rtl;
 
 pub use self::program::{
     DisplayJavaReferenceResolver, JavaEmissionError, JavaEmissionOptions, JavaEmitter,

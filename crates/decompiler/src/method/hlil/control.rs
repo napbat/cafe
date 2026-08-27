@@ -29,7 +29,12 @@ impl HlilRenderer<'_> {
         then_body: &[StatementId],
         else_body: &[StatementId],
     ) -> Result<(), RenderFailure> {
-        let (text, _) = self.condition(condition, false)?;
+        let (then_body, else_body, negated) = if then_body.is_empty() && !else_body.is_empty() {
+            (else_body, then_body, true)
+        } else {
+            (then_body, else_body, false)
+        };
+        let (text, _) = self.condition(condition, negated)?;
         let launder = self.launder_required(condition);
         self.open_wrapper(launder);
         self.writer.line(&format!("if ({text}) {{"));

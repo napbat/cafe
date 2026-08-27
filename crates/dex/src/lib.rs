@@ -17,6 +17,7 @@ pub mod instruction;
 pub mod llil;
 pub mod mlil;
 pub mod program;
+pub mod rtl;
 
 pub use self::error::{Error, IdentifierTable, Result};
 pub use self::file::{CompactDexFile, CompactDexVersion, DexFile, DexSourceFormat, DexVersion};

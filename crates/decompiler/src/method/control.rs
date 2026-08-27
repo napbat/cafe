@@ -5,13 +5,17 @@ mod structured;
 use std::collections::BTreeSet;
 
 use disassembler::CatchType;
+use java::analysis::ReferenceHierarchy;
 use java::descriptor::{JavaType, ReturnType};
 use mlil::cfglib::BlockId;
-use mlil::{EdgeRole, EntityId, Function, Instruction, InstructionId, Operation};
+use mlil::{
+    EdgeRole, EntityId, Function, Instruction, InstructionId, Operation, VariableId, VariableRole,
+};
 
 use self::structured::{Frame, structured_java};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, MethodIdentity};
+use crate::environment::MethodExceptionCatalog;
 use crate::model::{GeneratedSpan, SourceMapEntry};
 use crate::names::{SourceNames, rust_string_literal};
 use crate::options::{ControlFlowPreference, DecompilerOptions};
@@ -100,6 +104,8 @@ pub(crate) struct BodyRequest<'a> {
     pub(crate) rethrow: &'a str,
     pub(crate) names: &'a SourceNames,
     pub(crate) unchecked_calls: &'a BTreeSet<(String, String)>,
+    pub(crate) hierarchy: Option<&'a dyn ReferenceHierarchy>,
+    pub(crate) method_exceptions: Option<&'a MethodExceptionCatalog>,
 }
 
 pub(crate) fn render(request: &BodyRequest<'_>) -> RenderedBody {
@@ -110,6 +116,14 @@ pub(crate) fn render(request: &BodyRequest<'_>) -> RenderedBody {
 }
 
 fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> {
+    let prelude = constructor_prelude(request)?;
+    if implicit_empty_constructor(request.function, prelude.as_ref()) {
+        return Ok(RenderedBody {
+            source: String::new(),
+            diagnostics: Vec::new(),
+            source_map: Vec::new(),
+        });
+    }
     let variables = VariableLayout::new(
         request.function,
         request.parameters,
@@ -126,7 +140,6 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         request.kind.class_initializer(),
     );
     preflight(request.function, &renderer)?;
-    let prelude = constructor_prelude(request)?;
     let skipped = skipped_instructions(request.function, prelude.as_ref());
 
     let state_machine_reason = state_machine_reason(request);
@@ -204,18 +217,38 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
     })
 }
 
+fn implicit_empty_constructor(function: &Function, prelude: Option<&ConstructorPrelude>) -> bool {
+    let Some(prelude) = prelude.filter(|prelude| prelude.source == "super();") else {
+        return false;
+    };
+    let receiver_aliases = function
+        .variables()
+        .iter()
+        .filter(|variable| variable.role == VariableRole::Parameter(0))
+        .map(|variable| variable.id)
+        .collect::<BTreeSet<_>>();
+    function.cfg().blocks().iter().all(|block| {
+        block.instructions().iter().all(|instruction| {
+            prelude.skipped.contains(&instruction.id())
+                || match instruction.operation() {
+                    Operation::Nop | Operation::Discard | Operation::Return => true,
+                    Operation::Copy | Operation::ParallelCopy | Operation::TypeRefine => {
+                        instruction
+                            .uses()
+                            .iter()
+                            .chain(instruction.defs())
+                            .all(|variable: &VariableId| receiver_aliases.contains(variable))
+                    }
+                    _ => false,
+                }
+        })
+    })
+}
+
 fn recover_structured(request: &BodyRequest<'_>) -> StructuredRecovery {
-    // Structure a derived function: copy propagation and effect-aware dead-code
-    // elimination clean aliases and write-only stores; handler coverage and
-    // short shared tails are then normalized without changing the canonical IR.
-    let derived = request.function.with_derived_cfg(|cfg| {
-        cfg.remove_unreachable_regions();
-        mlil::cfglib::copy_propagation(cfg);
-    });
-    let derived = derived.with_derived_cfg(super::regions::detach_monitor_cleanup_coverage);
-    let derived = derived.with_derived_cfg(mlil::cfglib::ir::mlil::extend_equivalent_coverage);
-    let (derived, _) = derived.with_promoted_handler_extents();
-    let (derived, _) = derived.with_duplicated_structuring_tails();
+    // Structure one derived function through the configured presentation-pass
+    // schedule. The verified canonical MLIL remains untouched.
+    let derived = super::passes::apply(request.function, &request.options.passes);
 
     // Prefer expression-oriented HLIL; unsupported shapes fall back to the
     // statement-oriented structured renderer and then the exact state machine.

@@ -8,11 +8,11 @@
 //! and rebuilds ordered exception ranges into independently verified LLIL.
 
 mod error;
-mod instruction;
+pub(crate) mod instruction;
 mod lift;
 mod lower;
 mod reference;
-mod state;
+pub(crate) mod state;
 
 pub use self::error::{Error, Result};
 pub use self::lift::{

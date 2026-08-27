@@ -12,6 +12,7 @@ keywords = ["java", "jvm", "bytecode", "classfile", "jar"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+cfglib.workspace = true
 disassembler.workspace = true
 flate2.workspace = true
 mlil.workspace = true

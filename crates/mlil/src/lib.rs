@@ -12,6 +12,7 @@ mod descriptor;
 mod dialect;
 mod hlil;
 mod model;
+pub mod rtl;
 mod verify;
 
 pub use self::analysis::ExpressionOperator;

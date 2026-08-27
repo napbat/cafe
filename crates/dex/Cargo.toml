@@ -12,6 +12,7 @@ keywords = ["android", "dex", "dalvik", "bytecode", "apk"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
+cfglib.workspace = true
 disassembler.workspace = true
 mlil.workspace = true
 program.workspace = true

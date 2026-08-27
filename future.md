@@ -10,8 +10,8 @@ Cafe has two primary instruction families:
 - Android DEX bytecode, including its CompactDex storage form.
 
 Both families now have parsing, assembly, executable analysis, ISA-specific
-reversible LLIL, bidirectional adaptation through a shared typed MLIL, corpus,
-archive, provenance, shared adapters, unified classpath aggregation, and
+reversible LLIL and RTL, bidirectional LLIL → RTL → shared typed MLIL
+adaptation, corpus, archive, provenance, shared adapters, unified classpath, and
 verified Program-to-native emission. They intentionally do not share one
 low-level instruction model. Higher-level data-flow and structured-control
 analysis converge above MLIL, and JVM class files can be recovered as Java
@@ -143,15 +143,40 @@ Tests cover every supported native opcode, exact wide and payload encodings,
 encoding-alias normalization, stale-pair rejection, and whole-body metadata
 round trips.
 
-There is no direct JVM-LLIL-to-Dalvik-LLIL conversion. Both lift into Cafe's
-Java-managed dialect over generic `cfglib::mlil` storage, where stack and
-register representations converge in one explicit, analyzable value model
-without leaking one ISA's mechanics into the other frontend or Java-specific
-semantics into cfglib.
+There is no direct JVM-LLIL-to-Dalvik-LLIL conversion. Each LLIL first lifts
+into its owning frontend's RTL, then cfglib raises typed def-use webs into
+Cafe's Java-managed dialect. Stack and register representations converge only
+in the explicit MLIL value model, without leaking one ISA's mechanics into the
+other frontend or Java-specific semantics into cfglib.
+
+## Completed frontend-owned RTL boundary
+
+Cfglib now models RTL and MLIL as genuinely distinct dialects. One semantic
+MLIL dialect can bridge any number of target RTL dialects whose native storage
+types, constraints, operators, effects, and edge payloads differ. The bridge
+provides:
+
+- fallible exact edge translation after statement/instruction rewrite maps are
+  complete, including stable exceptional throw-site identities;
+- checked signature and structured exception-region translation, including
+  block expansions introduced by normal-flow commit continuations;
+- deterministic many-to-many statement/instruction provenance in both
+  directions;
+- explicit source-native provenance translation, so generated target storage
+  and synthetic temporaries do not masquerade as source locations.
+
+`java::rtl` directly decodes verified JVM LLIL into source locals, operand-stack
+positions, and synthetic JVM temporaries. `dex::rtl` directly decodes verified
+Dalvik LLIL into source registers, implicit result/exception channels, and
+synthetic Dalvik temporaries. Both use their native verifier state as RTL
+constraints and raise into the same canonical `mlil::JavaDialect`. In reverse,
+MLIL lowers into the selected target RTL with fresh target allocation before
+the owning frontend emits canonical LLIL and native encoding. Tests cover both
+same-ISA round trips and JVM ↔ Dalvik retargeting through every level.
 
 ## Completed shared MLIL boundary
 
-Cfglib now provides generic MLIL functions, instructions, stable identities,
+Cfglib now provides generic RTL and MLIL functions, instructions, stable identities,
 typed variable occurrences, checked construction, many-to-many source
 provenance, structural verification, and reusable analysis integration through
 consumer-defined dialect contracts. Cafe's `mlil` crate now provides the
@@ -200,10 +225,11 @@ The neutral layers and focused frontends now provide:
   types, fields, methods, and method prototypes, while retaining original
   indices only as provenance;
 - exact DEX register, incoming, and outgoing resource widths on shared bodies;
-- reversible, ISA-specific JVM and Dalvik LLIL boundaries with exact native
+- reversible, ISA-specific JVM and Dalvik LLIL/RTL boundaries with exact native
   provenance and complete-body metadata validation;
-- a verified shared MLIL with frontend-owned JVM and Dalvik lifting and
-  origin-independent lowering to either target LLIL, exact exceptional
+- a verified shared MLIL with frontend-owned JVM and Dalvik LLIL-to-RTL lifting,
+  cfglib RTL raising, and origin-independent lowering through either target RTL
+  to target LLIL, exact exceptional
   pre-state, format-qualified provenance, dominance, and SSA;
 - a format-neutral `ModuleEmitter` contract with verified JVM and DEX native
   backends;
@@ -222,11 +248,12 @@ is canonical rather than byte-identical: the original LLIL encoding sidecar
 remains the exact replay path, while the selected target backend generates a
 fresh valid layout.
 
-## Completed frontend-owned MLIL lowering
+## Completed frontend-owned RTL and LLIL lowering
 
-`java::mlil` and `dex::mlil` now lower verified MLIL into fresh target-specific
-LLIL without putting target mechanics in the neutral `mlil` crate. Source
-format is provenance, not lowering eligibility:
+`java::rtl` and `dex::rtl` first lower verified MLIL into fresh target-specific
+RTL. Their existing target emitters then lower canonical semantics into LLIL
+without putting target mechanics in the neutral `mlil` crate. Source format is
+provenance, not lowering eligibility:
 
 - JVM lowering assigns semantic variables to locals, schedules stack operands,
   selects canonical bytecodes, uses source-pool or caller-provided reference
@@ -275,10 +302,10 @@ MLIL.
 ## Completed generic analysis and Java source decompilation
 
 The generic `cfglib::mlil` API exposes reusable definition/use chains, liveness,
-forward and sparse constants, expression trees, copy propagation, effect-aware
-dead-code reporting and elimination, and structured-control recovery. Cafe's
-MLIL dialect supplies Java-managed folding, effects, call targets, edge meaning,
-and semantic verification. Cfglib's
+forward and sparse constants, expression trees, copy and pairwise semantic-alias
+propagation, effect-aware dead-code reporting and elimination, and
+structured-control recovery. Cafe's MLIL dialect supplies Java-managed folding,
+effects, call targets, edge meaning, and semantic verification. Cfglib's
 solvers and AST lifter accept caller-owned edge payloads directly, and natural
 loops are detected by dominance even when a frontend correctly retains the
 native edge as an ordinary jump. Memory reads, writes, allocation, calls,
@@ -291,8 +318,14 @@ provides:
 
 - parsed-class and raw-byte JVM class-file entry points plus a hierarchy-aware
   variant for strict frame merging;
+- class-family entry points that aggregate metadata-proven named member classes
+  recursively into their enclosing compilation unit;
 - per-method lifting through verified MLIL and reusable analysis over the same
   exact payload-bearing graph;
+- a cfglib-owned named, ordered, fallible pass pipeline with change reports,
+  plus dependency-safe decompiler pass profiles whose recommended default
+  normalizes one derived MLIL presentation graph without mutating canonical
+  verified MLIL;
 - Java declarations for ordinary classes and interfaces, fields, methods,
   constructors, static initializers, parameters, constants, and declared
   exceptions;
@@ -304,22 +337,29 @@ provides:
   `instanceof`, returns, throws, and caught exceptions;
 - deterministic diagnostics and UTF-8 generated spans mapped through stable
   MLIL instruction identities to all contributing native bytecode ranges;
+- a single-decode JVM lifting path shared by LLIL, frame analysis, and RTL,
+  indexed generated-span translation, and deterministic largest-unit-first JAR
+  scheduling so unusually large methods do not create a serial completion tail;
 - conservative throwing stubs when a method cannot be represented, including
   Java-legal static-initializer stubs, rather than guessed source semantics;
-- canonical `InnerClasses` type names, omission of source-inexpressible bridge
-  duplicates, and diagnosed removal of `final` where bytecode initialization
-  has not yet been reconstructed as Java definite assignment;
+- canonical `InnerClasses` type names and exact member modifiers, generic class,
+  field, and method declarations from `Signature`, omission of
+  source-inexpressible bridge duplicates, direct unchanged receiver/parameter
+  names, guarded removal of runtime-identical constructor refinements,
+  hierarchy-proven cast omission, archive-wide method-exception decisions,
+  implicit empty constructors and trailing void returns, and diagnosed removal
+  of `final` where bytecode initialization has not yet been reconstructed as
+  Java definite assignment;
 - compile-back and execution coverage through `javac` for arithmetic,
   branching, natural loops, objects, calls, fields, casts, boolean coercions,
   arrays, switches, and ordered handlers.
 
 Dynamic bootstrap reconstruction and synchronized-region formation still
 produce method diagnostics and stubs. Annotation, enum, and record declarations
-are explicitly diagnosed approximations, and `module-info` is a separate source
-artifact rather than a class declaration. Class-level decompilation does not yet
-aggregate member-class bodies into their enclosing JAR compilation units. These
-are source-presentation limits, not missing JVM parsing, MLIL semantics, or
-cross-ISA lowering support.
+are explicitly diagnosed approximations, `module-info` is a separate source
+artifact rather than a class declaration, and local or anonymous class
+placement still requires method-level recovery. These are source-presentation
+limits, not missing JVM parsing, MLIL semantics, or cross-ISA lowering support.
 
 ## Completed command-line JAR decompilation
 
@@ -327,9 +367,12 @@ The `cafe-cli` application provides `cafe decompile jar`. It consumes only the
 public `cafe` facade and owns Clap syntax, filesystem policy, human-readable
 reporting, and process exit status. The command selects an effective
 multi-release view, visits selected class payloads through one ZIP reader,
-builds a JAR-wide class hierarchy for frame merging, and writes deterministic
-package-qualified Java source paths using the decompiler's identifier escaping.
-Source recovery uses a bounded automatic worker count with an explicit `--jobs`
+builds a JAR-wide class hierarchy and exact method-exception catalog, and writes
+deterministic package-qualified Java source paths using the decompiler's
+identifier escaping.
+Named member classes are grouped recursively under their metadata-declared
+top-level owner, so one Java compilation unit owns one output path. Source
+recovery uses a bounded automatic worker count with an explicit `--jobs`
 override while diagnostic ordering and output-collision decisions remain
 deterministic.
 
@@ -346,8 +389,9 @@ command does not perform DEX to JVM translation or packaging.
 ## Remaining whole-artifact boundary
 
 Cafe now has cross-ISA function-body retargeting: typed DEX/JVM analysis lifts
-to verified shared MLIL, then either frontend lowers the same function into its
-own independently verified LLIL. It intentionally does not yet implement
+through frontend RTL to verified shared MLIL, then either frontend lowers the
+same function through its target RTL into independently verified LLIL. It
+intentionally does not yet implement
 whole-program class and member synthesis, runtime-library mapping, manifest and
 resource policy, dex2jar-equivalent packaging, a DEX-to-JAR workflow, or a
 DEX-oriented source frontend.
@@ -432,10 +476,10 @@ A frontend is ready when all of the following are true:
 5. Every executable body lifts into verified shared control flow.
 6. Its instruction family has an ISA-specific semantic LLIL with checked,
    exact native and complete-body round trips.
-7. Its verified native analysis and LLIL lift into shared MLIL with exact
-   control-flow, exception, type, and provenance semantics, and frontend-owned
-   lowering can generate independently verified target LLIL without using
-   source format as an eligibility check.
+7. Its verified native analysis and LLIL lift into an ISA-owned RTL, cfglib can
+   raise that RTL into shared MLIL with exact control-flow, exception, type, and
+   provenance semantics, and frontend-owned lowering can generate independently
+   verified target RTL and LLIL without using source format as eligibility.
 8. Metadata-only loading avoids decoding executable bodies.
 9. Program identities remain format-qualified and overload-qualified.
 10. Archive discovery and traversal are deterministic and retain exact origins.

@@ -48,6 +48,7 @@ impl SlotKind {
 
 pub(super) struct VariableLayout {
     slots: BTreeSet<(VariableId, SlotKind)>,
+    aliases: BTreeMap<(VariableId, SlotKind), String>,
     parameters: BTreeMap<u16, String>,
     roles: BTreeMap<VariableId, VariableRole>,
     /// Exact declared Java type of the object view, for variables whose
@@ -89,7 +90,21 @@ impl VariableLayout {
             .iter()
             .map(|variable| (variable.id, variable.role))
             .collect();
-        Self::assemble(slots, roles, parameters, parameter_names, instance)
+        let defined = function
+            .cfg()
+            .blocks()
+            .iter()
+            .flat_map(disassembler::cfglib::BasicBlock::instructions)
+            .flat_map(|instruction| instruction.defs().iter().copied())
+            .collect();
+        Self::assemble(
+            slots,
+            roles,
+            parameters,
+            parameter_names,
+            instance,
+            &defined,
+        )
     }
 
     /// A layout over the HLIL view of the same function: occurrences come
@@ -175,7 +190,21 @@ impl VariableLayout {
             }
             object_types.insert(variable, name);
         }
-        let mut layout = Self::assemble(slots, roles, parameters, parameter_names, instance);
+        let defined = canonical
+            .cfg()
+            .blocks()
+            .iter()
+            .flat_map(disassembler::cfglib::BasicBlock::instructions)
+            .flat_map(|instruction| instruction.defs().iter().copied())
+            .collect();
+        let mut layout = Self::assemble(
+            slots,
+            roles,
+            parameters,
+            parameter_names,
+            instance,
+            &defined,
+        );
         layout.object_types = object_types;
         layout
     }
@@ -186,6 +215,7 @@ impl VariableLayout {
         parameters: &[JavaType],
         parameter_names: &[String],
         instance: bool,
+        defined: &BTreeSet<VariableId>,
     ) -> Self {
         let object_types = BTreeMap::new();
         let parameter_offset = u16::from(instance);
@@ -207,6 +237,14 @@ impl VariableLayout {
         {
             slots.insert((variable, SlotKind::Object));
         }
+        let aliases = direct_parameter_aliases(
+            &slots,
+            &roles,
+            parameters,
+            parameter_names,
+            instance,
+            defined,
+        );
         let parameters = parameter_names
             .iter()
             .enumerate()
@@ -216,6 +254,7 @@ impl VariableLayout {
             .collect();
         Self {
             slots,
+            aliases,
             parameters,
             roles,
             object_types,
@@ -238,6 +277,7 @@ impl VariableLayout {
     pub(super) fn declarations(&self, parameters: &[JavaType]) -> Vec<String> {
         self.slots
             .iter()
+            .filter(|slot| !self.aliases.contains_key(slot))
             .map(|&(variable, kind)| {
                 let initializer = self.initializer(parameters, variable, kind);
                 let declared = if kind == SlotKind::Object {
@@ -296,13 +336,59 @@ impl VariableLayout {
 
     #[allow(clippy::unused_self)]
     pub(super) fn name(&self, variable: VariableId, kind: SlotKind) -> String {
-        format!("cafe_v{}_{}", variable.raw(), kind.suffix())
+        self.aliases
+            .get(&(variable, kind))
+            .cloned()
+            .unwrap_or_else(|| format!("cafe_v{}_{}", variable.raw(), kind.suffix()))
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn kind(&self, value_type: &ValueType) -> SlotKind {
         primary_kind(value_type)
     }
+}
+
+fn direct_parameter_aliases(
+    slots: &BTreeSet<(VariableId, SlotKind)>,
+    roles: &BTreeMap<VariableId, VariableRole>,
+    parameters: &[JavaType],
+    parameter_names: &[String],
+    instance: bool,
+    defined: &BTreeSet<VariableId>,
+) -> BTreeMap<(VariableId, SlotKind), String> {
+    let mut aliases = BTreeMap::new();
+    for &(variable, kind) in slots {
+        if defined.contains(&variable) {
+            continue;
+        }
+        let Some(VariableRole::Parameter(ordinal)) = roles.get(&variable) else {
+            continue;
+        };
+        if instance && *ordinal == 0 {
+            if kind == SlotKind::Object {
+                aliases.insert((variable, kind), "this".to_owned());
+            }
+            continue;
+        }
+        let index = usize::from(ordinal.saturating_sub(u16::from(instance)));
+        let Some(parameter) = parameters.get(index) else {
+            continue;
+        };
+        // MLIL represents booleans as integer zero/one values. Keep their
+        // explicit conversion local; every other unchanged parameter can be
+        // referenced by its source identifier directly.
+        if matches!(parameter, JavaType::Boolean) || java_kind(parameter) != kind {
+            continue;
+        }
+        aliases.insert(
+            (variable, kind),
+            parameter_names
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| format!("parameter{index}")),
+        );
+    }
+    aliases
 }
 
 /// Merges one occurrence's reference typing into the running witnesses.

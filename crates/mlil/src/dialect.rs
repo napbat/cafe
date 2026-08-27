@@ -83,6 +83,13 @@ impl AnalysisDialect for JavaDialect {
         crate::analysis::is_copy(operation)
     }
 
+    fn is_value_alias(operation: &Self::Operation) -> bool {
+        matches!(
+            operation,
+            Operation::Copy | Operation::ParallelCopy | Operation::TypeRefine
+        )
+    }
+
     fn expression_operator(operation: &Self::Operation) -> Option<Self::ExpressionOperator> {
         crate::analysis::expression_operator(operation)
     }

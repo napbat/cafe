@@ -1,25 +1,45 @@
 //! JVM frame values and native storage mapped into MLIL variables.
 
 use ::mlil::{
-    AllocationSite, FunctionBuilder, NativeVariable, SourceStorage, TypedVariable, ValueType,
-    VariableId, VariableRole,
+    AllocationSite, FunctionBuilder, JavaDialect, NativeVariable, SourceStorage, TypedVariable,
+    ValueType, VariableId, VariableRole,
 };
 use disassembler::{BinaryFormat, CodeAddress};
 
 use crate::analysis::{FrameState, FrameValue};
 use crate::classfile::MethodAccessFlags;
-use crate::descriptor::MethodDescriptor;
+use crate::descriptor::{JavaType, MethodDescriptor, ReturnType};
 
 use super::Result;
 
-pub(super) struct StateVariables {
+pub(crate) trait VariableAllocator {
+    fn declare_variable(
+        &mut self,
+        role: VariableRole,
+        native: Option<NativeVariable>,
+    ) -> ::mlil::Result<VariableId>;
+}
+
+impl VariableAllocator for FunctionBuilder {
+    fn declare_variable(
+        &mut self,
+        role: VariableRole,
+        native: Option<NativeVariable>,
+    ) -> ::mlil::Result<VariableId> {
+        cfglib::ir::mlil::FunctionBuilder::<JavaDialect>::declare_variable(self, role, native)
+    }
+}
+
+pub(crate) struct StateVariables {
     locals: Vec<VariableId>,
     stack: Vec<VariableId>,
+    parameters: Vec<VariableId>,
+    returns: Vec<ValueType>,
 }
 
 impl StateVariables {
-    pub(super) fn declare(
-        builder: &mut FunctionBuilder,
+    pub(crate) fn declare(
+        builder: &mut (impl VariableAllocator + ?Sized),
         max_locals: u16,
         max_stack: u16,
         descriptor: &MethodDescriptor,
@@ -48,10 +68,34 @@ impl StateVariables {
                 )
             })
             .collect::<::mlil::Result<Vec<_>>>()?;
-        Ok(Self { locals, stack })
+        let parameters = parameter_roles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, role)| {
+                matches!(role, VariableRole::Parameter(_)).then_some(locals[index])
+            })
+            .collect();
+        let returns = match &descriptor.return_type {
+            ReturnType::Void => Vec::new(),
+            ReturnType::Type(value) => vec![descriptor_value_type(value)],
+        };
+        Ok(Self {
+            locals,
+            stack,
+            parameters,
+            returns,
+        })
     }
 
-    pub(super) fn local(&self, frame: &FrameState, index: u16, owner: &str) -> TypedVariable {
+    pub(crate) fn parameters(&self) -> &[VariableId] {
+        &self.parameters
+    }
+
+    pub(crate) fn returns(&self) -> &[ValueType] {
+        &self.returns
+    }
+
+    pub(crate) fn local(&self, frame: &FrameState, index: u16, owner: &str) -> TypedVariable {
         TypedVariable::new(
             self.locals[usize::from(index)],
             frame
@@ -61,7 +105,7 @@ impl StateVariables {
         )
     }
 
-    pub(super) fn stack(&self, frame: &FrameState, index: usize, owner: &str) -> TypedVariable {
+    pub(crate) fn stack(&self, frame: &FrameState, index: usize, owner: &str) -> TypedVariable {
         TypedVariable::new(
             self.stack[index],
             frame
@@ -70,9 +114,33 @@ impl StateVariables {
                 .map_or(ValueType::Unknown, |value| value_type(value, owner)),
         )
     }
+}
 
-    pub(super) fn is_native_state(&self, variable: VariableId) -> bool {
-        self.locals.contains(&variable) || self.stack.contains(&variable)
+fn descriptor_value_type(value: &JavaType) -> ValueType {
+    match value {
+        JavaType::Byte | JavaType::Char | JavaType::Int | JavaType::Short | JavaType::Boolean => {
+            ValueType::Integer
+        }
+        JavaType::Long => ValueType::Long,
+        JavaType::Float => ValueType::Float,
+        JavaType::Double => ValueType::Double,
+        JavaType::Object(name) => ValueType::Reference(Some(reference_descriptor(name))),
+        JavaType::Array(_) => ValueType::Reference(Some(java_type_descriptor(value))),
+    }
+}
+
+fn java_type_descriptor(value: &JavaType) -> String {
+    match value {
+        JavaType::Byte => "B".to_owned(),
+        JavaType::Char => "C".to_owned(),
+        JavaType::Double => "D".to_owned(),
+        JavaType::Float => "F".to_owned(),
+        JavaType::Int => "I".to_owned(),
+        JavaType::Long => "J".to_owned(),
+        JavaType::Short => "S".to_owned(),
+        JavaType::Boolean => "Z".to_owned(),
+        JavaType::Object(name) => reference_descriptor(name),
+        JavaType::Array(element) => format!("[{}", java_type_descriptor(element)),
     }
 }
 
@@ -97,7 +165,7 @@ pub(super) fn value_type(value: &FrameValue, owner: &str) -> ValueType {
     }
 }
 
-pub(super) fn reference_descriptor(name: &str) -> String {
+pub(crate) fn reference_descriptor(name: &str) -> String {
     if name.starts_with('[') {
         name.to_owned()
     } else {

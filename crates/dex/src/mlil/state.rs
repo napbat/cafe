@@ -1,8 +1,8 @@
 //! Dalvik register lattice values mapped into MLIL variables.
 
 use ::mlil::{
-    AllocationSite, FunctionBuilder, NativeVariable, SourceStorage, TypedVariable, ValueType,
-    VariableId, VariableRole,
+    AllocationSite, FunctionBuilder, JavaDialect, NativeVariable, SourceStorage, TypedVariable,
+    ValueType, VariableId, VariableRole,
 };
 use disassembler::{BinaryFormat, CodeAddress};
 
@@ -11,15 +11,35 @@ use crate::file::{AccessFlags, CodeItem, DexFile, EncodedMethod};
 
 use super::Result;
 
-pub(super) struct StateVariables {
+pub(crate) trait VariableAllocator {
+    fn declare_variable(
+        &mut self,
+        role: VariableRole,
+        native: Option<NativeVariable>,
+    ) -> ::mlil::Result<VariableId>;
+}
+
+impl VariableAllocator for FunctionBuilder {
+    fn declare_variable(
+        &mut self,
+        role: VariableRole,
+        native: Option<NativeVariable>,
+    ) -> ::mlil::Result<VariableId> {
+        cfglib::ir::mlil::FunctionBuilder::<JavaDialect>::declare_variable(self, role, native)
+    }
+}
+
+pub(crate) struct StateVariables {
     registers: Vec<VariableId>,
     pub(super) result: VariableId,
     pub(super) exception: VariableId,
+    parameters: Vec<VariableId>,
+    returns: Vec<ValueType>,
 }
 
 impl StateVariables {
-    pub(super) fn declare(
-        builder: &mut FunctionBuilder,
+    pub(crate) fn declare(
+        builder: &mut (impl VariableAllocator + ?Sized),
         file: &DexFile,
         declaration: &EncodedMethod,
         code: &CodeItem,
@@ -50,14 +70,40 @@ impl StateVariables {
                 storage: SourceStorage::DexException,
             }),
         )?;
+        let parameters = roles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, role)| {
+                matches!(role, VariableRole::Parameter(_)).then_some(registers[index])
+            })
+            .collect();
+        let method = file.resolve_method_id(declaration.method)?;
+        let prototype = file.resolve_prototype(method.prototype)?;
+        let returns = descriptor_value_type(file.type_descriptor(prototype.return_type)?)
+            .into_iter()
+            .collect();
         Ok(Self {
             registers,
             result,
             exception,
+            parameters,
+            returns,
         })
     }
 
-    pub(super) fn register(
+    pub(crate) fn parameters(&self) -> &[VariableId] {
+        &self.parameters
+    }
+
+    pub(crate) fn returns(&self) -> &[ValueType] {
+        &self.returns
+    }
+
+    pub(crate) const fn exception(&self) -> VariableId {
+        self.exception
+    }
+
+    pub(crate) fn register(
         &self,
         frame: Option<&RegisterFrame>,
         register: u16,
@@ -68,10 +114,17 @@ impl StateVariables {
             .map_or_else(|| value_kind(fallback), register_type);
         TypedVariable::new(self.registers[usize::from(register)], value_type)
     }
+}
 
-    pub(super) fn is_native_state(&self, variable: VariableId) -> bool {
-        self.registers.contains(&variable) || variable == self.result
-    }
+fn descriptor_value_type(descriptor: &str) -> Option<ValueType> {
+    Some(match descriptor.as_bytes().first() {
+        Some(b'V') | None => return None,
+        Some(b'J') => ValueType::Long,
+        Some(b'F') => ValueType::Float,
+        Some(b'D') => ValueType::Double,
+        Some(b'L' | b'[') => ValueType::Reference(Some(descriptor.to_owned())),
+        Some(_) => ValueType::Integer,
+    })
 }
 
 pub(super) fn register_type(value: &RegisterType) -> ValueType {

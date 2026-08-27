@@ -1,10 +1,11 @@
 //! JVM LLIL method-body metadata and checked native conversion.
 
 use crate::Result;
-use crate::bytecode;
+use crate::bytecode::{self, Instruction as NativeInstruction};
 use crate::classfile::{Attribute, CodeAttribute, ExceptionHandler};
 
-use super::{Instruction, lift_instructions, lower_instructions};
+use super::lift::lift_decoded_instructions;
+use super::{Instruction, lower_instructions};
 
 /// One complete JVM LLIL method body.
 ///
@@ -36,11 +37,19 @@ impl Body {
     /// boundaries are malformed.
     pub fn from_code(code: &CodeAttribute) -> Result<Self> {
         let native = bytecode::decode_code(code)?;
+        Self::from_decoded_code(code, &native)
+    }
+
+    /// Lifts native instructions already checked against this code attribute.
+    pub(crate) fn from_decoded_code(
+        code: &CodeAttribute,
+        native: &[NativeInstruction],
+    ) -> Result<Self> {
         Ok(Self {
             name_index: code.name_index,
             max_stack: code.max_stack,
             max_locals: code.max_locals,
-            instructions: lift_instructions(&native)?,
+            instructions: lift_decoded_instructions(native)?,
             exception_table: code.exception_table.clone(),
             attributes: code.attributes.clone(),
         })

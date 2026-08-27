@@ -4,6 +4,7 @@ mod constructor;
 mod control;
 mod hlil;
 mod instruction;
+mod passes;
 mod regions;
 mod variables;
 
@@ -78,6 +79,8 @@ pub fn decompile_function(function: &Function, options: &DecompilerOptions) -> D
         // Standalone rendering has no class context: every call keeps
         // the conservative launder.
         unchecked_calls: &std::collections::BTreeSet::new(),
+        hierarchy: None,
+        method_exceptions: None,
     };
     let rendered = render(&request);
     DecompiledBody {

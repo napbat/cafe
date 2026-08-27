@@ -36,11 +36,15 @@ These rules apply to the entire repository.
   on Cafe or container-specific policy.
 - Keep `crates/decompiler` as the focused JVM-class-to-Java-source presentation
   layer. It lifts executable methods through verified MLIL, owns Java source
-  rendering policies, structured recovery diagnostics, and generated-source
-  provenance, and may depend on Java, MLIL, and the disassembler. It must not
-  depend on Cafe, mutate input class files, absorb DEX-to-JAR coordination, or
-  guess unsupported semantics without an explicit diagnostic and conservative
-  stub.
+  rendering policies, canonical pass ordering and opt-in presentation-pass
+  profiles, generic-signature presentation, metadata-proven member
+  class compilation units, caller-supplied hierarchy and method-exception
+  environments, structured recovery diagnostics, and
+  generated-source provenance, and may depend on Java, MLIL, and the
+  disassembler. Local and anonymous class placement remains method-level
+  recovery rather than a `$`-name guess. It must not depend on Cafe, mutate
+  input class files, absorb DEX-to-JAR coordination, or guess unsupported
+  semantics without an explicit diagnostic and conservative stub.
 - Keep `crates/cafe` the only library consumer entry point. It depends on and
   publicly re-exports every workspace capability under a concept-named
   namespace, while re-exporting Program's core types at its root. Every new
@@ -55,8 +59,9 @@ These rules apply to the entire repository.
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
   disassembler and Program. It also owns symbolic bytecode layout,
-  JVM-specific LLIL and checked native round trips, JVM-LLIL-to-MLIL lifting,
-  verified MLIL-to-JVM-LLIL lowering, JVM frame/stack-map analysis, and
+  JVM-specific LLIL/RTL and checked native round trips, direct
+  JVM-LLIL-to-RTL lifting, cfglib RTL-to-MLIL raising and MLIL-to-RTL lowering,
+  verified semantic lowering to JVM LLIL, JVM frame/stack-map analysis, and
   verified canonical Program-to-class-file emission. Keep its
   native instruction graph adapted to cfglib's rooted edge view and run frame
   propagation through the fallible seeded edge solver. It must not depend on
@@ -67,9 +72,9 @@ These rules apply to the entire repository.
   central directory or decompressing the same payload in separate passes.
 - Keep `crates/dex` a library-only Android frontend. It owns DEX parsing and
   assembly, DEX 041 containers, CompactDex, Dalvik instruction decoding and
-  encoding, Dalvik-specific LLIL and checked native round trips,
-  Dalvik-LLIL-to-MLIL lifting, verified MLIL-to-Dalvik-LLIL lowering, APK/AAB
-  provenance, corpus validation,
+  encoding, Dalvik-specific LLIL/RTL and checked native round trips, direct
+  Dalvik-LLIL-to-RTL lifting, cfglib RTL-to-MLIL raising and MLIL-to-RTL lowering,
+  verified semantic lowering to Dalvik LLIL, APK/AAB provenance, corpus validation,
   executable semantics and register analysis, and adapters into the
   disassembler and Program, including verified canonical Program-to-DEX
   emission. Keep its native operation graph adapted to cfglib's
@@ -113,7 +118,8 @@ These rules apply to the entire repository.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
 - In MLIL, keep the Java-managed dialect, descriptors and verification,
-  analysis hooks, operations, types, effects, and edges independent. Reuse
+  shared RTL semantic-operation adaptation, analysis hooks, operations, types,
+  effects, and edges independent. Reuse
   cfglib's generic storage rather than shadowing its function, instruction,
   identity, variable, provenance, error, or builder types. Keep the crate's
   root a narrow compatibility and re-export facade.
@@ -122,14 +128,14 @@ These rules apply to the entire repository.
 - In Decompiler, keep class declarations, method control recovery, instruction
   rendering, variable layout, Java naming, diagnostics, and generated source
   maps independent. Keep the crate root a narrow documented facade.
-- In Java, keep `classfile/`, `bytecode/`, `llil/`, `mlil/`, `jar/`,
+- In Java, keep `classfile/`, `bytecode/`, `llil/`, `rtl/`, `mlil/`, `jar/`,
   `disassembly/`, and `program/` independent. Keep frame analysis under
   `analysis/`, corpus
   reporting under `corpus/`, and JDK containers under `jmod/` and `jimage/`.
   Keep descriptors, textual presentation, crate errors, and public entry points
   at the source root.
 - In DEX, keep `file/`, `instruction/`, `apk/`, `aab/`, `corpus/`,
-  `disassembly/`, `llil/`, `mlil/`, and `program/` independent. Keep CompactDex
+  `disassembly/`, `llil/`, `rtl/`, `mlil/`, and `program/` independent. Keep CompactDex
   and DEX 041 physical models under `file/`, and executable/register analysis
   under `analysis/`. Treat APK and AAB as container and provenance boundaries,
   not instruction sets.
@@ -162,12 +168,19 @@ These rules apply to the entire repository.
   have a matching encoding path.
 - Keep JVM LLIL in Java and Dalvik LLIL in DEX. Do not make either frontend's
   stack or register mechanics the shared semantic model, and do not translate
-  directly between the two LLILs; lift both into MLIL as their generic
-  convergence layer.
+  directly between the two LLILs. Lift each into its frontend-owned RTL, then
+  raise both RTLs into MLIL as their generic convergence layer.
 - Name representation transformations by direction: `lift` means moving from
-  native bytecode into shared disassembly, Program, LLIL, or from LLIL into MLIL;
-  `lower` means moving back toward native encodings. Helpers, diagnostics, and
-  documentation must use the same convention.
+  native bytecode into shared disassembly, Program, LLIL, RTL, or from RTL into
+  MLIL; `lower` means moving back toward target RTL, LLIL, and native encodings.
+  Helpers, diagnostics, and documentation must use the same convention.
+- Keep JVM and Dalvik RTL dialects distinct, including native storage and
+  verifier constraints. Cfglib owns generic checked RTL/MLIL bridge storage and
+  rewrite maps; the `mlil` crate may share only Java-managed operation mapping.
+  Fallible edge translation must preserve exact switch, continuation, catch,
+  protected-range, and throw-site identity. Translate signatures, exception
+  regions, and many-to-many provenance in both directions, and never retain
+  generated target storage or synthetic temporaries as source-native provenance.
 - Separate every LLIL instruction's normalized semantic operation from its
   exact native encoding provenance. Native lifting must validate the complete
   stream, reverse conversion must reject stale semantic/encoding pairs and run
@@ -189,10 +202,10 @@ These rules apply to the entire repository.
   native state, ordered catch metadata, protected ranges, and exact MLIL throw
   sites. Materialize delivered exceptions at synthetic handler landings; do not
   infer handler-body extents or source-level `finally`.
-- Keep MLIL provenance deterministic, many-to-many, format-qualified, and able
+- Keep RTL and MLIL provenance deterministic, many-to-many, format-qualified, and able
   to represent native instruction expansion and payload fusion. Verify every
-  function before exposing dominance or SSA. Keep MLIL-to-LLIL lowering in the
-  owning target frontend, treat source format only as provenance, reject
+  function before exposing dominance or SSA. Keep MLIL-to-RTL-to-LLIL lowering
+  in the owning target frontend, treat source format only as provenance, reject
   invalid or target-unencodable semantics, rebuild target resources and ordered
   exception metadata, omit stale offset-based metadata, and return
   generated-native source mappings. Default lowerers must use symbolic target
@@ -207,6 +220,16 @@ These rules apply to the entire repository.
   identities to native provenance. Unsupported dynamic linkage,
   synchronization structure, or declaration sugar must produce deterministic
   diagnostics rather than invented source semantics.
+- Run decompiler normalization through cfglib's named pass pipeline over one
+  derived presentation graph. Keep pass selection explicit and dependency-safe,
+  and never mutate the verified canonical MLIL function.
+- On direct parsed-class paths, decode each JVM method once and share the
+  checked native stream across LLIL classification, frame propagation, and RTL
+  lifting. Keep public editable-LLIL entry points checked independently.
+- Index generated-fragment line boundaries once when translating source maps;
+  do not rescan an entire rendered body per mapped span. Schedule bounded JAR
+  workers deterministically with the largest estimated bytecode units first so
+  pathological methods overlap ordinary compilation units.
 
 ## Shared disassembly and Program
 
@@ -264,18 +287,23 @@ These rules apply to the entire repository.
   construction and rejection, typed operation signatures, provenance expansion
   and fusion, exceptional pre-state commits, constructor alias refinement,
   implicit DEX results and exceptions, dominance and SSA, both frontend
-  lift/lower adapters, same-ISA LLIL-to-MLIL-to-LLIL relifting, and cross-ISA
-  MLIL-to-target-LLIL-to-MLIL relifting through Cafe, including references,
-  arrays, calls, and exceptional control flow. Cover MLIL definition/use,
-  liveness, constant, expression, copy, dead-code, and structured-control
-  analyses on payload-bearing graphs. Compile generated Java source with
+  lift/lower adapters, same-ISA LLIL-to-RTL-to-MLIL-to-RTL-to-LLIL relifting,
+  and cross-ISA MLIL-to-target-RTL-to-LLIL-to-RTL-to-MLIL relifting through
+  Cafe, including references, arrays, calls, and exceptional control flow.
+  Cover MLIL definition/use,
+  liveness, constant, expression, copy, semantic-alias, dead-code, and
+  structured-control analyses on payload-bearing graphs. Compile generated Java source with
   `javac` and execute fixtures covering arithmetic, branches, loops, objects,
   fields, calls, casts, boolean coercion, arrays, switches, ordered exception
   handlers, source maps, diagnostics, and conservative unsupported stubs.
+  Cover hierarchy-proven cast omission and archive-wide method-exception
+  decisions without treating missing classpath declarations as proof.
   Cover Cafe CLI parsing, effective multi-release JAR selection, single-reader
-  aggregate and bounded concurrent decompilation, safe package-qualified
-  output, overwrite and collision policy, deterministic diagnostics,
-  partial-failure status, and malformed independent members.
+  aggregate and bounded concurrent decompilation, deterministic largest-first
+  work scheduling, safe package-qualified output, overwrite and collision
+  policy, deterministic diagnostics, partial-failure status, and malformed
+  independent members. Verify indexed generated offsets against literal
+  indentation across empty, multiline, and trailing-newline fragments.
 - Require all of these commands to pass:
 
   ```text
