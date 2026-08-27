@@ -21,6 +21,9 @@ use super::constructor::{ConstructorPrelude, fallback_invocation, recover as rec
 use super::instruction::{InstructionRenderer, RenderFailure};
 use super::variables::VariableLayout;
 
+const MAX_STRUCTURED_BLOCKS: usize = 128;
+const MAX_STRUCTURED_INSTRUCTIONS: usize = 2_048;
+
 pub(crate) struct RenderedBody {
     pub(crate) source: String,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -34,6 +37,18 @@ pub(crate) enum BodyKind {
     Constructor,
     EnumConstructor,
     ClassInitializer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StateMachineReason {
+    Requested,
+    Complexity,
+}
+
+enum StructuredRecovery {
+    Rendered(Box<RenderedBody>),
+    Ast(Box<mlil::cfglib::AstNode<Instruction>>),
+    Unstructured,
 }
 
 impl BodyKind {
@@ -114,48 +129,28 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
     let prelude = constructor_prelude(request)?;
     let skipped = skipped_instructions(request.function, prelude.as_ref());
 
-    // Structure a derived function: dominance-guarded copy propagation
-    // and effect-aware dead-code elimination clean slot-alias moves and
-    // write-only stores, monitor-cleanup self-coverage detaches, coverage
-    // extends to provably equivalent blocks, unknown handler extents
-    // promote to their dominated blocks, and small shared tails
-    // (short-circuit conditions, shared side-exits) duplicate until
-    // control flow tree-structures. The canonical function keeps its
-    // exact shape. Jump trampolines need no pass here: the HLIL lift
-    // empties dialect-declared pure transfers itself.
-    let derived = request.function.with_derived_cfg(|cfg| {
-        cfg.remove_unreachable_regions();
-        mlil::cfglib::copy_propagation(cfg);
-    });
-    let derived = derived.with_derived_cfg(super::regions::detach_monitor_cleanup_coverage);
-    let derived = derived.with_derived_cfg(mlil::cfglib::ir::mlil::extend_equivalent_coverage);
-    let (derived, _) = derived.with_promoted_handler_extents();
-    let (derived, _) = derived.with_duplicated_structuring_tails();
-    let forced_state = request.options.control_flow == ControlFlowPreference::StateMachine;
-
-    // Prefer the expression-oriented HLIL rendering; any shape it cannot
-    // state exactly falls back to statement-per-instruction rendering.
-    if !forced_state
-        && !request.kind.enum_constructor()
-        && let Ok(lifted) = mlil::cfglib::ir::hlil::lift_function(&derived)
-        && lifted.report.unstructured_regions.is_empty()
-        && let Ok(lifted) = lifted.with_recovered_structure()
-        && let Ok(body) = super::hlil::render_body(request, &lifted)
-    {
-        return Ok(body);
+    let state_machine_reason = state_machine_reason(request);
+    let mut structured_ast = None;
+    if state_machine_reason.is_none() {
+        match recover_structured(request) {
+            StructuredRecovery::Rendered(body) => return Ok(*body),
+            StructuredRecovery::Ast(ast) => structured_ast = Some(*ast),
+            StructuredRecovery::Unstructured => {}
+        }
     }
-
-    let (ast, report) = mlil::cfglib::lift_with_report(derived.cfg());
     let exceptional = request
         .function
         .cfg()
         .edges()
         .any(|edge| matches!(edge.payload().role, EdgeRole::Exception { .. }));
-    let structured =
-        !forced_state && report.unstructured_regions.is_empty() && structured_java(&ast);
+    let structured = structured_ast.is_some();
     let mut diagnostics = Vec::new();
-    if !structured {
-        diagnostics.push(fallback_diagnostic(request, exceptional, forced_state));
+    if structured_ast.is_none() {
+        diagnostics.push(fallback_diagnostic(
+            request,
+            exceptional,
+            state_machine_reason,
+        ));
     }
 
     let mut context = RenderContext {
@@ -188,8 +183,8 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
             .line("if (java.lang.Boolean.TRUE.booleanValue()) {");
         context.writer.indent();
     }
-    if structured {
-        context.render_ast(&ast)?;
+    if let Some(ast) = &structured_ast {
+        context.render_ast(ast)?;
     } else {
         context.render_state_machine()?;
     }
@@ -209,10 +204,42 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
     })
 }
 
+fn recover_structured(request: &BodyRequest<'_>) -> StructuredRecovery {
+    // Structure a derived function: copy propagation and effect-aware dead-code
+    // elimination clean aliases and write-only stores; handler coverage and
+    // short shared tails are then normalized without changing the canonical IR.
+    let derived = request.function.with_derived_cfg(|cfg| {
+        cfg.remove_unreachable_regions();
+        mlil::cfglib::copy_propagation(cfg);
+    });
+    let derived = derived.with_derived_cfg(super::regions::detach_monitor_cleanup_coverage);
+    let derived = derived.with_derived_cfg(mlil::cfglib::ir::mlil::extend_equivalent_coverage);
+    let (derived, _) = derived.with_promoted_handler_extents();
+    let (derived, _) = derived.with_duplicated_structuring_tails();
+
+    // Prefer expression-oriented HLIL; unsupported shapes fall back to the
+    // statement-oriented structured renderer and then the exact state machine.
+    if !request.kind.enum_constructor()
+        && let Ok(lifted) = mlil::cfglib::ir::hlil::lift_function(&derived)
+        && lifted.report.unstructured_regions.is_empty()
+        && let Ok(lifted) = lifted.with_recovered_structure()
+        && let Ok(body) = super::hlil::render_body(request, &lifted)
+    {
+        return StructuredRecovery::Rendered(Box::new(body));
+    }
+
+    let (ast, report) = mlil::cfglib::lift_with_report(derived.cfg());
+    if report.unstructured_regions.is_empty() && structured_java(&ast) {
+        StructuredRecovery::Ast(Box::new(ast))
+    } else {
+        StructuredRecovery::Unstructured
+    }
+}
+
 fn fallback_diagnostic(
     request: &BodyRequest<'_>,
     exceptional: bool,
-    forced_state: bool,
+    reason: Option<StateMachineReason>,
 ) -> Diagnostic {
     Diagnostic::method_warning(
         DiagnosticCode::StateMachineFallback,
@@ -220,12 +247,38 @@ fn fallback_diagnostic(
         request.method.clone(),
         if exceptional {
             "exact ordered exception dispatch is represented by a Java state machine"
-        } else if forced_state {
-            "state-machine control flow was requested"
         } else {
-            "cfglib retained an irreducible label/goto or non-Java region"
+            match reason {
+                Some(StateMachineReason::Requested) => "state-machine control flow was requested",
+                Some(StateMachineReason::Complexity) => {
+                    "method exceeds the bounded structured-recovery budget"
+                }
+                None => "cfglib retained an irreducible label/goto or non-Java region",
+            }
         },
     )
+}
+
+fn state_machine_reason(request: &BodyRequest<'_>) -> Option<StateMachineReason> {
+    state_machine_reason_for_size(
+        request.options.control_flow,
+        request.function.cfg().block_count(),
+        request.function.instructions().count(),
+    )
+}
+
+fn state_machine_reason_for_size(
+    preference: ControlFlowPreference,
+    blocks: usize,
+    instructions: usize,
+) -> Option<StateMachineReason> {
+    if preference == ControlFlowPreference::StateMachine {
+        Some(StateMachineReason::Requested)
+    } else if blocks > MAX_STRUCTURED_BLOCKS || instructions > MAX_STRUCTURED_INSTRUCTIONS {
+        Some(StateMachineReason::Complexity)
+    } else {
+        None
+    }
 }
 
 fn constructor_prelude(
@@ -650,5 +703,38 @@ fn stub(request: &BodyRequest<'_>, message: &str) -> RenderedBody {
             message,
         )],
         source_map: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_STRUCTURED_BLOCKS, MAX_STRUCTURED_INSTRUCTIONS, StateMachineReason,
+        state_machine_reason_for_size,
+    };
+    use crate::ControlFlowPreference;
+
+    #[test]
+    fn structured_recovery_has_an_explicit_complexity_budget() {
+        assert_eq!(
+            state_machine_reason_for_size(
+                ControlFlowPreference::StructuredWhenReducible,
+                MAX_STRUCTURED_BLOCKS,
+                MAX_STRUCTURED_INSTRUCTIONS,
+            ),
+            None
+        );
+        assert_eq!(
+            state_machine_reason_for_size(
+                ControlFlowPreference::StructuredWhenReducible,
+                MAX_STRUCTURED_BLOCKS + 1,
+                0,
+            ),
+            Some(StateMachineReason::Complexity)
+        );
+        assert_eq!(
+            state_machine_reason_for_size(ControlFlowPreference::StateMachine, 1, 1),
+            Some(StateMachineReason::Requested)
+        );
     }
 }

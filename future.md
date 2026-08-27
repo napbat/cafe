@@ -15,8 +15,8 @@ archive, provenance, shared adapters, unified classpath aggregation, and
 verified Program-to-native emission. They intentionally do not share one
 low-level instruction model. Higher-level data-flow and structured-control
 analysis converge above MLIL, and JVM class files can be recovered as Java
-source through a focused decompiler. Whole-artifact DEX-to-class/JAR
-translation remains a separate future boundary.
+source through a focused decompiler and a first-party JAR-to-source command.
+Whole-artifact DEX-to-class/JAR translation remains a separate future boundary.
 
 The shared CFG boundary now retains stable parallel edge identities and typed
 caller payloads for switch arms, ordered handlers, exact instruction throw
@@ -43,8 +43,9 @@ whole-artifact DEX-to-JVM translation policy.
 
 ## Development principles
 
-- Keep `cafe` as the only consumer dependency. Re-export every focused crate
-  and public capability through Cafe in the same change.
+- Keep `cafe` as the only library consumer dependency. Re-export every focused
+  crate and public capability through Cafe in the same change. First-party
+  applications must consume the same facade rather than implementation crates.
 - Add a format only for a concrete consumer and representative fixtures.
 - Do not add speculative `BinaryFormat` variants before their frontend exists.
 - Implement parsing and assembly together wherever a format is editable.
@@ -319,6 +320,28 @@ artifact rather than a class declaration. Class-level decompilation does not yet
 aggregate member-class bodies into their enclosing JAR compilation units. These
 are source-presentation limits, not missing JVM parsing, MLIL semantics, or
 cross-ISA lowering support.
+
+## Completed command-line JAR decompilation
+
+The `cafe-cli` application provides `cafe decompile jar`. It consumes only the
+public `cafe` facade and owns Clap syntax, filesystem policy, human-readable
+reporting, and process exit status. The command selects an effective
+multi-release view, visits selected class payloads through one ZIP reader,
+builds a JAR-wide class hierarchy for frame merging, and writes deterministic
+package-qualified Java source paths using the decompiler's identifier escaping.
+Source recovery uses a bounded automatic worker count with an explicit `--jobs`
+override while diagnostic ordering and output-collision decisions remain
+deterministic.
+
+Malformed or unsupported independent classes are retained as aggregate failures
+while later classes continue. Existing files require explicit `--force`, output
+paths cannot traverse beyond the requested directory, and symbolic-link targets
+are rejected. Structured decompiler diagnostics remain visible, and error-level
+recovery diagnostics or class failures produce a nonzero status without deleting
+successfully generated source. The console sample is bounded to 100 diagnostics;
+`--all-diagnostics` emits the complete deterministic report. Module descriptors
+are reported as skipped until module-declaration source recovery exists. This
+command does not perform DEX to JVM translation or packaging.
 
 ## Remaining whole-artifact boundary
 

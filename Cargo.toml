@@ -2,6 +2,7 @@
 members = [
     "crates/art",
     "crates/cafe",
+    "crates/cafe-cli",
     "crates/classpath",
     "crates/decompiler",
     "crates/dex",
@@ -14,6 +15,7 @@ members = [
 default-members = [
     "crates/art",
     "crates/cafe",
+    "crates/cafe-cli",
     "crates/classpath",
     "crates/decompiler",
     "crates/dex",
@@ -45,6 +47,7 @@ java = { version = "0.1.0", path = "crates/java" }
 mlil = { version = "0.1.0", path = "crates/mlil" }
 program = { version = "0.1.0", path = "crates/program" }
 cfglib = { path = "../cfglib/crates/cfglib" }
+clap = { version = "4.6.6", features = ["derive"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 thiserror = "2.0.20"
 sha1 = "0.10.6"

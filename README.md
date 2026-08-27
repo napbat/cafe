@@ -1,6 +1,6 @@
 # Cafe
 
-Cafe is the single consumer entry point for Java-specific binary tooling. One
+Cafe is the single library entry point for Java-specific binary tooling. One
 dependency exposes lossless JVM class files and JDK containers, Android DEX and
 application containers, ART runtime artifacts, shared disassembly and
 control-flow graphs, a typed cross-ISA semantic IL, verified Java source
@@ -10,8 +10,9 @@ frontends retain reversible native LLILs, lift them into one shared MLIL for
 analysis, and canonically lower any target-representable verified MLIL into
 either JVM or Dalvik LLIL.
 
-The workspace contains ten library crates. `cafe` is the public umbrella; the
-other nine are focused implementation boundaries:
+The workspace contains ten library crates and one command-line application.
+`cafe` is the public umbrella; the other nine libraries are focused
+implementation boundaries:
 
 - `cafe` re-exports every supported capability and the complete program model.
 - `program` owns modules, types, fields, methods, editing, indexed lookup, and
@@ -41,9 +42,11 @@ other nine are focused implementation boundaries:
 - `jni` owns native declarations, JNI ABI types, canonical symbols, explicit
   registration resolution, C headers, provenance reports, module native-access
   requirements, and Java/DEX extraction.
+- `cafe-cli` provides the `cafe` executable and consumes only the public Cafe
+  facade for archive-wide Java source decompilation.
 
-Tool-specific command-line behavior belongs in consuming repositories.
-Consumers depend on `cafe`, not its implementation crates:
+Library consumers depend on `cafe`, not its implementation crates. The
+first-party `cafe-cli` application follows the same boundary:
 
 ```toml
 [dependencies]
@@ -263,6 +266,32 @@ module native-access requirements. It remains a safe metadata boundary and
 does not load libraries, expose raw pointers, or analyze native machine code.
 
 ## Java source decompilation
+
+The `cafe` executable decompiles the effective class view of a JAR directly to
+package-qualified source files:
+
+```text
+cargo run -p cafe-cli -- decompile jar application.jar --output decompiled
+```
+
+After installing the package, the equivalent command is:
+
+```text
+cafe decompile jar application.jar --output decompiled
+```
+
+Use `--release 17` to choose a target view of a multi-release JAR. With no
+release, the newest variant present is selected. Existing source files are not
+overwritten unless `--force` is passed. The command reads selected class
+payloads through one archive reader, builds a hierarchy from the JAR, continues
+after malformed independent class members, and recovers classes concurrently
+with a bounded automatic worker count. Pass `--jobs N` to choose that count.
+The console shows at most 100 recovery diagnostics by default; pass
+`--all-diagnostics` to print the complete deterministic report. Error-level
+recovery diagnostics or class failures produce a failure status even though
+successfully generated files remain on disk. `module-info.class` is counted as
+skipped because it requires module-declaration recovery rather than a class
+compilation unit.
 
 ```rust
 use cafe::decompiler::{self, decompile_class_bytes};
@@ -620,7 +649,9 @@ declarations without introducing pointer or loader APIs.
 
 ```text
 crates/
-├── cafe/                single public entry point
+├── cafe-cli/            `cafe` command-line application
+│   └── src/
+├── cafe/                single public library entry point
 │   ├── src/lib.rs
 │   └── tests/
 ├── program/             owned definitions, identities, lookup, and resolution
@@ -691,9 +722,9 @@ fixed signatures, limits, masks, widths, and sentinels use named constants.
 ## Roadmap
 
 See [future.md](future.md) for the completed hardening, LLIL, shared-MLIL,
-cross-ISA lowering, analysis, and Java decompiler baselines; the remaining
-whole-artifact translation boundary; conditional Java Card support; and
-Java-specific non-goals.
+cross-ISA lowering, analysis, Java decompiler, and command-line baselines; the
+remaining whole-artifact translation boundary; conditional Java Card support;
+and Java-specific non-goals.
 
 ## Build and verify
 

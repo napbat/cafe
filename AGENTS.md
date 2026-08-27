@@ -41,11 +41,16 @@ These rules apply to the entire repository.
   depend on Cafe, mutate input class files, absorb DEX-to-JAR coordination, or
   guess unsupported semantics without an explicit diagnostic and conservative
   stub.
-- Keep `crates/cafe` the only consumer entry point. It depends on and publicly
-  re-exports every workspace capability under a concept-named namespace, while
-  re-exporting Program's core types at its root. Every new feature crate must
-  be wired into Cafe and its entry-point coverage in the same change. Focused
-  implementation crates must not depend back on Cafe.
+- Keep `crates/cafe` the only library consumer entry point. It depends on and
+  publicly re-exports every workspace capability under a concept-named
+  namespace, while re-exporting Program's core types at its root. Every new
+  feature crate must be wired into Cafe and its entry-point coverage in the
+  same change. Focused implementation crates must not depend back on Cafe.
+- Keep `crates/cafe-cli` the thin first-party application boundary. It depends
+  on the Cafe facade rather than focused implementation crates and owns Clap
+  syntax, filesystem output policy, human-readable reporting, and process exit
+  status. Java parsing, archive selection, hierarchy modeling, and source
+  recovery semantics remain in their focused libraries.
 - Keep `crates/java` a library-only JVM frontend. It owns `.class` parsing and
   assembly, bytecode decoding and encoding, JAR utilities, read-only JMOD and
   JIMAGE ingestion, deterministic corpus validation, and adapters into the
@@ -103,6 +108,8 @@ These rules apply to the entire repository.
   ad-hoc `<concept>_<concern>.rs` siblings beside `<concept>.rs`.
 - Keep Cafe's `src/lib.rs` a narrow documented facade. Cross-feature behavior
   belongs there only when it genuinely coordinates multiple focused crates.
+- Keep Cafe CLI's `src/main.rs` a narrow executable entry point. Split command
+  syntax, archive orchestration, output policy, and fatal errors by concept.
 - In Program, keep definitions, identities, modules, program storage,
   resolution, and source adapters in their own concept folders.
 - In MLIL, keep the Java-managed dialect, descriptors and verification,
@@ -265,6 +272,10 @@ These rules apply to the entire repository.
   `javac` and execute fixtures covering arithmetic, branches, loops, objects,
   fields, calls, casts, boolean coercion, arrays, switches, ordered exception
   handlers, source maps, diagnostics, and conservative unsupported stubs.
+  Cover Cafe CLI parsing, effective multi-release JAR selection, single-reader
+  aggregate and bounded concurrent decompilation, safe package-qualified
+  output, overwrite and collision policy, deterministic diagnostics,
+  partial-failure status, and malformed independent members.
 - Require all of these commands to pass:
 
   ```text

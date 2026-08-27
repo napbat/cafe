@@ -24,4 +24,5 @@ pub use self::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticSeverity, Metho
 pub use self::error::{Error, Result};
 pub use self::method::decompile_function;
 pub use self::model::{DecompiledBody, DecompiledClass, GeneratedSpan, SourceMapEntry};
+pub use self::names::compilation_unit_path;
 pub use self::options::{ControlFlowPreference, DecompilerOptions};

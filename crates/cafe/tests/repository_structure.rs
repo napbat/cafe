@@ -1,4 +1,4 @@
-//! Repository-level architecture and entry-point constraints.
+//! Repository-level architecture and library/application entry-point constraints.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -103,7 +103,7 @@ fn rust_toolchain_is_unpinned_stable() {
 }
 
 #[test]
-fn cafe_facade_covers_every_focused_crate() {
+fn cafe_facade_covers_every_focused_crate_and_applications_consume_it() {
     let workspace_root = workspace_root();
     let crates = workspace_root.join("crates");
     let cafe_manifest =
@@ -126,6 +126,17 @@ fn cafe_facade_covers_every_focused_crate() {
         if name == "cafe" {
             continue;
         }
+        if is_application(&manifest) {
+            assert!(
+                declares_dependency(&manifest, "cafe"),
+                "application crate `{name}` must consume the Cafe facade"
+            );
+            assert!(
+                !declares_dependency(&cafe_manifest, name),
+                "Cafe must not depend on application crate `{name}`"
+            );
+            continue;
+        }
 
         let dependency = format!("{name}.workspace = true");
         assert!(
@@ -144,6 +155,19 @@ fn cafe_facade_covers_every_focused_crate() {
             "focused crate `{name}` must not depend back on the Cafe facade"
         );
     }
+}
+
+fn is_application(manifest: &str) -> bool {
+    let mut in_cafe_metadata = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_cafe_metadata = line == "[package.metadata.cafe]";
+        } else if in_cafe_metadata && line == "kind = \"application\"" {
+            return true;
+        }
+    }
+    false
 }
 
 fn workspace_root() -> PathBuf {

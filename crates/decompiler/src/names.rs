@@ -25,6 +25,23 @@ pub(crate) fn package_and_simple(internal_name: &str) -> (Option<String>, String
     }
 }
 
+/// Returns the forward-slash relative source path used for a JVM class name.
+///
+/// Package and class segments use the same deterministic Java-identifier
+/// escaping as the source renderer, so the final file name matches the emitted
+/// top-level declaration.
+#[must_use]
+pub fn compilation_unit_path(internal_name: &str) -> String {
+    let mut segments = internal_name
+        .split('/')
+        .map(|segment| identifier(segment).0)
+        .collect::<Vec<_>>();
+    if let Some(file_name) = segments.last_mut() {
+        file_name.push_str(".java");
+    }
+    segments.join("/")
+}
+
 fn source_class_name(internal_name: &str) -> String {
     internal_name
         .split(['/', '.'])
@@ -269,3 +286,20 @@ const JAVA_KEYWORDS: &[&str] = &[
     "with",
     "yield",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::compilation_unit_path;
+
+    #[test]
+    fn compilation_unit_paths_match_escaped_source_names() {
+        assert_eq!(
+            compilation_unit_path("example/class"),
+            "example/cafe_class.java"
+        );
+        assert_eq!(
+            compilation_unit_path("package/Type-Name"),
+            "cafe_package/cafe_Typeu002dName.java"
+        );
+    }
+}
