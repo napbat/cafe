@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use disassembler::cfglib::{
-    Direction, EdgeId, EdgeRef, NodeId, RootedGraphView, TryEdgeProblem, TrySolveError,
-    try_solve_edge_problem_from,
+    Direction, EdgeId, EdgeRef, NodeId, Reachable, ReachableEdgeProblem, RootedGraphView,
+    TrySolveError, try_solve_edge_problem_from,
 };
 
 use crate::file::{AccessFlags, CodeItem, DexFile, EncodedMethod, PrototypeId};
@@ -121,10 +121,12 @@ fn analyze_inner(
         initial,
     };
     let facts =
-        try_solve_edge_problem_from(&flow, &problem, &[entry]).map_err(|error| match error {
-            TrySolveError::Problem(error) => error,
-            TrySolveError::Solver(error) => {
-                Error::invalid_instruction(flow.entry(), error.to_string())
+        try_solve_edge_problem_from(&flow, &Reachable(problem), &[entry]).map_err(|error| {
+            match error {
+                TrySolveError::Problem(error) => error,
+                TrySolveError::Solver(error) => {
+                    Error::invalid_instruction(flow.entry(), error.to_string())
+                }
             }
         })?;
 
@@ -153,65 +155,46 @@ struct RegisterProblem<'method> {
     initial: RegisterFrame,
 }
 
-impl TryEdgeProblem<ControlFlow> for RegisterProblem<'_> {
-    type Fact = Option<RegisterFrame>;
+impl ReachableEdgeProblem<ControlFlow> for RegisterProblem<'_> {
+    type Fact = RegisterFrame;
     type Error = Error;
 
     fn direction(&self) -> Direction {
         Direction::Forward
     }
 
-    fn bottom(&self, _graph: &ControlFlow) -> Self::Fact {
-        None
+    fn entry_fact(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<RegisterFrame>> {
+        Ok((node == self.entry).then(|| self.initial.clone()))
     }
 
-    fn boundary(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<Self::Fact>> {
-        Ok((node == self.entry).then(|| Some(self.initial.clone())))
-    }
-
-    fn meet(
+    fn merge(
         &self,
         _graph: &ControlFlow,
         _node: NodeId,
-        left: &Self::Fact,
-        right: &Self::Fact,
-    ) -> Result<Self::Fact> {
-        Ok(match (left, right) {
-            (None, None) => None,
-            (Some(frame), None) | (None, Some(frame)) => Some(frame.clone()),
-            (Some(left), Some(right)) => {
-                let mut merged = left.clone();
-                let _ = merge_frames(&mut merged, right, self.context.hierarchy);
-                Some(merged)
-            }
-        })
+        left: &RegisterFrame,
+        right: &RegisterFrame,
+    ) -> Result<RegisterFrame> {
+        let mut merged = left.clone();
+        let _ = merge_frames(&mut merged, right, self.context.hierarchy);
+        Ok(merged)
     }
 
-    fn transfer_node(
+    fn transfer(
         &self,
         graph: &ControlFlow,
         node: NodeId,
-        input: &Self::Fact,
-    ) -> Result<Self::Fact> {
-        let Some(input) = input else {
-            return Ok(None);
-        };
+        input: &RegisterFrame,
+    ) -> Result<RegisterFrame> {
         let offset = graph.node_offset(node);
-        transfer(&self.context, self.instructions[&offset], input).map(Some)
+        transfer(&self.context, self.instructions[&offset], input)
     }
 
-    fn transfer_edge(
+    fn edge_observes_input(
         &self,
         _graph: &ControlFlow,
         edge: EdgeRef<'_, NodeId, EdgeId, FlowEdge>,
-        node_input: &Self::Fact,
-        node_output: &Self::Fact,
-    ) -> Result<Self::Fact> {
-        if matches!(edge.data().kind, FlowEdgeKind::Exception(_)) {
-            Ok(node_input.clone())
-        } else {
-            Ok(node_output.clone())
-        }
+    ) -> bool {
+        matches!(edge.data().kind, FlowEdgeKind::Exception(_))
     }
 }
 

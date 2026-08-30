@@ -1,8 +1,8 @@
 //! Method entry construction and fixed-point JVM frame analysis.
 
 use disassembler::cfglib::{
-    Direction, EdgeId, EdgeRef, NodeId, RootedGraphView, TryEdgeProblem, TrySolveError,
-    try_solve_edge_problem_from,
+    Direction, EdgeId, EdgeRef, NodeId, Reachable, ReachableEdgeProblem, RootedGraphView,
+    TryEdgeProblem, TrySolveError, try_solve_edge_problem_from,
 };
 
 use crate::bytecode::{Instruction, Opcode, Operand, decode_code};
@@ -229,11 +229,11 @@ fn solve(
 ) -> Result<MethodAnalysis> {
     let entry = flow.root();
     let initial = initial_frame(context, access_flags, max_locals)?;
-    let problem = FrameProblem {
+    let problem = LiftedFrameProblem(Reachable(FrameProblem {
         context,
         entry,
         initial,
-    };
+    }));
     let facts =
         try_solve_edge_problem_from(&flow, &problem, &[entry]).map_err(|error| match error {
             TrySolveError::Problem(error) => error,
@@ -279,20 +279,75 @@ struct FrameProblem<'context, 'method> {
     initial: FrameState,
 }
 
-impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
-    type Fact = Option<FrameState>;
+impl ReachableEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
+    type Fact = FrameState;
     type Error = Error;
 
     fn direction(&self) -> Direction {
         Direction::Forward
     }
 
-    fn bottom(&self, _graph: &ControlFlow) -> Self::Fact {
-        None
+    fn entry_fact(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<FrameState>> {
+        Ok((node == self.entry).then(|| self.initial.clone()))
     }
 
-    fn boundary(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<Self::Fact>> {
-        Ok((node == self.entry).then(|| Some(self.initial.clone())))
+    fn merge(
+        &self,
+        graph: &ControlFlow,
+        node: NodeId,
+        left: &FrameState,
+        right: &FrameState,
+    ) -> Result<FrameState> {
+        let mut merged = left.clone();
+        let _ = merge_frames(
+            &mut merged,
+            right,
+            graph.node_offset(node),
+            self.context.hierarchy,
+        )?;
+        Ok(merged)
+    }
+
+    fn transfer(
+        &self,
+        _graph: &ControlFlow,
+        node: NodeId,
+        input: &FrameState,
+    ) -> Result<FrameState> {
+        transfer(
+            self.context,
+            &self.context.instructions[node.index()],
+            input,
+        )
+    }
+}
+
+/// The [`Reachable`] lifting of [`FrameProblem`] with JVM handler-entry
+/// frames on exceptional edges.
+///
+/// A JVM exceptional edge does not merely observe the throwing
+/// instruction's pre-state: the handler receives that frame's locals under
+/// a one-slot operand stack holding the caught class. That per-edge
+/// transformation is beyond
+/// [`ReachableEdgeProblem::edge_observes_input`], so this wrapper
+/// delegates everything to the standard lifting except the exceptional
+/// edge transfer, which rebuilds the fact through [`exception_frame`].
+struct LiftedFrameProblem<'context, 'method>(Reachable<FrameProblem<'context, 'method>>);
+
+impl TryEdgeProblem<ControlFlow> for LiftedFrameProblem<'_, '_> {
+    type Fact = Option<FrameState>;
+    type Error = Error;
+
+    fn direction(&self) -> Direction {
+        self.0.direction()
+    }
+
+    fn bottom(&self, graph: &ControlFlow) -> Self::Fact {
+        self.0.bottom(graph)
+    }
+
+    fn boundary(&self, graph: &ControlFlow, node: NodeId) -> Result<Option<Self::Fact>> {
+        self.0.boundary(graph, node)
     }
 
     fn meet(
@@ -302,42 +357,21 @@ impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
         left: &Self::Fact,
         right: &Self::Fact,
     ) -> Result<Self::Fact> {
-        match (left, right) {
-            (None, None) => Ok(None),
-            (Some(frame), None) | (None, Some(frame)) => Ok(Some(frame.clone())),
-            (Some(left), Some(right)) => {
-                let mut merged = left.clone();
-                let _ = merge_frames(
-                    &mut merged,
-                    right,
-                    graph.node_offset(node),
-                    self.context.hierarchy,
-                )?;
-                Ok(Some(merged))
-            }
-        }
+        self.0.meet(graph, node, left, right)
     }
 
     fn transfer_node(
         &self,
-        _graph: &ControlFlow,
+        graph: &ControlFlow,
         node: NodeId,
         input: &Self::Fact,
     ) -> Result<Self::Fact> {
-        let Some(input) = input else {
-            return Ok(None);
-        };
-        transfer(
-            self.context,
-            &self.context.instructions[node.index()],
-            input,
-        )
-        .map(Some)
+        self.0.transfer_node(graph, node, input)
     }
 
     fn transfer_edge(
         &self,
-        _graph: &ControlFlow,
+        graph: &ControlFlow,
         edge: EdgeRef<'_, NodeId, EdgeId, FlowEdge>,
         node_input: &Self::Fact,
         node_output: &Self::Fact,
@@ -345,10 +379,12 @@ impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
         match edge.data().kind {
             FlowEdgeKind::Exception { catch_type } => {
                 node_input.as_ref().map_or(Ok(None), |input| {
-                    exception_frame(self.context.pool, input, catch_type).map(Some)
+                    exception_frame(self.0.0.context.pool, input, catch_type).map(Some)
                 })
             }
-            FlowEdgeKind::FallThrough | FlowEdgeKind::Branch => Ok(node_output.clone()),
+            FlowEdgeKind::FallThrough | FlowEdgeKind::Branch => {
+                self.0.transfer_edge(graph, edge, node_input, node_output)
+            }
         }
     }
 }

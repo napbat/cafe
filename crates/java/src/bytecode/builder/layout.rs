@@ -1,5 +1,7 @@
 //! Fixed-point layout and relaxation for symbolic JVM instructions.
 
+use cfglib::{RelaxError, relax_layout};
+
 use super::super::encode::encoded_size_at;
 use super::super::{Instruction, Opcode, Operand, encode};
 use super::model::{
@@ -29,14 +31,42 @@ pub(super) fn finish(
         ));
     }
     ensure_all_labels_bound(bindings)?;
-    relax(&mut pending, bindings)?;
-    let (item_offsets, code_length) = item_offsets(&pending)?;
+    let (item_offsets, code_length, label_offsets) = relax_layout(
+        &mut pending,
+        pending_width,
+        |offsets, code_length| resolve_labels(bindings, offsets, code_length),
+        |instruction, offset, labels| {
+            let PendingInstructionKind::Branch {
+                opcode,
+                target,
+                form,
+            } = &mut instruction.kind
+            else {
+                return Ok(false);
+            };
+            let delta = branch_delta(offset, labels[target.index])?;
+            Ok(match *form {
+                BranchForm::Short if i16::try_from(delta).is_err() => {
+                    *form = if opcode.is_conditional_branch() {
+                        BranchForm::ExpandedConditional
+                    } else {
+                        BranchForm::Wide
+                    };
+                    true
+                }
+                BranchForm::Short | BranchForm::Wide | BranchForm::ExpandedConditional => false,
+            })
+        },
+    )
+    .map_err(|error| match error {
+        RelaxError::Overflow => Error::invalid_assembly("method bytecode layout overflows usize"),
+        RelaxError::Item(error) => error,
+    })?;
     if code_length > MAX_CODE_LENGTH {
         return Err(Error::invalid_assembly(format!(
             "method bytecode length {code_length} exceeds {MAX_CODE_LENGTH} bytes"
         )));
     }
-    let label_offsets = resolve_labels(bindings, &item_offsets, code_length)?;
     let instructions = materialize(&pending, &item_offsets, &label_offsets)?;
     let code = encode(&instructions)?;
     let exception_table = resolve_handlers(handlers, &label_offsets, code_length)?;
@@ -58,52 +88,6 @@ fn ensure_all_labels_bound(bindings: &[Option<usize>]) -> Result<()> {
     } else {
         Ok(())
     }
-}
-
-fn relax(pending: &mut [PendingInstruction], bindings: &[Option<usize>]) -> Result<()> {
-    loop {
-        let (offsets, code_length) = item_offsets(pending)?;
-        let labels = resolve_labels(bindings, &offsets, code_length)?;
-        let mut changed = false;
-        for (position, instruction) in pending.iter_mut().enumerate() {
-            let PendingInstructionKind::Branch {
-                opcode,
-                target,
-                form,
-            } = &mut instruction.kind
-            else {
-                continue;
-            };
-            let delta = branch_delta(offsets[position], labels[target.index])?;
-            match *form {
-                BranchForm::Short if i16::try_from(delta).is_err() => {
-                    *form = if opcode.is_conditional_branch() {
-                        BranchForm::ExpandedConditional
-                    } else {
-                        BranchForm::Wide
-                    };
-                    changed = true;
-                }
-                BranchForm::Short | BranchForm::Wide | BranchForm::ExpandedConditional => {}
-            }
-        }
-        if !changed {
-            return Ok(());
-        }
-    }
-}
-
-fn item_offsets(pending: &[PendingInstruction]) -> Result<(Vec<usize>, usize)> {
-    let mut offsets = Vec::with_capacity(pending.len());
-    let mut offset = 0_usize;
-    for instruction in pending {
-        offsets.push(offset);
-        let width = pending_width(instruction, offset)?;
-        offset = offset
-            .checked_add(width)
-            .ok_or_else(|| Error::invalid_assembly("method bytecode layout overflows usize"))?;
-    }
-    Ok((offsets, offset))
 }
 
 fn pending_width(instruction: &PendingInstruction, offset: usize) -> Result<usize> {
