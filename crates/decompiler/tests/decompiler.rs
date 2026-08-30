@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use decompiler::decompile_class;
+use decompiler::{
+    DecompilerOptions, SourceMapPolicy, decompile_class, decompile_class_with_options,
+};
 use java::bytecode::{CatchTarget, CodeBuilder, LocalKind, Opcode, Operand};
 use java::classfile::{
     Attribute, ClassAccessFlags, ClassFile, CodeAttribute, FieldAccessFlags, InnerClass,
@@ -714,6 +716,22 @@ fn decompiles_verified_mlil_with_source_provenance() -> Result<(), Box<dyn std::
     assert!(output.source_map.iter().all(|entry| {
         entry.generated.start < entry.generated.end && entry.generated.end <= output.source.len()
     }));
+    Ok(())
+}
+
+#[test]
+fn source_maps_can_be_omitted_without_changing_recovered_source() -> TestResult<()> {
+    let class = fixture()?;
+    let mapped = decompile_class(&class)?;
+    let unmapped = decompile_class_with_options(
+        &class,
+        &DecompilerOptions::default().with_source_maps(SourceMapPolicy::Omit),
+    )?;
+
+    assert_eq!(unmapped.source, mapped.source);
+    assert_eq!(unmapped.diagnostics, mapped.diagnostics);
+    assert!(!mapped.source_map.is_empty());
+    assert!(unmapped.source_map.is_empty());
     Ok(())
 }
 

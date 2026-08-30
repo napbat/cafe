@@ -266,29 +266,37 @@ fn merge_nested(parent: &mut DecompiledClass, children: Vec<DecompiledClass>) ->
     if children.is_empty() {
         return Ok(());
     }
-    let Some(prefix) = parent.source.strip_suffix("}\n") else {
+    if !parent.source.ends_with("}\n") {
         return Err(Error::UnsupportedArtifact(
             "generated class declaration has no closing brace".to_owned(),
         ));
-    };
-    let mut source = prefix.to_owned();
-    source.push('\n');
+    }
+    let child_bytes = children
+        .iter()
+        .map(|child| child.source.len())
+        .fold(0usize, usize::saturating_add);
+    parent
+        .source
+        .reserve(child_bytes.saturating_add(children.len() * 2));
+    parent.source.truncate(parent.source.len() - "}\n".len());
+    parent.source.push('\n');
     for (index, mut child) in children.into_iter().enumerate() {
         if index != 0 {
-            source.push('\n');
+            parent.source.push('\n');
         }
-        let base = source.len();
+        let base = parent.source.len();
         for line in child.source.lines() {
-            source.push_str("    ");
-            source.push_str(line);
-            source.push('\n');
+            parent.source.push_str("    ");
+            parent.source.push_str(line);
+            parent.source.push('\n');
         }
-        translate_nested_maps(&mut child.source_map, &child.source, base);
+        if !child.source_map.is_empty() {
+            translate_nested_maps(&mut child.source_map, &child.source, base);
+        }
         parent.source_map.extend(child.source_map);
         parent.diagnostics.extend(child.diagnostics);
     }
-    source.push_str("}\n");
-    parent.source = source;
+    parent.source.push_str("}\n");
     Ok(())
 }
 

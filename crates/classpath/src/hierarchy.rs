@@ -1,6 +1,9 @@
 //! Unified hierarchy storage and native analysis views.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use core::ops::ControlFlow;
+use std::collections::{BTreeMap, BTreeSet};
+
+use cfglib::{OpenBfsConfig, OpenBfsEvent, Visit, open_breadth_first_events};
 
 use crate::{ClassDeclaration, ClassDescriptor};
 
@@ -62,27 +65,32 @@ impl ClasspathHierarchy {
 
     fn ancestors(&self, descriptor: &str) -> Vec<String> {
         let mut output = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut queue = VecDeque::from([descriptor.to_owned()]);
-        while let Some(current) = queue.pop_front() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            output.push(current.clone());
-            let parents = ClassDescriptor::from_dex_descriptor(current.clone())
-                .ok()
-                .and_then(|name| self.declarations.get(&name));
-            if let Some(declaration) = parents {
-                queue.extend(
-                    declaration
-                        .parents
-                        .iter()
-                        .map(|parent| parent.as_descriptor().to_owned()),
-                );
-            } else if current != OBJECT_DESCRIPTOR {
-                queue.push_back(OBJECT_DESCRIPTOR.to_owned());
-            }
-        }
+        let interrupted = open_breadth_first_events::<_, ()>(
+            [descriptor.to_owned()],
+            OpenBfsConfig::new(),
+            |current: &String, parents: &mut Vec<String>| {
+                let declaration = ClassDescriptor::from_dex_descriptor(current.clone())
+                    .ok()
+                    .and_then(|name| self.declarations.get(&name));
+                if let Some(declaration) = declaration {
+                    parents.extend(
+                        declaration
+                            .parents
+                            .iter()
+                            .map(|parent| parent.as_descriptor().to_owned()),
+                    );
+                } else if current != OBJECT_DESCRIPTOR {
+                    parents.push(OBJECT_DESCRIPTOR.to_owned());
+                }
+            },
+            |event| {
+                if let OpenBfsEvent::Discover(current, _) = event {
+                    output.push(current.clone());
+                }
+                ControlFlow::Continue(Visit::Descend)
+            },
+        );
+        debug_assert!(interrupted.is_none(), "the ancestor walk never breaks");
         output
     }
 

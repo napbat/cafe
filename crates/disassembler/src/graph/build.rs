@@ -1,19 +1,58 @@
 //! Basic-block discovery and cfglib edge construction.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use cfglib::{
-    BlockId, Cfg, EdgeKind, Handler, HandlerBody, HandlerKind, HandlerRef, HandlerTypes, Region,
-    RegionId, verify_with,
+    AddressBuildError, AddressEdgeInfo, AddressEdgeRole, AddressFlow, AddressGraph, AddressHandler,
+    AddressInstruction, AddressSpace, HandlerKind, HandlerTypes, build_address_cfg, verify_with,
 };
 
 use super::validate::ControlFlowValidator;
 use super::{
     ControlFlowEdge, ControlFlowEdgeRole, ControlFlowGraph, ExceptionHandlerIndex, GraphError,
 };
-use crate::{CodeAddress, FunctionBody, Instruction, InstructionFlow};
+use crate::{CatchType, CodeAddress, FunctionBody, Instruction, InstructionFlow};
 
-type SharedCfg = Cfg<Instruction, ControlFlowEdge>;
+impl AddressSpace for CodeAddress {
+    fn distance_from(self, earlier: Self) -> u64 {
+        self.get() - earlier.get()
+    }
+}
+
+impl AddressInstruction for Instruction {
+    type Address = CodeAddress;
+    type CaseKey = i64;
+
+    fn address(&self) -> CodeAddress {
+        self.address
+    }
+
+    fn end_address(&self) -> Option<CodeAddress> {
+        self.checked_end()
+    }
+
+    fn flow(&self) -> AddressFlow<CodeAddress, i64> {
+        match &self.flow {
+            InstructionFlow::FallThrough => AddressFlow::FallThrough,
+            InstructionFlow::ConditionalBranch { target } => {
+                AddressFlow::Conditional { target: *target }
+            }
+            InstructionFlow::UnconditionalBranch { target } => {
+                AddressFlow::Unconditional { target: *target }
+            }
+            InstructionFlow::Switch { default, cases } => AddressFlow::Switch {
+                default: *default,
+                cases: cases.iter().map(|case| (case.key, case.target)).collect(),
+            },
+            InstructionFlow::Return => AddressFlow::Return,
+            InstructionFlow::Throw => AddressFlow::Throw,
+            InstructionFlow::IndirectBranch => AddressFlow::Indirect,
+            InstructionFlow::SubroutineCall { target } => AddressFlow::Call { target: *target },
+        }
+    }
+
+    fn retains_exception_edge(&self) -> bool {
+        self.exception_behavior.retains_exception_edge()
+    }
+}
 
 /// Builds a verified cfglib control-flow graph from a function body.
 ///
@@ -29,19 +68,48 @@ type SharedCfg = Cfg<Instruction, ControlFlowEdge>;
 /// instruction boundary, exception metadata is invalid, or cfglib reports a
 /// structural invariant violation.
 pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph, GraphError> {
-    let code_end = validate_instructions(body)?;
-    let instruction_addresses = body
-        .instructions
+    let handlers = body
+        .exception_handlers
         .iter()
-        .map(|instruction| instruction.address)
-        .collect::<BTreeSet<_>>();
-    let mut leaders = collect_flow_leaders(body, &instruction_addresses)?;
-    validate_exception_handlers(body, code_end, &instruction_addresses, &mut leaders)?;
+        .map(|handler| AddressHandler {
+            protected: handler.protected.start..handler.protected.end,
+            entry: handler.handler,
+            kind: match &handler.catch {
+                CatchType::Any => HandlerKind::CatchAll,
+                CatchType::Type(_) => HandlerKind::Catch,
+            },
+        })
+        .collect::<Vec<_>>();
 
-    let (mut cfg, instruction_blocks) = populate_blocks(body, &leaders);
-    add_normal_edges(&mut cfg, &instruction_blocks);
-    add_exception_edges(body, &mut cfg, &instruction_blocks);
-    let (handler_refs, handler_types) = add_exception_regions(body, &mut cfg, &instruction_blocks);
+    let AddressGraph {
+        mut cfg,
+        instruction_blocks,
+        handler_refs,
+    } = build_address_cfg(body.instructions.clone(), &handlers, |info| {
+        edge_payload(body, info)
+    })
+    .map_err(graph_error)?;
+
+    let block_starts = cfg
+        .blocks()
+        .iter()
+        .filter_map(|block| {
+            block
+                .instructions()
+                .first()
+                .map(|instruction| (block.id(), instruction.address))
+        })
+        .collect::<Vec<_>>();
+    for (block, address) in block_starts {
+        cfg.block_mut(block).set_label(format!("address_{address}"));
+    }
+
+    let mut handler_types = HandlerTypes::new();
+    for (handler, definition) in handler_refs.iter().copied().zip(&body.exception_handlers) {
+        if let CatchType::Type(catch_type) = &definition.catch {
+            handler_types.set(handler, catch_type.clone());
+        }
+    }
 
     let verification = verify_with(&cfg, &ControlFlowValidator::new(body));
     if !verification.is_ok() {
@@ -65,452 +133,65 @@ pub fn build_control_flow_graph(body: &FunctionBody) -> Result<ControlFlowGraph,
     ))
 }
 
-fn validate_instructions(body: &FunctionBody) -> Result<CodeAddress, GraphError> {
-    let mut previous_end = None;
-    for instruction in &body.instructions {
-        if instruction.size.is_zero() {
-            return Err(GraphError::ZeroInstructionSize {
-                address: instruction.address,
-            });
-        }
-        if previous_end.is_some_and(|end| instruction.address < end) {
-            return Err(GraphError::OverlappingInstruction {
-                address: instruction.address,
-                previous_end: previous_end.expect("checked as present"),
-            });
-        }
-        previous_end = Some(
-            instruction
-                .checked_end()
-                .ok_or(GraphError::AddressOverflow {
-                    address: instruction.address,
-                })?,
-        );
-    }
-    Ok(previous_end.unwrap_or(CodeAddress::ZERO))
-}
-
-fn collect_flow_leaders(
+fn edge_payload(
     body: &FunctionBody,
-    instruction_addresses: &BTreeSet<CodeAddress>,
-) -> Result<BTreeSet<CodeAddress>, GraphError> {
-    let mut leaders = BTreeSet::new();
-    if let Some(first) = body.instructions.first() {
-        leaders.insert(first.address);
-    }
-
-    for (position, instruction) in body.instructions.iter().enumerate() {
-        match &instruction.flow {
-            InstructionFlow::FallThrough
-            | InstructionFlow::Return
-            | InstructionFlow::Throw
-            | InstructionFlow::IndirectBranch => {}
-            InstructionFlow::ConditionalBranch { target }
-            | InstructionFlow::UnconditionalBranch { target }
-            | InstructionFlow::SubroutineCall { target } => {
-                validate_branch_target(instruction.address, *target, instruction_addresses)?;
-                leaders.insert(*target);
-            }
-            InstructionFlow::Switch { default, cases } => {
-                validate_branch_target(instruction.address, *default, instruction_addresses)?;
-                leaders.insert(*default);
-                for case in cases {
-                    validate_branch_target(
-                        instruction.address,
-                        case.target,
-                        instruction_addresses,
-                    )?;
-                    leaders.insert(case.target);
-                }
+    info: AddressEdgeInfo<'_, CodeAddress, i64>,
+) -> ControlFlowEdge {
+    let role = match info.role {
+        AddressEdgeRole::Sequential => ControlFlowEdgeRole::Sequential,
+        AddressEdgeRole::ConditionalTaken => ControlFlowEdgeRole::ConditionalTaken,
+        AddressEdgeRole::ConditionalFallThrough => ControlFlowEdgeRole::ConditionalFallThrough,
+        AddressEdgeRole::Branch => ControlFlowEdgeRole::DirectBranch,
+        AddressEdgeRole::SwitchDefault => ControlFlowEdgeRole::SwitchDefault,
+        AddressEdgeRole::SwitchCase { key } => ControlFlowEdgeRole::SwitchCase { key: *key },
+        AddressEdgeRole::Call => ControlFlowEdgeRole::SubroutineCall,
+        AddressEdgeRole::CallContinuation { call_site } => {
+            ControlFlowEdgeRole::SubroutineContinuation { call_site }
+        }
+        AddressEdgeRole::Unwind { handler } => {
+            let definition = &body.exception_handlers[handler];
+            ControlFlowEdgeRole::Exception {
+                handler: ExceptionHandlerIndex::from_index(handler),
+                protected: definition.protected,
+                catch: definition.catch.clone(),
             }
         }
-
-        if instruction.flow.ends_basic_block()
-            && let Some(next) = body.instructions.get(position + 1)
-        {
-            leaders.insert(next.address);
-        }
-    }
-    Ok(leaders)
+    };
+    ControlFlowEdge::new(info.source, info.target, role)
 }
 
-fn validate_branch_target(
-    source: CodeAddress,
-    target: CodeAddress,
-    instruction_addresses: &BTreeSet<CodeAddress>,
-) -> Result<(), GraphError> {
-    if instruction_addresses.contains(&target) {
-        Ok(())
-    } else {
-        Err(GraphError::MissingBranchTarget {
-            source_address: source,
-            target,
-        })
-    }
-}
-
-fn validate_exception_handlers(
-    body: &FunctionBody,
-    code_end: CodeAddress,
-    instruction_addresses: &BTreeSet<CodeAddress>,
-    leaders: &mut BTreeSet<CodeAddress>,
-) -> Result<(), GraphError> {
-    for handler in &body.exception_handlers {
-        if handler.protected.is_empty() {
-            return Err(GraphError::InvalidExceptionRange {
-                start: handler.protected.start,
-                end: handler.protected.end,
-            });
+fn graph_error(error: AddressBuildError<CodeAddress>) -> GraphError {
+    match error {
+        AddressBuildError::ZeroSizeInstruction { address } => {
+            GraphError::ZeroInstructionSize { address }
         }
-        if !instruction_addresses.contains(&handler.protected.start) {
-            return Err(GraphError::MissingExceptionStart {
-                address: handler.protected.start,
-            });
-        }
-        if handler.protected.end != code_end
-            && !instruction_addresses.contains(&handler.protected.end)
-        {
-            return Err(GraphError::MissingExceptionEnd {
-                address: handler.protected.end,
-            });
-        }
-        if !instruction_addresses.contains(&handler.handler) {
-            return Err(GraphError::MissingExceptionHandler {
-                address: handler.handler,
-            });
-        }
-        leaders.insert(handler.protected.start);
-        for instruction in &body.instructions {
-            if handler.protected.contains(instruction.address) {
-                leaders.insert(instruction.address);
+        AddressBuildError::OverlappingInstruction {
+            address,
+            previous_end,
+        } => GraphError::OverlappingInstruction {
+            address,
+            previous_end,
+        },
+        AddressBuildError::AddressOverflow { address } => GraphError::AddressOverflow { address },
+        AddressBuildError::MissingBranchTarget { source, target } => {
+            GraphError::MissingBranchTarget {
+                source_address: source,
+                target,
             }
         }
-        if handler.protected.end != code_end {
-            leaders.insert(handler.protected.end);
+        AddressBuildError::EmptyProtectedRange { start, end } => {
+            GraphError::InvalidExceptionRange { start, end }
         }
-        leaders.insert(handler.handler);
-    }
-    Ok(())
-}
-
-fn populate_blocks(
-    body: &FunctionBody,
-    leaders: &BTreeSet<CodeAddress>,
-) -> (SharedCfg, BTreeMap<CodeAddress, BlockId>) {
-    let mut cfg = SharedCfg::with_edge_payload();
-    let mut current = cfg.entry();
-    let mut instruction_blocks = BTreeMap::new();
-
-    for (position, instruction) in body.instructions.iter().enumerate() {
-        if position != 0 && leaders.contains(&instruction.address) {
-            current = cfg.new_block();
+        AddressBuildError::MissingRangeStart { address } => {
+            GraphError::MissingExceptionStart { address }
         }
-        if cfg.block(current).is_empty() {
-            cfg.block_mut(current)
-                .set_label(format!("address_{}", instruction.address));
+        AddressBuildError::MissingRangeEnd { address } => {
+            GraphError::MissingExceptionEnd { address }
         }
-        cfg.block_mut(current).push(instruction.clone());
-        instruction_blocks.insert(instruction.address, current);
-    }
-    (cfg, instruction_blocks)
-}
-
-fn add_normal_edges(cfg: &mut SharedCfg, instruction_blocks: &BTreeMap<CodeAddress, BlockId>) {
-    let blocks = cfg
-        .blocks()
-        .iter()
-        .filter(|block| !block.is_empty())
-        .map(cfglib::BasicBlock::id)
-        .collect::<Vec<_>>();
-
-    for (position, &block) in blocks.iter().enumerate() {
-        let terminator = cfg
-            .block(block)
-            .instructions()
-            .last()
-            .expect("filtered to non-empty blocks");
-        let source_address = terminator.address;
-        let flow = terminator.flow.clone();
-        let next = blocks.get(position + 1).copied();
-        match flow {
-            InstructionFlow::FallThrough => {
-                add_optional_edge(
-                    cfg,
-                    block,
-                    next,
-                    EdgeKind::Fallthrough,
-                    ControlFlowEdgeRole::Sequential,
-                );
-            }
-            InstructionFlow::ConditionalBranch { target } => {
-                add_target_edge(
-                    cfg,
-                    block,
-                    target,
-                    EdgeKind::ConditionalTrue,
-                    ControlFlowEdgeRole::ConditionalTaken,
-                    instruction_blocks,
-                );
-                add_optional_edge(
-                    cfg,
-                    block,
-                    next,
-                    EdgeKind::ConditionalFalse,
-                    ControlFlowEdgeRole::ConditionalFallThrough,
-                );
-            }
-            InstructionFlow::UnconditionalBranch { target } => {
-                add_target_edge(
-                    cfg,
-                    block,
-                    target,
-                    EdgeKind::Jump,
-                    ControlFlowEdgeRole::DirectBranch,
-                    instruction_blocks,
-                );
-            }
-            InstructionFlow::Switch { default, cases } => {
-                add_target_edge(
-                    cfg,
-                    block,
-                    default,
-                    EdgeKind::SwitchCase,
-                    ControlFlowEdgeRole::SwitchDefault,
-                    instruction_blocks,
-                );
-                for case in cases {
-                    add_target_edge(
-                        cfg,
-                        block,
-                        case.target,
-                        EdgeKind::SwitchCase,
-                        ControlFlowEdgeRole::SwitchCase { key: case.key },
-                        instruction_blocks,
-                    );
-                }
-            }
-            InstructionFlow::SubroutineCall { target } => {
-                add_target_edge(
-                    cfg,
-                    block,
-                    target,
-                    EdgeKind::Call,
-                    ControlFlowEdgeRole::SubroutineCall,
-                    instruction_blocks,
-                );
-                add_optional_edge(
-                    cfg,
-                    block,
-                    next,
-                    EdgeKind::CallReturn,
-                    ControlFlowEdgeRole::SubroutineContinuation {
-                        call_site: source_address,
-                    },
-                );
-            }
-            InstructionFlow::Return | InstructionFlow::Throw | InstructionFlow::IndirectBranch => {}
+        AddressBuildError::MissingHandlerEntry { address } => {
+            GraphError::MissingExceptionHandler { address }
         }
     }
-}
-
-fn add_optional_edge(
-    cfg: &mut SharedCfg,
-    source: BlockId,
-    target: Option<BlockId>,
-    kind: EdgeKind,
-    role: ControlFlowEdgeRole,
-) {
-    if let Some(target) = target {
-        add_flow_edge(cfg, source, target, kind, role);
-    }
-}
-
-fn add_target_edge(
-    cfg: &mut SharedCfg,
-    source: BlockId,
-    target: CodeAddress,
-    kind: EdgeKind,
-    role: ControlFlowEdgeRole,
-    instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
-) {
-    add_flow_edge(cfg, source, instruction_blocks[&target], kind, role);
-}
-
-fn add_flow_edge(
-    cfg: &mut SharedCfg,
-    source: BlockId,
-    target: BlockId,
-    kind: EdgeKind,
-    role: ControlFlowEdgeRole,
-) {
-    let source_address = cfg
-        .block(source)
-        .instructions()
-        .last()
-        .expect("normal edges leave non-empty blocks")
-        .address;
-    let target_address = cfg
-        .block(target)
-        .instructions()
-        .first()
-        .expect("normal edges enter non-empty blocks")
-        .address;
-    cfg.add_edge_with_payload(
-        source,
-        target,
-        kind,
-        ControlFlowEdge::new(source_address, target_address, role),
-    );
-}
-
-fn add_exception_edges(
-    body: &FunctionBody,
-    cfg: &mut SharedCfg,
-    instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
-) {
-    let block_starts = cfg
-        .blocks()
-        .iter()
-        .filter_map(|block| {
-            block
-                .instructions()
-                .first()
-                .map(|instruction| (block.id(), instruction.address))
-        })
-        .collect::<Vec<_>>();
-
-    for (index, handler) in body.exception_handlers.iter().enumerate() {
-        let target = instruction_blocks[&handler.handler];
-        for &(source, address) in &block_starts {
-            if handler.protected.contains(address)
-                && cfg
-                    .block(source)
-                    .instructions()
-                    .first()
-                    .is_some_and(|instruction| {
-                        instruction.exception_behavior.retains_exception_edge()
-                    })
-            {
-                cfg.add_edge_with_payload(
-                    source,
-                    target,
-                    EdgeKind::ExceptionUnwind,
-                    ControlFlowEdge::new(
-                        address,
-                        handler.handler,
-                        ControlFlowEdgeRole::Exception {
-                            handler: ExceptionHandlerIndex::from_index(index),
-                            protected: handler.protected,
-                            catch: handler.catch.clone(),
-                        },
-                    ),
-                );
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ExceptionRegionDraft {
-    protected: crate::AddressRange,
-    handler_indices: Vec<usize>,
-}
-
-fn add_exception_regions(
-    body: &FunctionBody,
-    cfg: &mut SharedCfg,
-    instruction_blocks: &BTreeMap<CodeAddress, BlockId>,
-) -> (Vec<HandlerRef>, HandlerTypes<String>) {
-    let mut drafts = Vec::<ExceptionRegionDraft>::new();
-    for (index, handler) in body.exception_handlers.iter().enumerate() {
-        if let Some(draft) = drafts
-            .iter_mut()
-            .find(|draft| draft.protected == handler.protected)
-        {
-            draft.handler_indices.push(index);
-        } else {
-            drafts.push(ExceptionRegionDraft {
-                protected: handler.protected,
-                handler_indices: vec![index],
-            });
-        }
-    }
-
-    // cfglib resolves the innermost protecting region by reverse insertion
-    // order, so enclosing ranges must be registered before nested ranges.
-    // Stable sorting preserves native table order for disjoint peers.
-    drafts.sort_by(|left, right| {
-        exception_range_span(right.protected).cmp(&exception_range_span(left.protected))
-    });
-
-    let block_starts = cfg
-        .blocks()
-        .iter()
-        .filter_map(|block| {
-            block
-                .instructions()
-                .first()
-                .map(|instruction| (block.id(), instruction.address))
-        })
-        .collect::<Vec<_>>();
-
-    let mut handler_refs = vec![None; body.exception_handlers.len()];
-    for (index, draft) in drafts.iter().enumerate() {
-        let protected_blocks = block_starts
-            .iter()
-            .filter_map(|&(block, address)| draft.protected.contains(address).then_some(block))
-            .collect();
-        let handlers = draft
-            .handler_indices
-            .iter()
-            .map(|&handler_index| {
-                let handler = &body.exception_handlers[handler_index];
-                Handler {
-                    entry: instruction_blocks[&handler.handler],
-                    body: HandlerBody::unknown(),
-                    kind: match &handler.catch {
-                        crate::CatchType::Any => HandlerKind::CatchAll,
-                        crate::CatchType::Type(_) => HandlerKind::Catch,
-                    },
-                }
-            })
-            .collect();
-        let parent = drafts[..index]
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| strictly_contains(candidate.protected, draft.protected))
-            .min_by_key(|(_, candidate)| exception_range_span(candidate.protected))
-            .map(|(parent_index, _)| RegionId::from_index(parent_index));
-
-        let region = cfg.add_region(Region {
-            id: RegionId::from_raw(0),
-            protected_blocks,
-            handlers,
-            parent,
-        });
-        for (handler_position, &handler_index) in draft.handler_indices.iter().enumerate() {
-            handler_refs[handler_index] = Some(HandlerRef::new(region, handler_position));
-        }
-    }
-    let handler_refs = handler_refs
-        .into_iter()
-        .map(|handler| handler.expect("every validated handler is assigned to one region"))
-        .collect::<Vec<_>>();
-    let mut handler_types = HandlerTypes::new();
-    for (handler, definition) in handler_refs.iter().copied().zip(&body.exception_handlers) {
-        if let crate::CatchType::Type(catch_type) = &definition.catch {
-            handler_types.set(handler, catch_type.clone());
-        }
-    }
-    (handler_refs, handler_types)
-}
-
-fn strictly_contains(outer: crate::AddressRange, inner: crate::AddressRange) -> bool {
-    outer != inner && outer.start <= inner.start && inner.end <= outer.end
-}
-
-fn exception_range_span(range: crate::AddressRange) -> u64 {
-    range.end.get() - range.start.get()
 }
 
 #[cfg(test)]

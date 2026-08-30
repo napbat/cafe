@@ -1,9 +1,8 @@
 //! Method entry construction and fixed-point JVM frame analysis.
 
-use std::collections::BTreeMap;
-
 use disassembler::cfglib::{
-    Direction, EdgeRef, RootedGraphView, TryEdgeProblem, TrySolveError, try_solve_edge_problem_from,
+    Direction, EdgeId, EdgeRef, NodeId, RootedGraphView, TryEdgeProblem, TrySolveError,
+    try_solve_edge_problem_from,
 };
 
 use crate::bytecode::{Instruction, Opcode, Operand, decode_code};
@@ -24,7 +23,7 @@ pub(super) struct MethodContext<'a> {
     pub(super) owner: &'a str,
     pub(super) name: &'a str,
     pub(super) descriptor: &'a MethodDescriptor,
-    pub(super) instructions: &'a BTreeMap<usize, &'a Instruction>,
+    pub(super) instructions: &'a [Instruction],
     pub(super) hierarchy: &'a dyn ReferenceHierarchy,
 }
 
@@ -211,16 +210,12 @@ fn analyze_inner(
     }
     let max_locals = required_locals(descriptor, access_flags, instructions)?;
     let flow = build_control_flow(instructions, &code.exception_table)?;
-    let instruction_map = instructions
-        .iter()
-        .map(|instruction| (instruction.offset, instruction))
-        .collect::<BTreeMap<_, _>>();
     let context = MethodContext {
         pool,
         owner,
         name,
         descriptor,
-        instructions: &instruction_map,
+        instructions,
         hierarchy,
     };
     solve(&context, access_flags, max_locals, flow)
@@ -247,29 +242,24 @@ fn solve(
             }
         })?;
 
-    let mut entries = BTreeMap::new();
-    let mut exits = BTreeMap::new();
+    let mut entries = Vec::with_capacity(flow.nodes().len());
+    let mut exits = Vec::with_capacity(flow.nodes().len());
     let mut maximum_stack_slots = 0;
     for (node, &offset) in flow.nodes().iter().enumerate() {
-        if let Some(frame) = facts.fact_in(node) {
-            maximum_stack_slots = maximum_stack_slots.max(frame.stack_slots());
-            entries.insert(offset, frame.clone());
-        }
-        if let Some(frame) = facts.fact_out(node) {
-            maximum_stack_slots = maximum_stack_slots.max(frame.stack_slots());
-            exits.insert(offset, frame.clone());
-        }
-    }
-
-    if let Some(unreachable) = flow
-        .nodes()
-        .iter()
-        .find(|offset| !entries.contains_key(offset))
-    {
-        return Err(Error::invalid_bytecode(
-            *unreachable,
-            "unreachable code requires an explicit seed frame and cannot be inferred",
-        ));
+        let entry = facts.fact_in(node).as_ref().ok_or_else(|| {
+            Error::invalid_bytecode(
+                offset,
+                "unreachable code requires an explicit seed frame and cannot be inferred",
+            )
+        })?;
+        let exit = facts.fact_out(node).as_ref().ok_or_else(|| {
+            Error::invalid_bytecode(offset, "reachable instruction has no inferred exit frame")
+        })?;
+        maximum_stack_slots = maximum_stack_slots
+            .max(entry.stack_slots())
+            .max(exit.stack_slots());
+        entries.push(entry.clone());
+        exits.push(exit.clone());
     }
 
     let max_stack = u16::try_from(maximum_stack_slots)
@@ -285,7 +275,7 @@ fn solve(
 
 struct FrameProblem<'context, 'method> {
     context: &'context MethodContext<'method>,
-    entry: usize,
+    entry: NodeId,
     initial: FrameState,
 }
 
@@ -301,14 +291,14 @@ impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
         None
     }
 
-    fn boundary(&self, _graph: &ControlFlow, node: usize) -> Result<Option<Self::Fact>> {
+    fn boundary(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<Self::Fact>> {
         Ok((node == self.entry).then(|| Some(self.initial.clone())))
     }
 
     fn meet(
         &self,
         graph: &ControlFlow,
-        node: usize,
+        node: NodeId,
         left: &Self::Fact,
         right: &Self::Fact,
     ) -> Result<Self::Fact> {
@@ -330,21 +320,25 @@ impl TryEdgeProblem<ControlFlow> for FrameProblem<'_, '_> {
 
     fn transfer_node(
         &self,
-        graph: &ControlFlow,
-        node: usize,
+        _graph: &ControlFlow,
+        node: NodeId,
         input: &Self::Fact,
     ) -> Result<Self::Fact> {
         let Some(input) = input else {
             return Ok(None);
         };
-        let offset = graph.node_offset(node);
-        transfer(self.context, self.context.instructions[&offset], input).map(Some)
+        transfer(
+            self.context,
+            &self.context.instructions[node.index()],
+            input,
+        )
+        .map(Some)
     }
 
     fn transfer_edge(
         &self,
         _graph: &ControlFlow,
-        edge: EdgeRef<'_, usize, usize, FlowEdge>,
+        edge: EdgeRef<'_, NodeId, EdgeId, FlowEdge>,
         node_input: &Self::Fact,
         node_output: &Self::Fact,
     ) -> Result<Self::Fact> {

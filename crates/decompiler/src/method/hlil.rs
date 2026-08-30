@@ -10,7 +10,9 @@ mod analysis;
 mod control;
 mod expression;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use java::descriptor::ReturnType;
 use mlil::cfglib::ir::hlil::{
@@ -62,6 +64,7 @@ pub(super) fn render_body(
 ) -> Result<RenderedBody, RenderFailure> {
     let forwarding = return_forwardings(&lifted.function);
     let variables = VariableLayout::new_hlil(&lifted.function, request, &forwarding.variables);
+    let allocation_aliases = allocation_aliases(request.function);
     let mut renderer = HlilRenderer {
         function: &lifted.function,
         mlil: request.function,
@@ -71,10 +74,16 @@ pub(super) fn render_body(
         rethrow: request.rethrow,
         names: request.names,
         class_initializer: request.kind.class_initializer(),
-        allocation_aliases: allocation_aliases(request.function),
-        statement_instructions: statement_instructions(&lifted.function, lifted),
+        allocation_aliases,
+        reference_types: RefCell::new(HashMap::new()),
+        statement_instructions: if request.options.source_maps.generates() {
+            statement_instructions(&lifted.function, lifted)
+        } else {
+            BTreeMap::new()
+        },
         writer: SourceWriter::default(),
         source_map: Vec::new(),
+        collect_source_map: request.options.source_maps.generates(),
         caught_names: Vec::new(),
         caught_counter: 0,
         unchecked_calls: request.unchecked_calls,
@@ -211,9 +220,13 @@ pub(super) struct HlilRenderer<'a> {
     names: &'a SourceNames,
     class_initializer: bool,
     allocation_aliases: BTreeMap<AllocationSite, BTreeSet<VariableId>>,
+    /// Per-method source spellings of exact reference descriptors. Expression
+    /// rendering asks for these on nearly every reference-valued node.
+    reference_types: RefCell<HashMap<String, Rc<str>>>,
     statement_instructions: BTreeMap<StatementId, Vec<InstructionId>>,
     writer: SourceWriter,
     source_map: Vec<SourceMapEntry>,
+    collect_source_map: bool,
     caught_names: Vec<String>,
     caught_counter: usize,
     /// Methods of the rendered class declaring no exceptions: calls to
@@ -385,10 +398,10 @@ impl<'a> HlilRenderer<'a> {
         let error = format!("cafe_error_h{}", self.error_counter);
         self.error_counter += 1;
         self.writer
-            .line(&format!("}} catch (java.lang.Throwable {error}) {{"));
+            .line_fmt(format_args!("}} catch (java.lang.Throwable {error}) {{"));
         self.writer.indent();
         self.writer
-            .line(&format!("throw {}({error});", self.rethrow));
+            .line_fmt(format_args!("throw {}({error});", self.rethrow));
         self.writer.dedent();
         self.writer.line("}");
     }
@@ -525,14 +538,14 @@ impl<'a> HlilRenderer<'a> {
             StatementKind::Break { label } => match label {
                 Some(label) => {
                     let label = java_label(label);
-                    self.writer.line(&format!("break {label};"));
+                    self.writer.line_fmt(format_args!("break {label};"));
                 }
                 None => self.writer.line("break;"),
             },
             StatementKind::Continue { label } => match label {
                 Some(label) => {
                     let label = java_label(label);
-                    self.writer.line(&format!("continue {label};"));
+                    self.writer.line_fmt(format_args!("continue {label};"));
                 }
                 None => self.writer.line("continue;"),
             },
@@ -868,6 +881,9 @@ impl<'a> HlilRenderer<'a> {
     }
 
     fn map_statement(&mut self, statement: StatementId, start: usize) {
+        if !self.collect_source_map {
+            return;
+        }
         let end = self.writer.position();
         if start == end {
             return;

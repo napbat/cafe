@@ -1,8 +1,10 @@
 //! Public JVM verification-frame and control-flow results.
 
-use std::collections::BTreeMap;
+use disassembler::cfglib::{
+    DirectedGraphView, EdgeGraphView, EdgeId, EdgeRef, KeyedGraph, NodeId, RootedGraphView,
+};
 
-use disassembler::cfglib::{DirectedGraphView, EdgeGraphView, EdgeRef, RootedGraphView};
+use crate::{Error, Result};
 
 /// Symbolic verification value used before constant-pool stack-map encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -118,16 +120,37 @@ pub struct FlowEdge {
 /// Exception-aware control flow over decoded JVM instructions.
 ///
 /// This is also a cfglib node, edge, and rooted view. Algorithms use dense
-/// encoded-order positions as node identities while [`FlowEdge`] retains exact
-/// bytecode offsets for consumers and diagnostics.
+/// encoded-order node identities while [`FlowEdge`] retains exact bytecode
+/// offsets for consumers and diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlow {
-    pub(super) entry: usize,
-    pub(super) nodes: Vec<usize>,
-    pub(super) edges: Vec<FlowEdge>,
+    entry: usize,
+    edges: Vec<FlowEdge>,
+    graph: KeyedGraph<usize, usize, FlowEdge>,
 }
 
 impl ControlFlow {
+    pub(super) fn build(entry: usize, nodes: &[usize], edges: Vec<FlowEdge>) -> Result<Self> {
+        let mut graph = KeyedGraph::new();
+        for offset in nodes {
+            graph.intern(offset);
+        }
+        for &edge in &edges {
+            let source = graph.node_id(&edge.source).ok_or_else(|| {
+                Error::invalid_bytecode(edge.source, "control-flow source is not an instruction")
+            })?;
+            let target = graph.node_id(&edge.target).ok_or_else(|| {
+                Error::invalid_bytecode(edge.source, "control-flow target is not an instruction")
+            })?;
+            graph.add_edge(source, target, edge);
+        }
+        Ok(Self {
+            entry,
+            edges,
+            graph,
+        })
+    }
+
     /// Returns the entry instruction offset.
     #[must_use]
     pub const fn entry(&self) -> usize {
@@ -137,7 +160,7 @@ impl ControlFlow {
     /// Returns instruction offsets in encoded order.
     #[must_use]
     pub fn nodes(&self) -> &[usize] {
-        &self.nodes
+        self.graph.graph().nodes()
     }
 
     /// Returns typed directed edges in stable source order.
@@ -148,86 +171,68 @@ impl ControlFlow {
 
     /// Iterates over outgoing edges from one instruction.
     pub fn successors(&self, source: usize) -> impl Iterator<Item = &FlowEdge> {
-        self.edges.iter().filter(move |edge| edge.source == source)
+        self.graph
+            .node_id(&source)
+            .into_iter()
+            .flat_map(|node| self.graph.graph().outgoing_edges(node))
+            .map(|&edge| self.graph.graph().edge(edge).payload())
     }
 
-    pub(super) fn node_index(&self, offset: usize) -> usize {
-        self.nodes
-            .binary_search(&offset)
-            .expect("control-flow edge endpoint is not an instruction node")
+    pub(super) fn node_position(&self, offset: usize) -> Option<usize> {
+        self.graph.node_id(&offset).map(NodeId::index)
     }
 
-    pub(super) fn node_offset(&self, node: usize) -> usize {
-        self.nodes[node]
+    pub(super) fn node_offset(&self, node: NodeId) -> usize {
+        *self.graph.graph().node(node)
     }
 }
 
 impl DirectedGraphView for ControlFlow {
-    type NodeId = usize;
+    type NodeId = NodeId;
 
     fn node_count(&self) -> usize {
-        self.nodes.len()
+        self.graph.graph().node_count()
     }
 
-    fn successors(&self, node: usize) -> impl Iterator<Item = usize> + '_ {
-        let source = self.node_offset(node);
-        self.edges
-            .iter()
-            .filter(move |edge| edge.source == source)
-            .map(|edge| self.node_index(edge.target))
+    fn successors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.graph.graph().successors(node)
     }
 
-    fn predecessors(&self, node: usize) -> impl Iterator<Item = usize> + '_ {
-        let target = self.node_offset(node);
-        self.edges
-            .iter()
-            .filter(move |edge| edge.target == target)
-            .map(|edge| self.node_index(edge.source))
+    fn predecessors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.graph.graph().predecessors(node)
     }
 }
 
 impl EdgeGraphView for ControlFlow {
-    type EdgeId = usize;
+    type EdgeId = EdgeId;
     type EdgeData = FlowEdge;
 
     fn edge_slot_count(&self) -> usize {
-        self.edges.len()
+        self.graph.graph().edge_slot_count()
     }
 
-    fn edge_ids(&self) -> impl Iterator<Item = usize> + '_ {
-        0..self.edges.len()
+    fn edge_ids(&self) -> impl Iterator<Item = EdgeId> + '_ {
+        EdgeGraphView::edge_ids(&self.graph)
     }
 
-    fn outgoing_edges(&self, node: usize) -> impl Iterator<Item = usize> + '_ {
-        let source = self.node_offset(node);
-        self.edges
-            .iter()
-            .enumerate()
-            .filter_map(move |(edge_id, edge)| (edge.source == source).then_some(edge_id))
+    fn outgoing_edges(&self, node: NodeId) -> impl Iterator<Item = EdgeId> + '_ {
+        self.graph.graph().outgoing_edges(node).iter().copied()
     }
 
-    fn incoming_edges(&self, node: usize) -> impl Iterator<Item = usize> + '_ {
-        let target = self.node_offset(node);
-        self.edges
-            .iter()
-            .enumerate()
-            .filter_map(move |(edge_id, edge)| (edge.target == target).then_some(edge_id))
+    fn incoming_edges(&self, node: NodeId) -> impl Iterator<Item = EdgeId> + '_ {
+        self.graph.graph().incoming_edges(node).iter().copied()
     }
 
-    fn edge_ref(&self, edge: usize) -> EdgeRef<'_, usize, usize, FlowEdge> {
-        let data = &self.edges[edge];
-        EdgeRef::new(
-            edge,
-            self.node_index(data.source),
-            self.node_index(data.target),
-            data,
-        )
+    fn edge_ref(&self, edge: EdgeId) -> EdgeRef<'_, NodeId, EdgeId, FlowEdge> {
+        EdgeGraphView::edge_ref(&self.graph, edge)
     }
 }
 
 impl RootedGraphView for ControlFlow {
-    fn root(&self) -> usize {
-        self.node_index(self.entry)
+    fn root(&self) -> NodeId {
+        self.graph
+            .node_id(&self.entry)
+            .expect("control-flow entry is not an instruction node")
     }
 }
 
@@ -235,8 +240,8 @@ impl RootedGraphView for ControlFlow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodAnalysis {
     pub(super) flow: ControlFlow,
-    pub(super) entries: BTreeMap<usize, FrameState>,
-    pub(super) exits: BTreeMap<usize, FrameState>,
+    pub(super) entries: Vec<FrameState>,
+    pub(super) exits: Vec<FrameState>,
     pub(super) max_stack: u16,
     pub(super) max_locals: u16,
 }
@@ -251,13 +256,17 @@ impl MethodAnalysis {
     /// Returns the merged frame before a reachable instruction.
     #[must_use]
     pub fn entry_frame(&self, offset: usize) -> Option<&FrameState> {
-        self.entries.get(&offset)
+        self.flow
+            .node_position(offset)
+            .and_then(|node| self.entries.get(node))
     }
 
     /// Returns the frame after normal completion of a reachable instruction.
     #[must_use]
     pub fn exit_frame(&self, offset: usize) -> Option<&FrameState> {
-        self.exits.get(&offset)
+        self.flow
+            .node_position(offset)
+            .and_then(|node| self.exits.get(node))
     }
 
     /// Returns the exact maximum operand-stack depth in slots.
@@ -274,6 +283,12 @@ impl MethodAnalysis {
 
     /// Iterates over reachable entry frames in bytecode order.
     pub fn entry_frames(&self) -> impl Iterator<Item = (usize, &FrameState)> {
-        self.entries.iter().map(|(&offset, frame)| (offset, frame))
+        self.flow.nodes().iter().copied().zip(&self.entries)
+    }
+
+    pub(crate) fn frames_at(&self, instruction: usize) -> Option<(&FrameState, &FrameState)> {
+        self.entries
+            .get(instruction)
+            .zip(self.exits.get(instruction))
     }
 }

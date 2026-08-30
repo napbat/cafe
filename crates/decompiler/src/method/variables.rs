@@ -1,6 +1,7 @@
 //! Java local storage for mutable, multiply typed MLIL variables.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use java::descriptor::JavaType;
 use mlil::{Function, ValueType, VariableId, VariableRole};
@@ -53,7 +54,7 @@ pub(super) struct VariableLayout {
     roles: BTreeMap<VariableId, VariableRole>,
     /// Exact declared Java type of the object view, for variables whose
     /// every reference occurrence names one type.
-    object_types: BTreeMap<VariableId, String>,
+    object_types: BTreeMap<VariableId, Rc<str>>,
     instance: bool,
 }
 
@@ -79,9 +80,7 @@ impl VariableLayout {
                     .zip(instruction.use_types())
                     .chain(instruction.defs().iter().zip(instruction.def_types()))
                 {
-                    for kind in kinds(value_type) {
-                        slots.insert((variable, kind));
-                    }
+                    insert_kinds(&mut slots, variable, value_type);
                 }
             }
         }
@@ -133,9 +132,7 @@ impl VariableLayout {
                 if forwarded.contains(&variable) {
                     continue;
                 }
-                for kind in kinds(expression.value_type()) {
-                    slots.insert((variable, kind));
-                }
+                insert_kinds(&mut slots, variable, expression.value_type());
             }
         }
         // Declared reference types unify over the CANONICAL occurrences: a
@@ -151,7 +148,7 @@ impl VariableLayout {
                     .zip(instruction.use_types())
                     .chain(instruction.defs().iter().zip(instruction.def_types()));
                 for (&variable, value_type) in occurrences {
-                    unify(&mut witnesses, variable, value_type, names);
+                    unify(&mut witnesses, variable, value_type);
                 }
             }
         }
@@ -162,7 +159,10 @@ impl VariableLayout {
             .collect();
         let mut object_types = BTreeMap::new();
         for (variable, witness) in witnesses {
-            let Witness::Exact(name) = witness else {
+            let Witness::Exact(descriptor) = witness else {
+                continue;
+            };
+            let Ok(name) = super::instruction::reference_type_name(&descriptor, names) else {
                 continue;
             };
             match roles.get(&variable) {
@@ -188,7 +188,7 @@ impl VariableLayout {
                 }
                 _ => {}
             }
-            object_types.insert(variable, name);
+            object_types.insert(variable, Rc::from(name));
         }
         let defined = canonical
             .cfg()
@@ -265,7 +265,11 @@ impl VariableLayout {
     /// The exact declared Java type of one variable's object view, when its
     /// reference occurrences unified to one type.
     pub(super) fn object_type(&self, variable: VariableId) -> Option<&str> {
-        self.object_types.get(&variable).map(String::as_str)
+        self.object_types.get(&variable).map(Rc::as_ref)
+    }
+
+    pub(super) fn shared_object_type(&self, variable: VariableId) -> Option<Rc<str>> {
+        self.object_types.get(&variable).cloned()
     }
 
     /// Whether the variable occurs through this slot view at all — and is
@@ -399,17 +403,11 @@ fn unify(
     witnesses: &mut BTreeMap<VariableId, Witness>,
     variable: VariableId,
     value_type: &ValueType,
-    names: &crate::names::SourceNames,
 ) {
     let witness = match value_type {
         ValueType::Reference(Some(descriptor))
         | ValueType::UninitializedThis(descriptor)
-        | ValueType::Uninitialized { descriptor, .. } => {
-            match super::instruction::reference_type_name(descriptor, names) {
-                Ok(name) => Witness::Exact(name),
-                Err(_) => Witness::Poisoned,
-            }
-        }
+        | ValueType::Uninitialized { descriptor, .. } => Witness::Exact(descriptor.clone()),
         ValueType::Reference(None) | ValueType::Unknown | ValueType::Conflict => Witness::Poisoned,
         // `Null` and the Dalvik zero pattern are assignable to any declared
         // reference type, and primitive occurrences do not constrain the
@@ -440,12 +438,19 @@ pub(super) fn java_kind(value: &JavaType) -> SlotKind {
     }
 }
 
-fn kinds(value_type: &ValueType) -> Vec<SlotKind> {
+fn insert_kinds(
+    slots: &mut BTreeSet<(VariableId, SlotKind)>,
+    variable: VariableId,
+    value_type: &ValueType,
+) {
     match value_type {
         ValueType::Zero | ValueType::Unknown | ValueType::Conflict => {
-            vec![SlotKind::Int, SlotKind::Object]
+            slots.insert((variable, SlotKind::Int));
+            slots.insert((variable, SlotKind::Object));
         }
-        value => vec![primary_kind(value)],
+        value => {
+            slots.insert((variable, primary_kind(value)));
+        }
     }
 }
 

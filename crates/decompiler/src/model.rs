@@ -34,7 +34,8 @@ pub struct DecompiledBody {
     pub source: String,
     /// Non-fatal recovery diagnostics.
     pub diagnostics: Vec<Diagnostic>,
-    /// Generated-to-native provenance relative to [`Self::source`].
+    /// Generated-to-native provenance relative to [`Self::source`], or empty
+    /// when [`crate::SourceMapPolicy::Omit`] was selected.
     pub source_map: Vec<SourceMapEntry>,
 }
 
@@ -46,6 +47,7 @@ pub struct DecompiledClass {
     pub source: String,
     /// Non-fatal declaration and method diagnostics.
     pub diagnostics: Vec<Diagnostic>,
-    /// Generated-to-native provenance relative to [`Self::source`].
+    /// Generated-to-native provenance relative to [`Self::source`], or empty
+    /// when [`crate::SourceMapPolicy::Omit`] was selected.
     pub source_map: Vec<SourceMapEntry>,
 }

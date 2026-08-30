@@ -2,8 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cfglib::{BlockId, EdgeId, HandlerRef, TraversalDirection, reachable};
+use cfglib::{
+    BlockId, EdgeId, ExclusiveExtent, ExtentIssue, HandlerRef, recover_exclusive_extents_with,
+};
 
+use super::edge::is_normal_edge;
 use super::{ControlFlowEdgeRole, ControlFlowGraph, ExceptionHandlerIndex};
 use crate::{CatchType, CodeAddress, ExceptionHandler, InstructionFlow};
 
@@ -145,62 +148,9 @@ impl RecoveredExceptionModel {
     /// Computes recovered handler structure without mutating the canonical CFG.
     #[must_use]
     pub fn compute(graph: &ControlFlowGraph) -> Self {
-        let cfg = graph.cfg();
-        let normal_view = graph.normal_view();
-        let method_reachable = reachable(&normal_view, [cfg.entry()], TraversalDirection::Outgoing);
-        let handler_entries = graph
-            .handler_refs
-            .iter()
-            .map(|&handler| handler_entry(cfg, handler))
-            .collect::<BTreeSet<_>>();
-        let handler_reachability = handler_entries
-            .iter()
-            .map(|&entry| {
-                (
-                    entry,
-                    reachable(&normal_view, [entry], TraversalDirection::Outgoing),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        let handlers = graph
-            .exception_handlers
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(position, definition)| {
-                let index = ExceptionHandlerIndex::from_index(position);
-                let cfglib_handler = graph.handler_refs[position];
-                let entry_block = handler_entry(cfg, cfglib_handler);
-                let extent =
-                    recover_extent(graph, entry_block, &method_reachable, &handler_reachability);
-                let semantics = recover_semantics(&definition.catch, &extent, graph);
-                let throw_sites = cfg
-                    .edges()
-                    .filter_map(|edge| match edge.payload().role() {
-                        ControlFlowEdgeRole::Exception { handler, .. } if *handler == index => {
-                            Some(ExceptionThrowSite {
-                                edge: edge.id(),
-                                block: edge.source(),
-                                address: edge.payload().source(),
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-
-                RecoveredExceptionHandler {
-                    index,
-                    cfglib_handler,
-                    definition,
-                    entry_block,
-                    throw_sites,
-                    extent,
-                    semantics,
-                }
-            })
-            .collect();
-        Self { handlers }
+        Self {
+            handlers: recover_handlers(graph),
+        }
     }
 
     /// Returns handlers in exact source table order.
@@ -236,70 +186,80 @@ impl RecoveredExceptionModel {
     }
 }
 
-fn handler_entry(
-    cfg: &cfglib::Cfg<crate::Instruction, super::ControlFlowEdge>,
-    handler: HandlerRef,
-) -> BlockId {
-    cfg.regions()[handler.region().index()].handlers[handler.index()].entry
+/// Recovers every native handler's structure in exact source table order.
+fn recover_handlers(graph: &ControlFlowGraph) -> Vec<RecoveredExceptionHandler> {
+    let cfg = graph.cfg();
+    let mut extents = recover_exclusive_extents_with(cfg, is_normal_edge)
+        .into_iter()
+        .map(|extent| (extent.handler, extent))
+        .collect::<BTreeMap<_, _>>();
+
+    graph
+        .exception_handlers
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(position, definition)| {
+            let index = ExceptionHandlerIndex::from_index(position);
+            let cfglib_handler = graph.handler_refs[position];
+            let exclusive = extents
+                .remove(&cfglib_handler)
+                .expect("every native handler has one recovered cfglib extent");
+            let entry_block = exclusive.entry;
+            let extent = refine_extent(graph, exclusive);
+            let semantics = recover_semantics(&definition.catch, &extent, graph);
+            let throw_sites = cfg
+                .edges()
+                .filter_map(|edge| match edge.payload().role() {
+                    ControlFlowEdgeRole::Exception { handler, .. } if *handler == index => {
+                        Some(ExceptionThrowSite {
+                            edge: edge.id(),
+                            block: edge.source(),
+                            address: edge.payload().source(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            RecoveredExceptionHandler {
+                index,
+                cfglib_handler,
+                definition,
+                entry_block,
+                throw_sites,
+                extent,
+                semantics,
+            }
+        })
+        .collect()
 }
 
-fn recover_extent(
-    graph: &ControlFlowGraph,
-    entry: BlockId,
-    method_reachable: &[bool],
-    handler_reachability: &BTreeMap<BlockId, Vec<bool>>,
-) -> RecoveredHandlerExtent {
+/// Refines a generic exclusive-reachability extent with cafe's
+/// instruction-level ambiguity evidence.
+///
+/// The structural issues come 1:1 from cfglib; the two instruction-level
+/// checks ([`HandlerExtentIssue::IndirectControlFlow`] and
+/// [`HandlerExtentIssue::UnresolvedExit`]) inspect [`InstructionFlow`], which
+/// the shared graph does not model.
+fn refine_extent(graph: &ControlFlowGraph, exclusive: ExclusiveExtent) -> RecoveredHandlerExtent {
     let cfg = graph.cfg();
-    let reachable_from_entry = &handler_reachability[&entry];
-    let blocks = cfg
-        .blocks()
+    let mut issues = exclusive
+        .issues
         .iter()
-        .map(cfglib::BasicBlock::id)
-        .filter(|block| {
-            reachable_from_entry[block.index()]
-                && !method_reachable[block.index()]
-                && handler_reachability
-                    .iter()
-                    .all(|(&other, reachable)| other == entry || !reachable[block.index()])
+        .map(|issue| match *issue {
+            ExtentIssue::EntryReachableFromNormalFlow => {
+                HandlerExtentIssue::EntryReachableFromNormalFlow
+            }
+            ExtentIssue::EntryReachableFromAnotherHandler => {
+                HandlerExtentIssue::EntryReachableFromAnotherHandler
+            }
+            ExtentIssue::ExternalEntry { block, predecessor } => {
+                HandlerExtentIssue::ExternalEntry { block, predecessor }
+            }
         })
         .collect::<BTreeSet<_>>();
-
-    let mut boundary_blocks = BTreeSet::new();
-    if !blocks.contains(&entry) {
-        boundary_blocks.insert(entry);
-    }
-    for &block in &blocks {
-        for &edge in cfg.successor_edges(block) {
-            let edge = cfg.edge(edge);
-            if !edge.payload().is_exceptional() && !blocks.contains(&edge.target()) {
-                boundary_blocks.insert(edge.target());
-            }
-        }
-    }
-
-    let mut issues = BTreeSet::new();
-    if method_reachable[entry.index()] {
-        issues.insert(HandlerExtentIssue::EntryReachableFromNormalFlow);
-    }
-    if handler_reachability
-        .iter()
-        .any(|(&other, reachable)| other != entry && reachable[entry.index()])
-    {
-        issues.insert(HandlerExtentIssue::EntryReachableFromAnotherHandler);
-    }
-    for &block in &blocks {
-        if block != entry {
-            for &edge in cfg.predecessor_edges(block) {
-                let edge = cfg.edge(edge);
-                if !edge.payload().is_exceptional() && !blocks.contains(&edge.source()) {
-                    issues.insert(HandlerExtentIssue::ExternalEntry {
-                        block,
-                        predecessor: edge.source(),
-                    });
-                }
-            }
-        }
-
+    for &block in &exclusive.blocks {
         let Some(instruction) = cfg.block(block).instructions().last() else {
             continue;
         };
@@ -321,8 +281,8 @@ fn recover_extent(
     }
 
     RecoveredHandlerExtent {
-        blocks,
-        boundary_blocks,
+        blocks: exclusive.blocks,
+        boundary_blocks: exclusive.boundary_blocks,
         issues: issues.into_iter().collect(),
     }
 }

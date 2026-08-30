@@ -1,8 +1,8 @@
 //! Conservative bridge from recovered native exception flow to cfglib lifting.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use cfglib::{AstNode, Cfg, HandlerBody, HandlerRef, RegionId};
+use cfglib::{
+    AstNode, Cfg, ExtentPromotionStatus, HandlerRef, RegionId, promote_exclusive_extents,
+};
 
 use super::{ControlFlowEdge, ControlFlowGraph, HandlerExtentStatus, RecoveredExceptionModel};
 use crate::Instruction;
@@ -44,8 +44,8 @@ pub struct StructuredRegionDecision {
 /// The canonical [`ControlFlowGraph`] is never mutated. Promotion is atomic per
 /// exception region because cfglib structures a try only when every handler
 /// body is complete. Ambiguous extents and shared handler bodies remain
-/// [`HandlerBody::Unknown`]. Catch-all entries remain catch-all entries; this
-/// bridge never infers source-level `finally` semantics.
+/// [`cfglib::HandlerBody::Unknown`]. Catch-all entries remain catch-all
+/// entries; this bridge never infers source-level `finally` semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredStructuredControlFlow {
     cfg: Cfg<Instruction, ControlFlowEdge>,
@@ -57,66 +57,27 @@ impl RecoveredStructuredControlFlow {
     pub(crate) fn compute(graph: &ControlFlowGraph) -> Self {
         let exception_model = graph.recovered_exception_model();
         let mut cfg = graph.cfg().clone();
-        let mut candidates = BTreeMap::<RegionId, Vec<(HandlerRef, BTreeSet<_>)>>::new();
-        let mut statuses = BTreeMap::new();
-
-        for region in cfg.regions() {
-            let mut handlers = Vec::with_capacity(region.handlers.len());
-            for index in 0..region.handlers.len() {
-                let handler = HandlerRef::new(region.id, index);
-                let recovered = exception_model
-                    .handler_by_ref(handler)
-                    .expect("every cfglib handler retains a native identity");
-                if recovered.extent.status() == HandlerExtentStatus::Ambiguous {
-                    statuses.insert(
-                        region.id,
-                        StructuredRegionStatus::AmbiguousExtent { handler },
-                    );
-                    break;
+        let decisions = promote_exclusive_extents(&mut cfg, |handler| {
+            let recovered = exception_model
+                .handler_by_ref(handler)
+                .expect("every cfglib handler retains a native identity");
+            (recovered.extent.status() != HandlerExtentStatus::Ambiguous)
+                .then(|| recovered.extent.blocks.clone())
+        })
+        .into_iter()
+        .map(|decision| StructuredRegionDecision {
+            region: decision.region,
+            status: match decision.status {
+                ExtentPromotionStatus::Promoted => StructuredRegionStatus::Promoted,
+                ExtentPromotionStatus::AmbiguousExtent { handler } => {
+                    StructuredRegionStatus::AmbiguousExtent { handler }
                 }
-                handlers.push((handler, recovered.extent.blocks.clone()));
-            }
-            if !statuses.contains_key(&region.id) {
-                candidates.insert(region.id, handlers);
-            }
-        }
-
-        let flat = candidates
-            .values()
-            .flatten()
-            .map(|(handler, blocks)| (*handler, blocks))
-            .collect::<Vec<_>>();
-        for (position, &(first, first_blocks)) in flat.iter().enumerate() {
-            for &(second, second_blocks) in &flat[position + 1..] {
-                if first_blocks.is_disjoint(second_blocks) {
-                    continue;
+                ExtentPromotionStatus::OverlappingExtents { first, second } => {
+                    StructuredRegionStatus::OverlappingHandlerExtents { first, second }
                 }
-                let status = StructuredRegionStatus::OverlappingHandlerExtents { first, second };
-                statuses.entry(first.region()).or_insert(status);
-                statuses.entry(second.region()).or_insert(status);
-            }
-        }
-
-        for (&region, handlers) in &candidates {
-            if statuses.contains_key(&region) {
-                continue;
-            }
-            for (handler, blocks) in handlers {
-                cfg.handler_mut(*handler)
-                    .expect("handler identity came from this cloned CFG")
-                    .body = HandlerBody::known(blocks.iter().copied());
-            }
-            statuses.insert(region, StructuredRegionStatus::Promoted);
-        }
-
-        let decisions = cfg
-            .regions()
-            .iter()
-            .map(|region| StructuredRegionDecision {
-                region: region.id,
-                status: statuses[&region.id],
-            })
-            .collect();
+            },
+        })
+        .collect();
         Self {
             cfg,
             exception_model,
@@ -159,6 +120,8 @@ impl RecoveredStructuredControlFlow {
 
 #[cfg(test)]
 mod tests {
+    use cfglib::HandlerBody;
+
     use super::*;
     use crate::{
         AddressRange, AddressUnit, CatchType, CodeAddress, CodeSize, ExceptionHandler,

@@ -336,10 +336,14 @@ provides:
   arrays, fields, calls, allocation and constructor aliases, casts,
   `instanceof`, returns, throws, and caught exceptions;
 - deterministic diagnostics and UTF-8 generated spans mapped through stable
-  MLIL instruction identities to all contributing native bytecode ranges;
+  MLIL instruction identities to all contributing native bytecode ranges, with
+  an explicit map-omission policy for text-only consumers;
 - a single-decode JVM lifting path shared by LLIL, frame analysis, and RTL,
-  indexed generated-span translation, and deterministic largest-unit-first JAR
-  scheduling so unusually large methods do not create a serial completion tail;
+  indexed frame-graph adjacency and boundary state, def-use-web-preserving RTL
+  raising without a redundant MLIL SSA rebuild, retained post-pass structure,
+  lazy fallback rendering, indexed generated-span translation, and deterministic
+  largest-unit-first JAR scheduling so unusually large methods do not create a
+  serial completion tail;
 - conservative throwing stubs when a method cannot be represented, including
   Java-legal static-initializer stubs, rather than guessed source semantics;
 - canonical `InnerClasses` type names and exact member modifiers, generic class,

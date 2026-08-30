@@ -1,5 +1,7 @@
 //! Indented source writer with stable byte positions.
 
+use std::fmt::{Arguments, Write as _};
+
 const INDENT: &str = "    ";
 
 /// Precomputed translation from an unindented fragment into generated source.
@@ -50,11 +52,23 @@ pub(crate) struct SourceWriter {
 
 impl SourceWriter {
     pub(crate) fn line(&mut self, value: &str) {
+        self.write_indent();
+        self.source.push_str(value);
+        self.source.push('\n');
+    }
+
+    pub(crate) fn line_fmt(&mut self, value: Arguments<'_>) {
+        self.write_indent();
+        self.source
+            .write_fmt(value)
+            .expect("formatting Java source into a String cannot fail");
+        self.source.push('\n');
+    }
+
+    fn write_indent(&mut self) {
         for _ in 0..self.indent {
             self.source.push_str(INDENT);
         }
-        self.source.push_str(value);
-        self.source.push('\n');
     }
 
     pub(crate) fn blank(&mut self) {
@@ -75,6 +89,9 @@ impl SourceWriter {
 
     pub(crate) fn push_source(&mut self, value: &str) -> usize {
         let start = self.position();
+        // The fragment bytes are a strict lower bound; reserving them avoids
+        // repeated growth while indentation is added line by line.
+        self.source.reserve(value.len());
         for line in value.lines() {
             self.line(line);
         }
@@ -98,6 +115,14 @@ mod tests {
                 assert_eq!(mapping.translate(offset), reference(source, offset, 7, 8));
             }
         }
+    }
+
+    #[test]
+    fn formatted_lines_write_directly_at_the_current_indent() {
+        let mut writer = SourceWriter::default();
+        writer.indent();
+        writer.line_fmt(format_args!("value = {};", 7));
+        assert_eq!(writer.finish(), "    value = 7;\n");
     }
 
     #[allow(clippy::naive_bytecount)]

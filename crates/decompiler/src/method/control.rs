@@ -124,24 +124,6 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
             source_map: Vec::new(),
         });
     }
-    let variables = VariableLayout::new(
-        request.function,
-        request.parameters,
-        request.parameter_names,
-        request.kind.instance(),
-    );
-    let renderer = InstructionRenderer::new(
-        request.function,
-        &variables,
-        request.return_type,
-        request.owner,
-        request.rethrow,
-        request.names,
-        request.kind.class_initializer(),
-    );
-    preflight(request.function, &renderer)?;
-    let skipped = skipped_instructions(request.function, prelude.as_ref());
-
     let state_machine_reason = state_machine_reason(request);
     let mut structured_ast = None;
     if state_machine_reason.is_none() {
@@ -166,11 +148,34 @@ fn try_render(request: &BodyRequest<'_>) -> Result<RenderedBody, RenderFailure> 
         ));
     }
 
+    // The expression-oriented path has its own complete renderer. Constructing
+    // the statement renderer and rendering every instruction as a preflight is
+    // only useful when that path falls back; keeping it lazy avoids duplicating
+    // the dominant formatting work for successfully lifted methods.
+    let variables = VariableLayout::new(
+        request.function,
+        request.parameters,
+        request.parameter_names,
+        request.kind.instance(),
+    );
+    let renderer = InstructionRenderer::new(
+        request.function,
+        &variables,
+        request.return_type,
+        request.owner,
+        request.rethrow,
+        request.names,
+        request.kind.class_initializer(),
+    );
+    preflight(request.function, &renderer)?;
+    let skipped = skipped_instructions(request.function, prelude.as_ref());
+
     let mut context = RenderContext {
         function: request.function,
         renderer,
         writer: SourceWriter::default(),
         source_map: Vec::new(),
+        collect_source_map: request.options.source_maps.generates(),
         skipped,
         class_initializer: request.kind.class_initializer(),
         frames: Vec::new(),
@@ -248,20 +253,42 @@ fn implicit_empty_constructor(function: &Function, prelude: Option<&ConstructorP
 fn recover_structured(request: &BodyRequest<'_>) -> StructuredRecovery {
     // Structure one derived function through the configured presentation-pass
     // schedule. The verified canonical MLIL remains untouched.
-    let derived = super::passes::apply(request.function, &request.options.passes);
+    let presentation = super::passes::apply(request.function, &request.options.passes);
+    let derived = &presentation.function;
 
     // Prefer expression-oriented HLIL; unsupported shapes fall back to the
     // statement-oriented structured renderer and then the exact state machine.
-    if !request.kind.enum_constructor()
-        && let Ok(lifted) = mlil::cfglib::ir::hlil::lift_function(&derived)
-        && lifted.report.unstructured_regions.is_empty()
-        && let Ok(lifted) = lifted.with_recovered_structure()
-        && let Ok(body) = super::hlil::render_body(request, &lifted)
-    {
-        return StructuredRecovery::Rendered(Box::new(body));
+    let lift_metadata = if request.options.source_maps.generates() {
+        mlil::cfglib::ir::hlil::LiftMetadata::Preserve
+    } else {
+        mlil::cfglib::ir::hlil::LiftMetadata::Omit
+    };
+    if !request.kind.enum_constructor() {
+        let lifted = match presentation.structure.as_ref() {
+            Some((ast, report)) => mlil::cfglib::ir::hlil::lift_function_with_structure(
+                derived,
+                ast,
+                report,
+                lift_metadata,
+            ),
+            None => mlil::cfglib::ir::hlil::lift_function_with_metadata(derived, lift_metadata),
+        };
+        if let Ok(lifted) = lifted
+            && lifted.report.unstructured_regions.is_empty()
+        {
+            let lifted = lifted.with_recovered_structure();
+            if let Ok(lifted) = lifted {
+                let body = super::hlil::render_body(request, &lifted);
+                if let Ok(body) = body {
+                    return StructuredRecovery::Rendered(Box::new(body));
+                }
+            }
+        }
     }
 
-    let (ast, report) = mlil::cfglib::lift_with_report(derived.cfg());
+    let (ast, report) = presentation
+        .structure
+        .unwrap_or_else(|| mlil::cfglib::lift_with_report(derived.cfg()));
     if report.unstructured_regions.is_empty() && structured_java(&ast) {
         StructuredRecovery::Ast(Box::new(ast))
     } else {
@@ -388,6 +415,7 @@ struct RenderContext<'a> {
     renderer: InstructionRenderer<'a>,
     writer: SourceWriter,
     source_map: Vec<SourceMapEntry>,
+    collect_source_map: bool,
     skipped: BTreeSet<InstructionId>,
     class_initializer: bool,
     frames: Vec<Frame>,
@@ -673,7 +701,7 @@ impl RenderContext<'_> {
     }
 
     fn map(&mut self, instruction: InstructionId, start: usize, end: usize) {
-        if start == end {
+        if !self.collect_source_map || start == end {
             return;
         }
         let native_ranges = self

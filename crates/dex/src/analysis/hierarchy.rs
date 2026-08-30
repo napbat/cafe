@@ -1,6 +1,9 @@
 //! Conservative reference hierarchy derived from DEX class definitions.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use core::ops::ControlFlow;
+use std::collections::{BTreeMap, BTreeSet};
+
+use cfglib::{OpenBfsConfig, OpenBfsEvent, Visit, open_breadth_first_events};
 
 use crate::Result;
 use crate::file::DexFile;
@@ -111,19 +114,24 @@ impl DexHierarchy {
 
     fn ancestors(&self, descriptor: &str) -> Vec<String> {
         let mut output = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut queue = VecDeque::from([descriptor.to_owned()]);
-        while let Some(current) = queue.pop_front() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            output.push(current.clone());
-            if let Some(parents) = self.parents.get(&current) {
-                queue.extend(parents.iter().cloned());
-            } else if current != JAVA_LANG_OBJECT_DESCRIPTOR {
-                queue.push_back(JAVA_LANG_OBJECT_DESCRIPTOR.to_owned());
-            }
-        }
+        let interrupted = open_breadth_first_events::<_, ()>(
+            [descriptor.to_owned()],
+            OpenBfsConfig::new(),
+            |current, parents| {
+                if let Some(direct) = self.parents.get(current) {
+                    parents.extend(direct.iter().cloned());
+                } else if current != JAVA_LANG_OBJECT_DESCRIPTOR {
+                    parents.push(JAVA_LANG_OBJECT_DESCRIPTOR.to_owned());
+                }
+            },
+            |event| {
+                if let OpenBfsEvent::Discover(current, _) = event {
+                    output.push(current.clone());
+                }
+                ControlFlow::Continue(Visit::Descend)
+            },
+        );
+        debug_assert!(interrupted.is_none(), "the ancestor walk never breaks");
         output
     }
 }

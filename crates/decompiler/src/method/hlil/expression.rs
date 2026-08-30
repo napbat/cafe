@@ -6,12 +6,14 @@ use mlil::{
     AllocationKind, ArrayAccess, BinaryOperator, BranchOperandKind, CallKind, Constant,
     ElementType, FieldAccess, Operation, Relation, ThreeWayComparison, ValueType,
 };
+use std::rc::Rc;
 
 use super::super::instruction::{
     RenderFailure, binary_symbol, constant_expression, element_array_descriptor,
     java_value_to_slot, method_symbol, new_array, reference_type, reference_type_name,
     relation_symbol, unary_symbol,
 };
+use super::super::variables::SlotKind;
 use super::HlilRenderer;
 use super::mlil_variable;
 
@@ -44,7 +46,7 @@ pub(super) struct Rendered {
     /// The expression's exact static Java reference type, when known: the
     /// declared type for variables, the occurrence type otherwise. `None`
     /// means `java.lang.Object` (or a primitive).
-    exact: Option<String>,
+    exact: Option<Rc<str>>,
     pub(super) value_type: ValueType,
 }
 
@@ -102,15 +104,16 @@ impl HlilRenderer<'_> {
         match expression.kind() {
             ExpressionKind::Variable(variable) => {
                 let variable = mlil_variable(*variable);
+                let kind = self.variables.kind(&value_type);
                 Ok(Rendered {
                     text: self.variables.value(variable, &value_type),
-                    object: Some(self.variables.object(variable)),
-                    int: Some(self.variables.int(variable)),
+                    object: (kind != SlotKind::Object).then(|| self.variables.object(variable)),
+                    int: (kind != SlotKind::Int).then(|| self.variables.int(variable)),
                     boolean: None,
                     atomic: true,
                     pure: true,
                     calls: false,
-                    exact: self.variables.object_type(variable).map(str::to_owned),
+                    exact: self.variables.shared_object_type(variable),
                     value_type,
                 })
             }
@@ -288,11 +291,18 @@ impl HlilRenderer<'_> {
     }
 
     /// The exact rendered Java type of one reference occurrence type.
-    fn exact_reference(&self, value_type: &ValueType) -> Option<String> {
+    fn exact_reference(&self, value_type: &ValueType) -> Option<Rc<str>> {
         let ValueType::Reference(Some(descriptor)) = value_type else {
             return None;
         };
-        reference_type_name(descriptor, self.names).ok()
+        if let Some(name) = self.reference_types.borrow().get(descriptor).cloned() {
+            return Some(name);
+        }
+        let name = Rc::<str>::from(reference_type_name(descriptor, self.names).ok()?);
+        self.reference_types
+            .borrow_mut()
+            .insert(descriptor.clone(), Rc::clone(&name));
+        Some(name)
     }
 
     /// A value-position reference cast: elided when the static type already
@@ -489,7 +499,7 @@ impl HlilRenderer<'_> {
             atomic: true,
             pure: true,
             calls: false,
-            exact: Some("java.lang.Throwable".to_owned()),
+            exact: Some(Rc::from("java.lang.Throwable")),
             value_type,
         }
     }

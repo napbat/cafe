@@ -347,8 +347,15 @@ exception decisions. Missing declarations remain conservative. Use
 needs only body statements. The returned source map uses UTF-8
 byte spans in the generated source and retains the overload-qualified native
 coordinate, MLIL instruction identity, and all contributing bytecode ranges.
+Consumers that only need text can select `SourceMapPolicy::Omit`; the CLI uses
+that policy because it writes source files without a sidecar map.
 The direct JVM path decodes each method once and shares that checked stream
-between LLIL classification, frame propagation, and RTL lifting. Generated
+between LLIL classification, frame propagation, and RTL lifting. Frame solving
+uses indexed instruction adjacency and dense boundary tables, and RTL raising
+already partitions storage into typed def-use webs, so the decompiler does not
+recompute SSA merely to split the same variables again. Presentation passes
+retain their final structured view for HLIL lifting, while the legacy statement
+preflight is constructed only when HLIL actually falls back. Generated
 source-span indentation uses a per-fragment newline index, keeping translation
 linearithmic instead of repeatedly scanning multi-megabyte method bodies.
 

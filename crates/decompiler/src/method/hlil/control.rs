@@ -37,7 +37,7 @@ impl HlilRenderer<'_> {
         let (text, _) = self.condition(condition, negated)?;
         let launder = self.launder_required(condition);
         self.open_wrapper(launder);
-        self.writer.line(&format!("if ({text}) {{"));
+        self.writer.line_fmt(format_args!("if ({text}) {{"));
         self.writer.indent();
         self.emit_statements(then_body)?;
         self.writer.dedent();
@@ -56,7 +56,7 @@ impl HlilRenderer<'_> {
 
     pub(super) fn open_labeled(&mut self, label: Option<&str>, opening: &str) {
         match label {
-            Some(label) => self.writer.line(&format!("{label}: {opening}")),
+            Some(label) => self.writer.line_fmt(format_args!("{label}: {opening}")),
             None => self.writer.line(opening),
         }
         self.writer.indent();
@@ -76,7 +76,7 @@ impl HlilRenderer<'_> {
             let (exit, _) = self.condition(condition, true)?;
             self.open_labeled(label, "while (java.lang.Boolean.TRUE.booleanValue()) {");
             self.open_wrapper(true);
-            self.writer.line(&format!("if ({exit}) {{"));
+            self.writer.line_fmt(format_args!("if ({exit}) {{"));
             self.writer.indent();
             self.writer.line("break;");
             self.writer.dedent();
@@ -106,7 +106,7 @@ impl HlilRenderer<'_> {
             self.open_labeled(label, "while (java.lang.Boolean.TRUE.booleanValue()) {");
             self.emit_statements(body)?;
             self.open_wrapper(true);
-            self.writer.line(&format!("if ({exit}) {{"));
+            self.writer.line_fmt(format_args!("if ({exit}) {{"));
             self.writer.indent();
             self.writer.line("break;");
             self.writer.dedent();
@@ -119,7 +119,7 @@ impl HlilRenderer<'_> {
         self.open_labeled(label, "do {");
         self.emit_statements(body)?;
         self.writer.dedent();
-        self.writer.line(&format!("}} while ({text});"));
+        self.writer.line_fmt(format_args!("}} while ({text});"));
         Ok(())
     }
 
@@ -159,7 +159,8 @@ impl HlilRenderer<'_> {
             self.open_labeled(label, "do {");
             self.emit_statements(prefix)?;
             self.writer.dedent();
-            self.writer.line(&format!("}} while ({condition});"));
+            self.writer
+                .line_fmt(format_args!("}} while ({condition});"));
             return Ok(());
         }
         self.open_labeled(label, "while (java.lang.Boolean.TRUE.booleanValue()) {");
@@ -277,7 +278,8 @@ impl HlilRenderer<'_> {
         let rendered = self.render(scrutinee)?;
         let launder = self.launder_required(scrutinee);
         self.open_wrapper(launder);
-        self.writer.line(&format!("switch ({}) {{", rendered.int()));
+        self.writer
+            .line_fmt(format_args!("switch ({}) {{", rendered.int()));
         self.writer.indent();
         for case in cases {
             let labels = case
@@ -289,7 +291,7 @@ impl HlilRenderer<'_> {
                 })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(" ");
-            self.writer.line(&format!("{labels} {{"));
+            self.writer.line_fmt(format_args!("{labels} {{"));
             self.writer.indent();
             self.emit_statements(&case.body)?;
             if self.completes_normally(&case.body) {
@@ -375,7 +377,7 @@ impl HlilRenderer<'_> {
                 _ => {}
             }
         }
-        self.writer.line(&format!("{java}: {{"));
+        self.writer.line_fmt(format_args!("{java}: {{"));
         self.writer.indent();
         self.emit_statements(body)?;
         self.writer.dedent();
@@ -423,7 +425,7 @@ impl HlilRenderer<'_> {
         self.emit_statements(body)?;
         self.writer.dedent();
         self.writer
-            .line(&format!("}} catch (java.lang.Throwable {caught}) {{"));
+            .line_fmt(format_args!("}} catch (java.lang.Throwable {caught}) {{"));
         self.writer.indent();
         self.caught_names.push(caught.clone());
         let rendered = self.emit_dispatch_chain(handlers, &caught);
@@ -599,7 +601,7 @@ impl HlilRenderer<'_> {
     ) -> Result<(), RenderFailure> {
         if handlers.is_empty() {
             self.writer
-                .line(&format!("throw {}({caught});", self.rethrow));
+                .line_fmt(format_args!("throw {}({caught});", self.rethrow));
             return Ok(());
         }
         let mut open_arms = 0usize;
@@ -618,8 +620,9 @@ impl HlilRenderer<'_> {
                         .type_descriptor(&descriptor)
                         .map_err(|source| RenderFailure::new(source.to_string()))?;
                     let keyword = if position == 0 { "if" } else { "} else if" };
-                    self.writer
-                        .line(&format!("{keyword} ({caught} instanceof {catch_type}) {{"));
+                    self.writer.line_fmt(format_args!(
+                        "{keyword} ({caught} instanceof {catch_type}) {{"
+                    ));
                 }
             }
             let single_any = exhaustive && position == 0;
@@ -639,7 +642,7 @@ impl HlilRenderer<'_> {
             self.writer.line("} else {");
             self.writer.indent();
             self.writer
-                .line(&format!("throw {}({caught});", self.rethrow));
+                .line_fmt(format_args!("throw {}({caught});", self.rethrow));
             self.writer.dedent();
         }
         if open_arms > 0 || !exhaustive {
@@ -750,8 +753,9 @@ impl HlilRenderer<'_> {
             && !test.as_ref().is_some_and(|(_, calls)| *calls)
         {
             let test_text = test.as_ref().map_or("", |(text, _)| text.as_str());
-            self.writer
-                .line(&format!("for ({init_text}; {test_text}; {step_text}) {{"));
+            self.writer.line_fmt(format_args!(
+                "for ({init_text}; {test_text}; {step_text}) {{"
+            ));
             self.writer.indent();
             self.emit_statements(body)?;
             self.writer.dedent();
@@ -770,7 +774,7 @@ impl HlilRenderer<'_> {
             let (exit, _) = self.condition(condition, true)?;
             let exit_calls = self.launder_required(condition);
             self.open_wrapper(exit_calls);
-            self.writer.line(&format!("if ({exit}) {{"));
+            self.writer.line_fmt(format_args!("if ({exit}) {{"));
             self.writer.indent();
             self.writer.line("break;");
             self.writer.dedent();
@@ -880,7 +884,7 @@ impl HlilRenderer<'_> {
         };
         let subject = self.render(*subject)?;
         self.writer
-            .line(&format!("synchronized ({}) {{", subject.object()));
+            .line_fmt(format_args!("synchronized ({}) {{", subject.object()));
         self.writer.indent();
         self.emit_statements(body)?;
         self.writer.dedent();

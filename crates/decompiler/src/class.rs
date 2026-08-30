@@ -298,13 +298,10 @@ fn render_class(
         writer.indent();
         match lift(method) {
             Ok(Some(function)) => {
-                // One variable per SSA lifetime: storage-derived slot reuse
-                // separates into single-typed locals before rendering, and
-                // every non-variable identity survives the rebuild.
-                let function = function
-                    .split_variables()
-                    .map(|split| split.function)
-                    .unwrap_or(function);
+                // JVM RTL raising already partitions storage reuse into typed
+                // def-use webs. Re-running generic MLIL variable splitting here
+                // would recompute SSA and rebuild the entire function without
+                // changing those web identities.
                 let request = BodyRequest {
                     function: &function,
                     owner: &internal_name,
@@ -327,13 +324,15 @@ fn render_class(
                 let rendered = render(&request);
                 helper_used |= rendered.source.contains(&helper);
                 let base = writer.push_source(&rendered.source);
-                translate_source_map(
-                    &mut source_map,
-                    rendered.source_map,
-                    &rendered.source,
-                    base,
-                    2,
-                );
+                if !rendered.source_map.is_empty() {
+                    translate_source_map(
+                        &mut source_map,
+                        rendered.source_map,
+                        &rendered.source,
+                        base,
+                        2,
+                    );
+                }
                 diagnostics.extend(rendered.diagnostics);
             }
             Ok(None) => {

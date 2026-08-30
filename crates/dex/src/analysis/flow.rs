@@ -80,11 +80,7 @@ pub(super) fn build_control_flow(code: &CodeItem, body: &BodyAnalysis) -> Result
     }
 
     reject_normal_entry_to_move_exception(&instruction_by_offset, &edges)?;
-    Ok(ControlFlow {
-        entry,
-        nodes: operations,
-        edges,
-    })
+    ControlFlow::build(entry, &operations, edges)
 }
 
 fn push_fallthrough(

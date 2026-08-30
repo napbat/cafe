@@ -24,7 +24,7 @@ impl MethodAnalysis {
     pub fn stack_map_table(&self, pool: &mut ConstantPool) -> Result<StackMapTableAttribute> {
         let mut frames = Vec::new();
         let mut previous = None;
-        for (&offset, frame) in &self.entries {
+        for (offset, frame) in self.entry_frames() {
             if offset == self.flow.entry() {
                 continue;
             }

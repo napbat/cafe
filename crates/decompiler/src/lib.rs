@@ -34,5 +34,5 @@ pub use self::method::decompile_function;
 pub use self::model::{DecompiledBody, DecompiledClass, GeneratedSpan, SourceMapEntry};
 pub use self::names::compilation_unit_path;
 pub use self::options::{
-    ControlFlowPreference, DecompilerOptions, DecompilerPass, DecompilerPasses,
+    ControlFlowPreference, DecompilerOptions, DecompilerPass, DecompilerPasses, SourceMapPolicy,
 };

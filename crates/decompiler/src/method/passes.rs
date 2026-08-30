@@ -1,8 +1,10 @@
 //! Configured MLIL presentation-pass schedule.
 
+use std::cell::RefCell;
 use std::convert::Infallible;
+use std::rc::Rc;
 
-use mlil::cfglib::{Cfg, Pass, PassChange, PassId, PassPipeline};
+use mlil::cfglib::{AstNode, Cfg, LiftReport, Pass, PassChange, PassId, PassPipeline};
 use mlil::{EdgeMetadata, Function, Instruction};
 
 use crate::options::{DecompilerPass, DecompilerPasses};
@@ -10,18 +12,30 @@ use crate::options::{DecompilerPass, DecompilerPasses};
 use super::regions::detach_monitor_cleanup_coverage;
 
 type Graph = Cfg<Instruction, EdgeMetadata>;
+type Structure = (AstNode<Instruction>, LiftReport);
 
-struct PresentationPass(DecompilerPass);
+struct PresentationPass {
+    pass: DecompilerPass,
+    structure: Rc<RefCell<Option<Structure>>>,
+}
+
+pub(super) struct Presentation {
+    pub(super) function: Function,
+    pub(super) structure: Option<Structure>,
+}
 
 impl Pass<Graph> for PresentationPass {
     type Error = Infallible;
 
     fn id(&self) -> PassId {
-        PassId::new(self.0.name())
+        PassId::new(self.pass.name())
     }
 
     fn run(&mut self, cfg: &mut Graph) -> Result<PassChange, Self::Error> {
-        let changed = match self.0 {
+        // A structure result describes only the exact graph state produced by
+        // the pass that captured it. Any following transformation invalidates it.
+        self.structure.borrow_mut().take();
+        let changed = match self.pass {
             DecompilerPass::RemoveUnreachableExceptionRegions => {
                 cfg.remove_unreachable_regions() > 0
             }
@@ -37,7 +51,10 @@ impl Pass<Graph> for PresentationPass {
             }
             DecompilerPass::PromoteHandlerExtents => mlil::cfglib::promote_handler_extents(cfg) > 0,
             DecompilerPass::DuplicateStructuringTails => {
-                mlil::cfglib::duplicate_structuring_tails(cfg) > 0
+                let duplication = mlil::cfglib::duplicate_structuring_tails_with_structure(cfg);
+                let changed = duplication.blocks_materialized > 0;
+                *self.structure.borrow_mut() = Some((duplication.ast, duplication.report));
+                changed
             }
         };
         Ok(PassChange::from_changed(changed))
@@ -45,12 +62,21 @@ impl Pass<Graph> for PresentationPass {
 }
 
 /// Builds one derived function and applies selected passes in canonical order.
-pub(super) fn apply(function: &Function, passes: &DecompilerPasses) -> Function {
+pub(super) fn apply(function: &Function, passes: &DecompilerPasses) -> Presentation {
     let mut pipeline = PassPipeline::<Graph, Infallible>::new();
+    let structure = Rc::new(RefCell::new(None));
     for pass in passes {
-        pipeline.push(PresentationPass(pass));
+        pipeline.push(PresentationPass {
+            pass,
+            structure: Rc::clone(&structure),
+        });
     }
-    function.with_derived_cfg(|cfg| {
+    let function = function.with_derived_cfg(|cfg| {
         let _report = pipeline.run_infallible(cfg);
-    })
+    });
+    let structure = structure.borrow_mut().take();
+    Presentation {
+        function,
+        structure,
+    }
 }

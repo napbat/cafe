@@ -246,20 +246,17 @@ fn lift_analyzed_body(
         EdgeMetadata::ordinary(EdgeRole::Entry),
     )?;
 
-    for (native_instruction, instruction) in native.iter().zip(&body.instructions) {
+    for (instruction_index, (native_instruction, instruction)) in
+        native.iter().zip(&body.instructions).enumerate()
+    {
         let offset = native_instruction.offset;
-        let entry = analysis
-            .entry_frame(offset)
-            .ok_or_else(|| Error::Unsupported {
-                offset,
-                feature: "frame analysis omitted a JVM instruction entry".into(),
-            })?;
-        let exit = analysis
-            .exit_frame(offset)
-            .ok_or_else(|| Error::Unsupported {
-                offset,
-                feature: "frame analysis omitted a JVM instruction exit".into(),
-            })?;
+        let (entry, exit) =
+            analysis
+                .frames_at(instruction_index)
+                .ok_or_else(|| Error::Unsupported {
+                    offset,
+                    feature: "frame analysis omitted a JVM instruction boundary".into(),
+                })?;
         let lifted = lift_instruction(
             &mut storage,
             &variables,

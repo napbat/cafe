@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use disassembler::cfglib::{
-    Direction, EdgeRef, RootedGraphView, TryEdgeProblem, TrySolveError, try_solve_edge_problem_from,
+    Direction, EdgeId, EdgeRef, NodeId, RootedGraphView, TryEdgeProblem, TrySolveError,
+    try_solve_edge_problem_from,
 };
 
 use crate::file::{AccessFlags, CodeItem, DexFile, EncodedMethod, PrototypeId};
@@ -148,7 +149,7 @@ fn analyze_inner(
 struct RegisterProblem<'method> {
     context: MethodContext<'method>,
     instructions: BTreeMap<u32, &'method crate::instruction::Instruction>,
-    entry: usize,
+    entry: NodeId,
     initial: RegisterFrame,
 }
 
@@ -164,14 +165,14 @@ impl TryEdgeProblem<ControlFlow> for RegisterProblem<'_> {
         None
     }
 
-    fn boundary(&self, _graph: &ControlFlow, node: usize) -> Result<Option<Self::Fact>> {
+    fn boundary(&self, _graph: &ControlFlow, node: NodeId) -> Result<Option<Self::Fact>> {
         Ok((node == self.entry).then(|| Some(self.initial.clone())))
     }
 
     fn meet(
         &self,
         _graph: &ControlFlow,
-        _node: usize,
+        _node: NodeId,
         left: &Self::Fact,
         right: &Self::Fact,
     ) -> Result<Self::Fact> {
@@ -189,7 +190,7 @@ impl TryEdgeProblem<ControlFlow> for RegisterProblem<'_> {
     fn transfer_node(
         &self,
         graph: &ControlFlow,
-        node: usize,
+        node: NodeId,
         input: &Self::Fact,
     ) -> Result<Self::Fact> {
         let Some(input) = input else {
@@ -202,7 +203,7 @@ impl TryEdgeProblem<ControlFlow> for RegisterProblem<'_> {
     fn transfer_edge(
         &self,
         _graph: &ControlFlow,
-        edge: EdgeRef<'_, usize, usize, FlowEdge>,
+        edge: EdgeRef<'_, NodeId, EdgeId, FlowEdge>,
         node_input: &Self::Fact,
         node_output: &Self::Fact,
     ) -> Result<Self::Fact> {

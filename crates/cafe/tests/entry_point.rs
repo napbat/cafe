@@ -109,6 +109,7 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<disassembler::RegisterResources>();
     let _ = std::any::type_name::<cfglib::HandlerTypes<String>>();
     let _ = std::any::type_name::<cfglib::PassPipeline<'static, (), std::convert::Infallible>>();
+    let _ = std::any::type_name::<cfglib::HlilLiftMetadata>();
     let _ = std::any::type_name::<java::analysis::ClassHierarchy>();
     let _ = std::any::type_name::<java::llil::Body>();
     let _ = std::any::type_name::<java::rtl::Function>();
@@ -135,6 +136,7 @@ fn exposes_every_public_layer_through_cafe() -> Result<(), Box<dyn std::error::E
     let _ = std::any::type_name::<decompiler::DecompiledClass>();
     let _ = std::any::type_name::<decompiler::DecompilerPass>();
     let _ = std::any::type_name::<decompiler::DecompilerPasses>();
+    let _ = std::any::type_name::<decompiler::SourceMapPolicy>();
     let _ = std::any::type_name::<decompiler::MethodExceptionCatalog>();
     let _ = std::any::type_name::<classpath::JvmHierarchyView<'static>>();
     let _ = std::any::type_name::<classpath::DexHierarchyView<'static>>();

@@ -162,6 +162,24 @@ pub enum ControlFlowPreference {
     StateMachine,
 }
 
+/// Whether recovered source retains generated-to-native provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SourceMapPolicy {
+    /// Build exact generated spans and their contributing native ranges.
+    #[default]
+    Generate,
+    /// Omit source-map construction when a consumer needs only text and diagnostics.
+    Omit,
+}
+
+impl SourceMapPolicy {
+    /// Returns whether renderers should collect source-map entries.
+    #[must_use]
+    pub const fn generates(self) -> bool {
+        matches!(self, Self::Generate)
+    }
+}
+
 /// Configurable Java decompiler policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecompilerOptions {
@@ -169,6 +187,8 @@ pub struct DecompilerOptions {
     pub control_flow: ControlFlowPreference,
     /// Include members marked synthetic by the class file.
     pub include_synthetic_members: bool,
+    /// Generated-to-native source-map construction policy.
+    pub source_maps: SourceMapPolicy,
     /// MLIL presentation transformations used before HLIL lifting.
     pub passes: DecompilerPasses,
 }
@@ -180,6 +200,13 @@ impl DecompilerOptions {
         self.passes = passes;
         self
     }
+
+    /// Replaces the generated-to-native source-map policy.
+    #[must_use]
+    pub const fn with_source_maps(mut self, policy: SourceMapPolicy) -> Self {
+        self.source_maps = policy;
+        self
+    }
 }
 
 impl Default for DecompilerOptions {
@@ -187,6 +214,7 @@ impl Default for DecompilerOptions {
         Self {
             control_flow: ControlFlowPreference::StructuredWhenReducible,
             include_synthetic_members: true,
+            source_maps: SourceMapPolicy::Generate,
             passes: DecompilerPasses::default(),
         }
     }

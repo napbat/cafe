@@ -67,11 +67,7 @@ pub(super) fn build_control_flow(
         }
     }
 
-    Ok(ControlFlow {
-        entry,
-        nodes,
-        edges,
-    })
+    ControlFlow::build(entry, &nodes, edges)
 }
 
 fn push_fallthrough(

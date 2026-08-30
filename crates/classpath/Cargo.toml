@@ -12,6 +12,7 @@ keywords = ["java", "jvm", "dex", "classpath", "analysis"]
 categories = ["development-tools", "data-structures"]
 
 [dependencies]
+cfglib.workspace = true
 dex.workspace = true
 disassembler.workspace = true
 java.workspace = true

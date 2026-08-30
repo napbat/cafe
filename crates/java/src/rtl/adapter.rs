@@ -23,6 +23,9 @@ pub fn lower_function(function: &mlil::Function) -> Result<Lowered> {
 
 /// Raises JVM RTL into canonical Java MLIL using an open hierarchy.
 ///
+/// Storage reuse is already partitioned into typed def-use webs; consumers do
+/// not need to run generic MLIL variable splitting after this conversion.
+///
 /// # Errors
 ///
 /// Returns an error for incompatible web constraints or invalid generated
@@ -34,6 +37,9 @@ pub fn raise_function(function: &Function) -> Result<mlil::Function> {
 
 /// Raises JVM RTL into canonical Java MLIL with caller-supplied hierarchy
 /// relationships.
+///
+/// Storage reuse is already partitioned into typed def-use webs; consumers do
+/// not need to run generic MLIL variable splitting after this conversion.
 ///
 /// # Errors
 ///

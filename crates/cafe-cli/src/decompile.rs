@@ -11,7 +11,8 @@ use std::thread;
 use cafe::classpath::ClasspathHierarchy;
 use cafe::decompiler::{
     ControlFlowPreference, DecompiledClass, DecompilerOptions, Diagnostic, DiagnosticSeverity,
-    MethodExceptionCatalog, compilation_unit_path, decompile_compilation_unit_with_environment,
+    MethodExceptionCatalog, SourceMapPolicy, compilation_unit_path,
+    decompile_compilation_unit_with_environment,
 };
 use cafe::java::classfile::{
     ClassAccessFlags, ClassFile, KnownAttribute, KnownAttributeKind, MODULE_INFO_CLASS_NAME,
@@ -190,6 +191,7 @@ pub(crate) fn jar(command: &JarCommand) -> Result<RunReport> {
             ControlFlowPreference::StructuredWhenReducible
         },
         include_synthetic_members: !command.exclude_synthetic,
+        source_maps: SourceMapPolicy::Omit,
         ..DecompilerOptions::default()
     };
     let prepared = prepare_units(classes, &output_root, &mut report)?;

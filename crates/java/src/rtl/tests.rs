@@ -197,3 +197,14 @@ fn unentered_finally_handler_keeps_caught_exception_type() {
     let semantic = raise_function(&rtl).expect("disconnected handler state remains typed");
     assert!(semantic.verify().is_ok());
 }
+
+#[test]
+fn raised_rtl_variables_are_already_partitioned_into_webs() {
+    let class = finally_class();
+    let rtl = lift_method(&class, &class.methods[0]).unwrap().unwrap();
+    let semantic = raise_function(&rtl).unwrap();
+    let split = semantic.split_variables().unwrap();
+
+    assert!(split.splits.values().all(|variables| variables.len() == 1));
+    assert_eq!(split.function.variables().len(), semantic.variables().len());
+}
